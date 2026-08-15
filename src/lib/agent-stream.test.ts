@@ -4,7 +4,6 @@ import {
   AgentStreamParser,
   assistantStreamPhase,
   createStreamEventBuffer,
-  createTextDisplayBuffer,
   createStreamState,
   failStreamState,
   groupToolEvents,
@@ -98,27 +97,6 @@ describe("agent stream reducer", () => {
     expect(batches).toHaveLength(1);
   });
 
-  it("keeps canonical text ordered behind a bounded visible lookahead and flushes terminals", () => {
-    const scheduled: Array<() => void> = [];
-    const visible: string[] = [];
-    const buffer = createTextDisplayBuffer((text) => visible.push(text), {
-      delayMs: 80,
-      schedule: (callback) => { scheduled.push(callback); return callback; },
-      cancel: () => undefined,
-    });
-    buffer.push("**Hello");
-    expect(visible).toEqual([]);
-    buffer.push("**Hello** world");
-    expect(scheduled).toHaveLength(2);
-    expect(visible).toEqual([]);
-    buffer.flush();
-    expect(visible).toEqual(["**Hello** world"]);
-
-    buffer.push("**Hello** world!");
-    buffer.cancel();
-    scheduled.pop()?.();
-    expect(visible).toEqual(["**Hello** world"]);
-  });
 
   it("moves cleanly from thinking to visible text and keeps failures incomplete", () => {
     const emptyAssistant: Message = { id: ids.assistant, threadId: ids.threadId, profileId: ids.profileId, role: "assistant", content: "", createdAt: "2026-08-15T12:00:00.000Z", isComplete: false };

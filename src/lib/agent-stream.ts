@@ -29,17 +29,6 @@ type StreamEventBuffer = {
   cancel: () => void;
 };
 
-type TextDisplayBufferOptions = {
-  delayMs?: number;
-  schedule?: (callback: () => void, delayMs: number) => unknown;
-  cancel?: (handle: unknown) => void;
-};
-
-type TextDisplayBuffer = {
-  push: (canonicalText: string) => void;
-  flush: () => void;
-  cancel: () => void;
-};
 
 function scheduleStreamFrame(callback: () => void) {
   if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
@@ -56,13 +45,6 @@ function cancelStreamFrame(handle: unknown) {
   clearTimeout(handle as ReturnType<typeof setTimeout>);
 }
 
-function scheduleTextDisplay(callback: () => void, delayMs: number) {
-  return setTimeout(callback, delayMs);
-}
-
-function cancelTextDisplay(handle: unknown) {
-  clearTimeout(handle as ReturnType<typeof setTimeout>);
-}
 
 /**
  * Batch provider events into one reducer commit per animation frame. A frame
@@ -106,56 +88,6 @@ export function createStreamEventBuffer(
       if (frame !== null) cancel(frame);
       frame = null;
       pending = [];
-      cancelled = true;
-    },
-  };
-}
-
-/**
- * Hold only the visible assistant copy for a short bounded lookahead while the
- * canonical reducer state continues to receive every provider delta. This lets
- * paired Markdown markers arrive together without changing persistence or
- * stream ordering. Terminal callers flush synchronously.
- */
-export function createTextDisplayBuffer(
-  onDisplay: (text: string) => void,
-  options: TextDisplayBufferOptions = {},
-): TextDisplayBuffer {
-  const delayMs = Math.max(0, Math.min(options.delayMs ?? 80, 120));
-  const schedule = options.schedule ?? scheduleTextDisplay;
-  const cancel = options.cancel ?? cancelTextDisplay;
-  let canonicalText = "";
-  let displayedText = "";
-  let timer: unknown = null;
-  let cancelled = false;
-
-  function flush() {
-    if (cancelled) return;
-    if (timer !== null) {
-      cancel(timer);
-      timer = null;
-    }
-    if (canonicalText === displayedText) return;
-    displayedText = canonicalText;
-    onDisplay(displayedText);
-  }
-
-  return {
-    push(nextText) {
-      if (cancelled) return;
-      canonicalText = nextText;
-      if (canonicalText === displayedText) return;
-      if (timer !== null) cancel(timer);
-      timer = schedule(() => {
-        timer = null;
-        flush();
-      }, delayMs);
-    },
-    flush,
-    cancel() {
-      if (cancelled) return;
-      if (timer !== null) cancel(timer);
-      timer = null;
       cancelled = true;
     },
   };

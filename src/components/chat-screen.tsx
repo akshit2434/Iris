@@ -10,6 +10,7 @@ import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
+import { canSubmitMessage } from "@/lib/chat-composer";
 import {
   AgentStreamParser,
   assistantStreamPhase,
@@ -47,6 +48,7 @@ export function ChatScreen() {
   const [composer, setComposer] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [presentationActive, setPresentationActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -158,10 +160,11 @@ export function ChatScreen() {
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = composer.trim();
-    if (!content || sending || !thread) return;
+    if (!thread || !canSubmitMessage(content, sending, presentationActive, true)) return;
     setComposer("");
     setError(null);
     setSending(true);
+    setPresentationActive(true);
     const optimisticUserId = `pending-user-${crypto.randomUUID()}`;
     const optimisticAssistantId = `pending-assistant-${crypto.randomUUID()}`;
     const requestId = crypto.randomUUID();
@@ -183,6 +186,7 @@ export function ChatScreen() {
       });
       if (response.status === 409) {
         await reloadThreadState();
+        setPresentationActive(false);
         setError("That message was already submitted. Showing its saved run.");
         return;
       }
@@ -227,6 +231,14 @@ export function ChatScreen() {
     }
   }
 
+  useEffect(() => {
+    if (!presentationActive || (streamState.status !== "completed" && streamState.status !== "failed")) return;
+    const assistant = streamState.assistantMessageId
+      ? streamState.messages.find((message) => message.id === streamState.assistantMessageId)
+      : null;
+    if (!assistant?.content) setPresentationActive(false);
+  }, [presentationActive, streamState.assistantMessageId, streamState.messages, streamState.status]);
+
   async function reloadThreadState() {
     if (!threadId) return;
     const response = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
@@ -261,7 +273,7 @@ export function ChatScreen() {
       <div ref={scrollContainerRef} className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
-          {messages.map((message) => <MessageBubble key={message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} />)}
+          {messages.map((message) => <MessageBubble key={message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
           <UnattachedToolActivities messages={messages} toolActivities={toolActivities} />
           <div ref={messagesEndRef} />
         </div>
@@ -272,8 +284,8 @@ export function ChatScreen() {
         <div className="relative mx-auto flex h-full max-w-3xl flex-col justify-end">
           {error ? <p className="mb-2 rounded-xl bg-red-50/90 px-3 py-2 text-xs font-medium text-red-600 backdrop-blur-xl">{error}</p> : null}
           <form onSubmit={sendMessage} className="chat-composer-focus-cue glass-surface rounded-[28px] p-2 transition focus-within:bg-white/78 focus-within:shadow-[0_26px_70px_rgba(73,98,145,.18)]">
-            <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder="Message Iris" className="max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 placeholder:text-slate-400" disabled={sending} />
-            <div className="flex justify-end px-1 pb-1"><button type="submit" disabled={!composer.trim() || sending} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button></div>
+            <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!sending && !presentationActive) event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder="Message Iris" className="max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 placeholder:text-slate-400" />
+            <div className="flex justify-end px-1 pb-1"><button type="submit" disabled={!canSubmitMessage(composer, sending, presentationActive, Boolean(thread))} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button></div>
           </form>
         </div>
       </div>
@@ -281,7 +293,7 @@ export function ChatScreen() {
   );
 }
 
-function MessageBubble({ message, active, toolActivities }: Readonly<{ message: Message; active: boolean; toolActivities: ToolActivity[] }>) {
+function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void }>) {
   const isUser = message.role === "user";
   const phase = assistantStreamPhase(message, active);
   return (
@@ -289,7 +301,7 @@ function MessageBubble({ message, active, toolActivities }: Readonly<{ message: 
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
         {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} /> : null}
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
-          {message.content ? <AssistantMarkdown content={message.content} flush={phase !== "streaming"} /> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
+          {message.content ? <AssistantMarkdown content={message.content} live={live} terminal={terminal} onRevealComplete={onRevealComplete} /> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
         </div>
         {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>

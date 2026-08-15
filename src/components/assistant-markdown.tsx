@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Markdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { createTextDisplayBuffer } from "@/lib/agent-stream";
+import { Streamdown, type Components } from "streamdown";
+import { createTextRevealScheduler, type TextRevealScheduler } from "@/lib/text-reveal";
 
 const markdownComponents: Components = {
   p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
@@ -31,21 +30,83 @@ const markdownComponents: Components = {
   td: ({ children }) => <td className="px-3 py-2 align-top text-slate-600">{children}</td>,
 };
 
-export function AssistantMarkdown({ content, flush = false }: Readonly<{ content: string; flush?: boolean }>) {
-  const [visibleContent, setVisibleContent] = useState(content);
-  const bufferRef = useRef<ReturnType<typeof createTextDisplayBuffer> | null>(null);
+function useReducedMotion() {
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return reducedMotion;
+}
+
+export function AssistantMarkdown({ content, live, terminal, onRevealComplete }: Readonly<{
+  content: string;
+  live: boolean;
+  terminal: boolean;
+  onRevealComplete?: () => void;
+}>) {
+  const reducedMotion = useReducedMotion();
+  const startedRef = useRef(live);
+  const onCompleteRef = useRef(onRevealComplete);
+  const [visibleContent, setVisibleContent] = useState(() => live ? "" : content);
+  const [presenting, setPresenting] = useState(live);
+  const schedulerRef = useRef<TextRevealScheduler | null>(null);
 
   useEffect(() => {
-    const buffer = bufferRef.current ?? createTextDisplayBuffer(setVisibleContent);
-    bufferRef.current = buffer;
-    buffer.push(content);
-    if (flush) buffer.flush();
-  }, [content, flush]);
+    onCompleteRef.current = onRevealComplete;
+  }, [onRevealComplete]);
 
-  useEffect(() => () => {
-    bufferRef.current?.cancel();
+  useEffect(() => {
+    const scheduler = createTextRevealScheduler({
+      onReveal: (text) => setVisibleContent(text),
+      onComplete: () => {
+        setPresenting(false);
+        onCompleteRef.current?.();
+      },
+    });
+    schedulerRef.current = scheduler;
+    return () => scheduler.cancel();
   }, []);
 
-  const renderedContent = flush ? content : visibleContent;
-  return <div className="assistant-markdown max-w-full overflow-x-auto leading-7 [&>table]:my-3"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={markdownComponents}>{renderedContent}</Markdown></div>;
+  useEffect(() => {
+    schedulerRef.current?.setImmediate(reducedMotion);
+  }, [reducedMotion]);
+
+  useEffect(() => {
+    const scheduler = schedulerRef.current;
+    if (!scheduler) return;
+    if (live) {
+      startedRef.current = true;
+      setPresenting(true);
+      scheduler.push(content);
+      if (terminal) scheduler.end();
+      return;
+    }
+    if (startedRef.current) {
+      scheduler.push(content);
+      scheduler.end();
+      return;
+    }
+    setVisibleContent(content);
+    setPresenting(false);
+    onCompleteRef.current?.();
+  }, [content, live, terminal]);
+
+  return <div className={`assistant-markdown max-w-full overflow-x-auto leading-7 [&>table]:my-3 ${presenting && !reducedMotion ? "assistant-markdown--revealing" : ""}`}>
+    <Streamdown
+      mode={presenting && !reducedMotion ? "streaming" : "static"}
+      isAnimating={presenting && !reducedMotion}
+      animated={reducedMotion ? false : { animation: "blurIn", duration: 180, sep: "word", stagger: 0 }}
+      parseIncompleteMarkdown
+      skipHtml
+      controls={false}
+      lineNumbers={false}
+      components={markdownComponents}
+    >
+      {visibleContent}
+    </Streamdown>
+  </div>;
 }
