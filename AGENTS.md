@@ -11,7 +11,7 @@ This file is the operating guide for automated coding work in this repository.
 
 ## Branches and commits
 
-- Commit directly to `main` for small, reversible, single-purpose changes. Use a short-lived `agent/<short-kebab-description>` branch for multi-file work, risky migrations, major features, or work that benefits from an isolated reviewable diff.
+- Commit directly to `main` for small, reversible, single-purpose changes. For major features, risky migrations, parallel work, or changes that benefit from an isolated reviewable diff, use a short-lived meaningful branch such as `feature/<short-kebab-description>`, `fix/<short-kebab-description>`, `docs/<short-kebab-description>`, `refactor/<short-kebab-description>`, `test/<short-kebab-description>`, or `chore/<short-kebab-description>`.
 - Use focused imperative commits with a conventional prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, or `chore:`.
 - Keep commits small enough to explain in one sentence. Do not mix product behavior, formatting churn, and unrelated cleanup.
 - Use a pull request only for major, hard-to-revert, or parallel work. Squash-merge it after checks pass.

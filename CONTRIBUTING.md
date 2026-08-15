@@ -6,7 +6,7 @@ Iris is maintained by one developer. The workflow is intentionally lightweight a
 
 1. Make one focused change and commit it with a conventional prefix.
 2. For small, reversible work, commit directly to `main`.
-3. For major features, risky schema changes, or parallel work, create `agent/<short-kebab-description>` and use a pull request.
+3. For major features, risky schema changes, or parallel work, create a meaningful branch such as `feature/<short-kebab-description>`, `fix/<short-kebab-description>`, `docs/<short-kebab-description>`, `refactor/<short-kebab-description>`, `test/<short-kebab-description>`, or `chore/<short-kebab-description>`, and use a pull request.
 4. Before each commit, run `npm run check:secrets`, `npm run check:privacy`, `npm run lint`, `npm run typecheck`, and `npm run build`.
 5. Review the diff before pushing. Squash-merge branches and delete them once finished.
 
