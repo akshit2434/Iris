@@ -4,7 +4,7 @@ import type { ProfileId } from "@/lib/profiles";
 import type { Message, PersistedToolEvent, Thread } from "@/lib/types";
 import { getDatabase } from "@/server/db/client";
 import type { Json } from "@/server/db/types";
-import { sanitizeForEvent } from "@/server/agent/protocol";
+import { sanitizeForEvent, sanitizeStatusMessage } from "@/server/agent/protocol";
 import { deriveThreadTitle } from "@/lib/thread-title";
 
 export type ProfileSummary = {
@@ -177,6 +177,9 @@ function toPersistedToolEvent(row: {
         ...(Object.prototype.hasOwnProperty.call(payload, "input")
           ? { input: sanitizeForEvent(payload.input) as PersistedToolEvent["input"] }
           : {}),
+        ...(sanitizeStatusMessage(payload.statusMessage)
+          ? { statusMessage: sanitizeStatusMessage(payload.statusMessage) }
+          : {}),
         createdAt: row.created_at,
       }
     : {
@@ -187,6 +190,9 @@ function toPersistedToolEvent(row: {
         toolName: payload.toolName.slice(0, 200),
         ...(Object.prototype.hasOwnProperty.call(payload, "output")
           ? { output: sanitizeForEvent(payload.output) as PersistedToolEvent["output"] }
+          : {}),
+        ...(sanitizeStatusMessage(payload.statusMessage)
+          ? { statusMessage: sanitizeStatusMessage(payload.statusMessage) }
           : {}),
         ok: payload.ok === true,
         createdAt: row.created_at,

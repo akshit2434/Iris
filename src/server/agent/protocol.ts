@@ -34,6 +34,7 @@ export type AgentStreamEvent =
       toolCallId: string;
       toolName: string;
       input: SafeJson;
+      statusMessage?: string;
     }
   | {
       version: typeof AGENT_STREAM_PROTOCOL;
@@ -44,6 +45,7 @@ export type AgentStreamEvent =
       toolName: string;
       output: SafeJson;
       ok: boolean;
+      statusMessage?: string;
     }
   | {
       version: typeof AGENT_STREAM_PROTOCOL;
@@ -86,6 +88,18 @@ export function sanitizeForEvent(value: unknown, depth = 0): SafeJson {
     );
   }
   return String(value).slice(0, 4000);
+}
+
+/** Optional short progress copy for long-running tools; never expose raw markup or control text. */
+export function sanitizeStatusMessage(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[<>`*_#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return normalized || undefined;
 }
 
 export function safeFailure(error: unknown): { code: string; message: string } {

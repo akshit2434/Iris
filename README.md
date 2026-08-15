@@ -32,6 +32,7 @@ These previews use only generic seeded labels and temporary QA copy. No private 
   streaming and falls back locally if it fails.
 - Raw user and assistant message persistence owned by Iris
 - Streaming LangChain agent responses through OpenRouter
+- User-local date/time is injected into every agent run as trusted runtime context; it is not exposed as a tool.
 - Versioned NDJSON run events with persisted, profile/thread-scoped tool activity
 - Simple responsive Home, Chat, History, and Files surfaces
 - Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur

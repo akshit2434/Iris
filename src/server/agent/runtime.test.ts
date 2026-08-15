@@ -5,13 +5,14 @@ import {
   agentContextSchema,
   buildDynamicSystemPrompt,
   createAgentContext,
+  formatLocalTemporalContext,
   resolveBrowserTimezone,
 } from "@/server/agent/context";
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
 import { createIrisAgent, extractAgentMessageEvents, streamAgentEvents } from "@/server/agent";
 import { planAssistantPersistence } from "@/server/agent/persistence";
-import { readCurrentThreadOverview, readCurrentTime } from "@/server/agent/tools";
-import { AGENT_STREAM_PROTOCOL, sanitizeForEvent } from "@/server/agent/protocol";
+import { createInternalTools, optionalToolProgressSchema, readCurrentThreadOverview, readCurrentTime } from "@/server/agent/tools";
+import { AGENT_STREAM_PROTOCOL, sanitizeForEvent, sanitizeStatusMessage } from "@/server/agent/protocol";
 
 const context = createAgentContext({
   profileId: "profile-a",
@@ -28,6 +29,12 @@ describe("agent context", () => {
     expect(resolveBrowserTimezone("not/a-timezone")).toBe("UTC");
     expect(resolveBrowserTimezone(undefined)).toBe("UTC");
     expect(agentContextSchema.parse(context).threadId).toBe(context.threadId);
+    const fallbackContext = createAgentContext({
+      ...context,
+      browserTimezone: "not/a-timezone",
+      now: new Date("2026-08-15T12:00:00.000Z"),
+    });
+    expect(fallbackContext).toMatchObject({ timezone: "UTC", localDate: "2026-08-15", localTime: "12:00:00", utcOffset: "UTC" });
   });
 
   it("renders runtime context through the dynamic prompt boundary", () => {
@@ -36,6 +43,28 @@ describe("agent context", () => {
     expect(prompt).toContain("Runtime test");
     expect(prompt).toContain("Asia/Kolkata");
     expect(prompt).toContain("2026-08-15T12:00:00.000Z");
+    expect(prompt).toContain("User-local date: 2026-08-15");
+    expect(prompt).toContain("User-local time: 17:30:00");
+    expect(prompt).toContain("UTC offset: UTC+05:30");
+    expect(prompt).toContain("User-local time is context, not a tool");
+  });
+
+  it("formats local date/time across UTC boundaries and DST transitions", () => {
+    expect(formatLocalTemporalContext(new Date("2026-08-15T18:30:00.000Z"), "Asia/Kolkata")).toEqual({
+      localDate: "2026-08-16",
+      localTime: "00:00:00",
+      utcOffset: "UTC+05:30",
+    });
+    expect(formatLocalTemporalContext(new Date("2024-03-10T06:30:00.000Z"), "America/New_York")).toEqual({
+      localDate: "2024-03-10",
+      localTime: "01:30:00",
+      utcOffset: "UTC-05:00",
+    });
+    expect(formatLocalTemporalContext(new Date("2024-03-10T07:30:00.000Z"), "America/New_York")).toEqual({
+      localDate: "2024-03-10",
+      localTime: "03:30:00",
+      utcOffset: "UTC-04:00",
+    });
   });
 });
 
@@ -82,6 +111,10 @@ describe("internal tools", () => {
     });
   });
 
+  it("does not expose user-local time as a new agent tool", () => {
+    expect(createInternalTools().map((internalTool) => internalTool.name)).toEqual(["thread_overview"]);
+  });
+
   it("strictly scopes thread overview reads to the runtime profile and thread", async () => {
     const reader = vi.fn(async (profileId: "profile-a" | "profile-b", threadId: string) => ({
       title: "Runtime test",
@@ -124,6 +157,25 @@ describe("runtime seams", () => {
         ok: true,
       },
     ]);
+  });
+
+  it("sanitizes optional long-running progress labels and preserves them in event projection", () => {
+    expect(optionalToolProgressSchema.parse({ statusMessage: "Gathering details" })).toEqual({ statusMessage: "Gathering details" });
+    expect(optionalToolProgressSchema.parse({})).toEqual({});
+    expect(sanitizeStatusMessage("  Checking <records>...\n  ")).toBe("Checking records...");
+    expect(sanitizeStatusMessage("x".repeat(200))).toHaveLength(120);
+    expect(sanitizeStatusMessage("   ")).toBeUndefined();
+    expect(extractAgentMessageEvents({
+      type: "ai",
+      content: "",
+      tool_call_chunks: [{ id: "call-long", name: "future_tool", args: JSON.stringify({ statusMessage: "Gathering details" }), index: 0 }],
+    })).toEqual([expect.objectContaining({ type: "tool_started", statusMessage: "Gathering details" })]);
+    expect(extractAgentMessageEvents({
+      type: "tool",
+      tool_call_id: "call-long",
+      name: "future_tool",
+      content: JSON.stringify({ statusMessage: "Still gathering details", value: 1 }),
+    })).toEqual([expect.objectContaining({ type: "tool_finished", statusMessage: "Still gathering details" })]);
   });
 
   it("constructs the agent with an injected deterministic model", () => {
@@ -169,11 +221,17 @@ describe("runtime seams", () => {
     for await (const event of streamAgentEvents({
       model: new FakeToolCallingModel({
         toolCalls: [
-          [{ id: "call-1", name: "current_time", args: {} }],
+          [{ id: "call-1", name: "thread_overview", args: {} }],
           [],
         ],
       }),
       context,
+      threadOverviewReader: vi.fn(async () => ({
+        title: "Runtime test",
+        createdAt: "2026-08-15T11:00:00.000Z",
+        updatedAt: "2026-08-15T12:00:00.000Z",
+        messageCount: 3,
+      })),
       messages: [{ role: "user", content: "what time is it?" }],
     })) {
       events.push(event);

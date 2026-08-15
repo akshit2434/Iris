@@ -238,6 +238,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
                   toolCallId: event.toolCallId,
                   toolName: event.toolName,
                   input: event.input,
+                  ...(event.statusMessage ? { statusMessage: event.statusMessage } : {}),
                 },
               });
               send({ ...event, runId: run.id });
@@ -255,6 +256,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
                 toolName: event.toolName,
                 output: event.output,
                 ok: event.ok,
+                ...(event.statusMessage ? { statusMessage: event.statusMessage } : {}),
               },
             });
             send({ ...event, runId: run.id });

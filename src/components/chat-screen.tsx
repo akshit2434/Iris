@@ -20,6 +20,7 @@ import {
   startOptimisticRun,
   summarizeToolActivity,
   summarizeToolResult,
+  toolActivityIconName,
   toolActivitiesForRun,
   toolDetail,
   toolLabel,
@@ -287,7 +288,7 @@ function MessageBubble({ message, active, toolActivities }: Readonly<{ message: 
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
         {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} /> : null}
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
-          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : phase === "thinking" ? <ThinkingIndicator /> : null}
+          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
         </div>
         {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
@@ -316,36 +317,42 @@ function UnattachedToolActivities({ messages, toolActivities }: Readonly<{ messa
 function ToolActivityDisclosure({ activities, active }: Readonly<{ activities: ToolActivity[]; active: boolean }>) {
   const [expanded, setExpanded] = useState(active);
   const wasActive = useRef(active);
+  const detailsId = `tool-activity-${activities[0]?.runId ?? "run"}`;
 
   useEffect(() => {
     if (!active && wasActive.current) setExpanded(false);
     wasActive.current = active;
   }, [active]);
 
-  return <div className="tool-activity-disclosure mt-2 max-w-full rounded-[16px] border border-white/62 bg-white/34 px-3 py-1.5 shadow-[0_8px_24px_rgba(81,104,151,.045)] backdrop-blur-xl">
-    <button type="button" className="flex min-h-7 w-full items-center gap-2 text-left text-[11px] font-medium text-slate-500" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
-      <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/65 text-[9px] ${activities.some((activity) => activity.status === "failed") ? "text-red-500" : activities.some((activity) => activity.status === "running") ? "text-[#5577d8]" : "text-emerald-600"}`} aria-hidden="true">
-        {activities.some((activity) => activity.status === "running") ? <span className="tool-pulse h-1.5 w-1.5 rounded-full bg-current" /> : activities.some((activity) => activity.status === "failed") ? "!" : "✓"}
-      </span>
+  return <div className="tool-activity-disclosure mt-2 max-w-full">
+    <button type="button" className="flex min-h-7 w-full items-center gap-2 text-left text-[11px] font-medium text-slate-500" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpanded((current) => !current)}>
+      <ToolActivityIcon toolName={activities.length === 1 ? activities[0].toolName : "multiple"} />
       <span className="min-w-0 flex-1 truncate">{summarizeToolActivity(activities)}</span>
-      <span className={`text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true">⌄</span>
+      <svg viewBox="0 0 12 8" className={`h-2 w-3 shrink-0 text-slate-400 transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? "rotate-180" : ""}`} aria-hidden="true"><path d="m1 1 5 5 5-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" /></svg>
     </button>
-    {expanded ? <div className="space-y-1.5 pb-1.5 pt-1" aria-label="Tool activity details">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} />)}</div> : null}
+    <div id={detailsId} className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${expanded ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`} aria-hidden={!expanded}>
+      <div className="min-h-0 overflow-hidden"><div className="space-y-1 pb-1 pt-1" aria-label="Tool activity details">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} />)}</div></div>
+    </div>
   </div>;
+}
+
+function ToolActivityIcon({ toolName }: Readonly<{ toolName: string }>) {
+  const icon = toolActivityIconName(toolName);
+  if (icon === "clock") return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10 6v4l2.7 1.7" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" /></svg>;
+  if (icon === "chat") return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><path d="M4 4.5h12v8H9l-3.5 3v-3H4z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4" /><path d="M7 8h6M7 10.5h4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" /></svg>;
+  return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><path d="m7.5 5.5 2.5-2 2.5 2-1 1.6 1.6 1 1.9-.4 1 3-1.7 1-.1 2-1.8.8-1.4-1.3-1.8.7-1.7-1.4.6-1.9-1.3-1.3-1.8.2-1.2-2.8z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2" /><circle cx="10" cy="9.8" r="2" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>;
 }
 
 function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
   const detail = toolDetail(activity);
-  const stateLabel = activity.status === "running" ? "Running" : activity.status === "succeeded" ? "Succeeded" : "Failed";
-  const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "succeeded" ? "text-emerald-600" : "text-red-500";
+  const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "failed" ? "text-red-500" : "text-slate-500";
   return (
-    <div className="tool-activity-row rounded-xl bg-white/38 px-2 py-1.5 text-xs text-slate-600" aria-label={`${toolLabel(activity.toolName)} ${stateLabel}`} aria-live={activity.status === "running" ? "polite" : "off"}>
+    <div className="tool-activity-row px-1 text-xs text-slate-500" aria-label={`${toolLabel(activity.toolName)} ${activity.status}`} aria-live={activity.status === "running" ? "polite" : "off"}>
       <div className="flex items-center gap-2">
-        <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[10px] ${stateClass}`} aria-hidden="true">{activity.status === "running" ? <span className="tool-pulse h-1.5 w-1.5 rounded-full bg-current" /> : activity.status === "succeeded" ? "✓" : "!"}</span>
+        <ToolActivityIcon toolName={activity.toolName} />
         <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{toolLabel(activity.toolName)}</span>
-        <span className={`shrink-0 text-[10px] font-medium ${stateClass}`}>{stateLabel}</span>
       </div>
-      <p className="mt-1 pl-7 text-[11px] leading-4 text-slate-500">{summarizeToolResult(activity)}</p>
+      <p className={`mt-1 pl-6 text-[11px] leading-4 ${stateClass}`}>{summarizeToolResult(activity)}</p>
       {detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
     </div>
   );

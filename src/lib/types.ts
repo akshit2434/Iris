@@ -39,6 +39,7 @@ export type PersistedToolEvent = {
   toolName: string;
   input?: SafeToolJson;
   output?: SafeToolJson;
+  statusMessage?: string;
   ok?: boolean;
   createdAt: string;
 };
@@ -49,6 +50,7 @@ export type ToolActivity = {
   toolName: string;
   input?: SafeToolJson;
   output?: SafeToolJson;
+  statusMessage?: string;
   status: "running" | "succeeded" | "failed";
   startedAt?: string;
   finishedAt?: string;

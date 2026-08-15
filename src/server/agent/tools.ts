@@ -18,6 +18,11 @@ export type ThreadOverviewReader = (
 
 const emptyInput = z.object({});
 
+/** Extend only long-running tool schemas with this optional, user-facing label. */
+export const optionalToolProgressSchema = z.object({
+  statusMessage: z.string().trim().min(1).max(120).optional(),
+});
+
 export async function readCurrentTime(context: AgentContext) {
   return {
     kind: "current_time" as const,
@@ -52,25 +57,15 @@ export async function readCurrentThreadOverview(
 export function createInternalTools(
   reader: ThreadOverviewReader = getThreadOverview,
 ) {
-  const currentTime = tool(
-    async (_input, runtime: ToolRuntime<unknown, AgentContext>) =>
-      readCurrentTime(runtime.context),
-    {
-      name: "current_time",
-      description: "Return the server time and the validated browser timezone for this run.",
-      schema: emptyInput,
-    },
-  );
-
   const threadOverview = tool(
     async (_input, runtime: ToolRuntime<unknown, AgentContext>) =>
       readCurrentThreadOverview(runtime.context, reader),
     {
       name: "thread_overview",
-      description: "Return only the current profile's current thread title, timestamps, and message count.",
+      description: "Return only the current profile's current thread title, timestamps, and message count. This is a quick lookup; omit statusMessage.",
       schema: emptyInput,
     },
   );
 
-  return [currentTime, threadOverview] as const;
+  return [threadOverview] as const;
 }

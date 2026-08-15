@@ -14,19 +14,20 @@ import {
   type AgentContext,
 } from "@/server/agent/context";
 import { createInternalTools, type ThreadOverviewReader } from "@/server/agent/tools";
-import { sanitizeForEvent, type SafeJson } from "@/server/agent/protocol";
+import { sanitizeForEvent, sanitizeStatusMessage, type SafeJson } from "@/server/agent/protocol";
 
 export const DEFAULT_MODEL = "openai/gpt-5.6-luna";
 
 export type AgentRuntimeEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_started"; toolCallId: string; toolName: string; input: SafeJson }
+  | { type: "tool_started"; toolCallId: string; toolName: string; input: SafeJson; statusMessage?: string }
   | {
       type: "tool_finished";
       toolCallId: string;
       toolName: string;
       output: SafeJson;
       ok: boolean;
+      statusMessage?: string;
     };
 
 export type AgentModel = BaseChatModel;
@@ -129,10 +130,17 @@ function getToolCalls(message: Record<string, unknown>) {
         : `${name}:${JSON.stringify(value.args ?? {})}`;
     if (seen.has(id)) return [];
     seen.add(id);
+    const parsedInput = parseToolInput(value.args ?? value.input ?? {});
+    const statusMessage = sanitizeStatusMessage(
+      typeof parsedInput === "object" && parsedInput !== null && !Array.isArray(parsedInput)
+        ? parsedInput.statusMessage
+        : undefined,
+    );
     return [{
       id,
       name,
-      input: parseToolInput(value.args ?? value.input ?? {}),
+      input: parsedInput,
+      ...(statusMessage ? { statusMessage } : {}),
     }];
   });
 }
@@ -141,11 +149,23 @@ function getToolResult(message: Record<string, unknown>) {
   if (message.type !== "tool") return null;
   const toolCallId = typeof message.tool_call_id === "string" ? message.tool_call_id : "unknown";
   const toolName = typeof message.name === "string" ? message.name : "unknown_tool";
+  let statusMessage: string | undefined;
+  if (typeof message.content === "string") {
+    try {
+      const parsed = JSON.parse(message.content) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        statusMessage = sanitizeStatusMessage((parsed as Record<string, unknown>).statusMessage);
+      }
+    } catch {
+      // Non-JSON tool output has no structured progress label.
+    }
+  }
   return {
     toolCallId,
     toolName,
     output: sanitizeForEvent(message.content),
     ok: message.status !== "error",
+    ...(statusMessage ? { statusMessage } : {}),
   };
 }
 
@@ -156,6 +176,7 @@ export function extractAgentMessageEvents(message: Record<string, unknown>): Age
     toolCallId: call.id,
     toolName: call.name,
     input: call.input,
+    ...(call.statusMessage ? { statusMessage: call.statusMessage } : {}),
   }));
   const result = getToolResult(message);
   if (result) events.push({ type: "tool_finished", ...result });

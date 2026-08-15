@@ -9,6 +9,8 @@ import {
   groupToolEvents,
   reduceAgentStream,
   startOptimisticRun,
+  toolActionLabel,
+  toolActivityIconName,
   summarizeToolActivity,
   summarizeToolResult,
 } from "@/lib/agent-stream";
@@ -200,13 +202,28 @@ describe("agent stream reducer", () => {
   it("keeps tool activity concise while preserving failure and detail states", () => {
     expect(summarizeToolActivity([
       { runId: "run-1", toolCallId: "call-1", toolName: "current_time", status: "running" },
-    ])).toBe("Using 1 tool");
+    ])).toBe("Checking time");
     expect(summarizeToolActivity([
       { runId: "run-1", toolCallId: "call-1", toolName: "current_time", status: "succeeded" },
-    ])).toBe("Used current time");
+    ])).toBe("Checked time");
     expect(summarizeToolActivity([
       { runId: "run-1", toolCallId: "call-1", toolName: "current_time", status: "failed" },
       { runId: "run-1", toolCallId: "call-2", toolName: "thread_overview", status: "succeeded" },
     ])).toBe("1 tool failed");
+    expect(toolActionLabel("thread_overview", "running")).toBe("Reviewing this chat");
+    expect(toolActionLabel("future_tool", "running", "Gathering records")).toBe("Gathering records");
+    expect(toolActionLabel("thread_overview", "succeeded")).toBe("Reviewed this chat");
+    expect(toolActivityIconName("current_time")).toBe("clock");
+    expect(toolActivityIconName("thread_overview")).toBe("chat");
+    expect(toolActivityIconName("future_tool")).toBe("tools");
+  });
+
+  it("replays optional progress labels without changing the collapsed grouping", () => {
+    const replay = groupToolEvents([
+      { runId: "run-3", sequence: 1, type: "tool_call", toolCallId: "call-3", toolName: "future_tool", input: {}, statusMessage: "Gathering records", createdAt: "2026-08-15T12:00:00.000Z" },
+      { runId: "run-3", sequence: 2, type: "tool_result", toolCallId: "call-3", toolName: "future_tool", output: { value: 1 }, ok: true, statusMessage: "Gathered records", createdAt: "2026-08-15T12:00:01.000Z" },
+    ]);
+    expect(replay[0]).toMatchObject({ status: "succeeded", statusMessage: "Gathered records" });
+    expect(summarizeToolActivity(replay)).toBe("Used future tool");
   });
 });

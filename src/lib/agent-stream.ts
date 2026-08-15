@@ -103,6 +103,10 @@ function hasNumber(value: Record<string, unknown>, key: string): value is Record
   return typeof value[key] === "number" && Number.isInteger(value[key]) && value[key] > 0;
 }
 
+function hasOptionalStatusMessage(value: Record<string, unknown>) {
+  return !("statusMessage" in value) || (typeof value.statusMessage === "string" && value.statusMessage.length > 0 && value.statusMessage.length <= 120);
+}
+
 /** Validate the public stream envelope before the UI acts on an event. */
 export function parseAgentStreamEvent(value: unknown): AgentStreamEvent | null {
   if (!isRecord(value) || value.version !== AGENT_STREAM_PROTOCOL || !hasString(value, "type") || !hasNumber(value, "sequence") || !hasString(value, "runId")) {
@@ -117,11 +121,11 @@ export function parseAgentStreamEvent(value: unknown): AgentStreamEvent | null {
     case "text_delta":
       return typeof value.text === "string" ? value as unknown as AgentStreamEvent : null;
     case "tool_started":
-      return hasString(value, "toolCallId") && hasString(value, "toolName") && "input" in value
+      return hasString(value, "toolCallId") && hasString(value, "toolName") && "input" in value && hasOptionalStatusMessage(value)
         ? value as unknown as AgentStreamEvent
         : null;
     case "tool_finished":
-      return hasString(value, "toolCallId") && hasString(value, "toolName") && "output" in value && typeof value.ok === "boolean"
+      return hasString(value, "toolCallId") && hasString(value, "toolName") && "output" in value && typeof value.ok === "boolean" && hasOptionalStatusMessage(value)
         ? value as unknown as AgentStreamEvent
         : null;
     case "completed":
@@ -194,6 +198,7 @@ function upsertToolActivity(activities: ToolActivity[], next: ToolActivity) {
     ...next,
     input: next.input !== undefined ? next.input : updated[index].input,
     output: next.output !== undefined ? next.output : updated[index].output,
+    statusMessage: next.statusMessage !== undefined ? next.statusMessage : updated[index].statusMessage,
     startedAt: next.startedAt !== undefined ? next.startedAt : updated[index].startedAt,
     finishedAt: next.finishedAt !== undefined ? next.finishedAt : updated[index].finishedAt,
   };
@@ -207,6 +212,7 @@ function persistedToolActivity(event: PersistedToolEvent): ToolActivity {
     toolName: event.toolName,
     input: event.input,
     output: event.output,
+    statusMessage: event.statusMessage,
     status: event.type === "tool_call" ? "running" : event.ok ? "succeeded" : "failed",
     startedAt: event.type === "tool_call" ? event.createdAt : undefined,
     finishedAt: event.type === "tool_result" ? event.createdAt : undefined,
@@ -231,6 +237,7 @@ export function groupToolEvents(events: readonly PersistedToolEvent[]): ToolActi
       ...next,
       input: next.input !== undefined ? next.input : existing.input,
       output: next.output !== undefined ? next.output : existing.output,
+      statusMessage: next.statusMessage !== undefined ? next.statusMessage : existing.statusMessage,
       startedAt: next.startedAt !== undefined ? next.startedAt : existing.startedAt,
       finishedAt: next.finishedAt !== undefined ? next.finishedAt : existing.finishedAt,
     } : next);
@@ -245,6 +252,7 @@ function applyToolEvent(activities: ToolActivity[], event: Extract<AgentStreamEv
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         input: event.input as SafeToolJson,
+        statusMessage: event.statusMessage,
         status: "running",
       }
     : {
@@ -252,6 +260,7 @@ function applyToolEvent(activities: ToolActivity[], event: Extract<AgentStreamEv
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         output: event.output as SafeToolJson,
+        statusMessage: event.statusMessage,
         status: event.ok ? "succeeded" : "failed",
       };
   return upsertToolActivity(activities, next);
@@ -388,10 +397,29 @@ export function toolActivitiesForRun(activities: readonly ToolActivity[], runId:
 export function summarizeToolActivity(activities: readonly ToolActivity[]) {
   const failed = activities.filter((activity) => activity.status === "failed").length;
   const running = activities.filter((activity) => activity.status === "running").length;
-  if (running > 0) return `Using ${activities.length} ${activities.length === 1 ? "tool" : "tools"}`;
+  if (running > 0) {
+    if (activities.length === 1) return toolActionLabel(activities[0].toolName, "running", activities[0].statusMessage);
+    return `Using ${activities.length} tools`;
+  }
   if (failed > 0) return `${failed} ${failed === 1 ? "tool" : "tools"} failed`;
-  if (activities.length === 1) return `Used ${toolLabel(activities[0].toolName).toLocaleLowerCase()}`;
+  if (activities.length === 1) return toolActionLabel(activities[0].toolName, "succeeded", activities[0].statusMessage);
   return `Used ${activities.length} tools`;
+}
+
+export function toolActionLabel(toolName: string, status: ToolActivity["status"], statusMessage?: string) {
+  if (status === "running" && statusMessage) return statusMessage;
+  if (toolName === "current_time") return status === "running" ? "Checking time" : status === "failed" ? "Time check failed" : "Checked time";
+  if (toolName === "thread_overview") return status === "running" ? "Reviewing this chat" : status === "failed" ? "Chat review failed" : "Reviewed this chat";
+  const label = toolLabel(toolName).toLocaleLowerCase();
+  return status === "running" ? `Using ${label}` : status === "failed" ? `${toolLabel(toolName)} failed` : `Used ${label}`;
+}
+
+export type ToolActivityIconName = "clock" | "chat" | "tools";
+
+export function toolActivityIconName(toolName: string): ToolActivityIconName {
+  if (toolName === "current_time") return "clock";
+  if (toolName === "thread_overview") return "chat";
+  return "tools";
 }
 
 export function toolLabel(toolName: string) {
@@ -417,8 +445,8 @@ function objectOutput(value: SafeToolJson | undefined): Record<string, SafeToolJ
 }
 
 export function summarizeToolResult(activity: ToolActivity) {
-  if (activity.status === "running") return "Working…";
-  if (activity.status === "failed") return "Couldn’t complete";
+  if (activity.status === "running") return activity.statusMessage ?? toolActionLabel(activity.toolName, "running");
+  if (activity.status === "failed") return toolActionLabel(activity.toolName, "failed");
   const output = activity.output;
   const structuredOutput = objectOutput(output);
   if (activity.toolName === "current_time" && structuredOutput) {
