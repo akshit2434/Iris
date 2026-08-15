@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { IrisMark } from "@/components/iris-mark";
+import { MobileNav } from "@/components/mobile-nav";
 import { ProceduralBlur } from "@/components/procedural-blur";
 import { ProfileProvider, useProfile } from "@/components/profile-provider";
 
@@ -22,16 +23,21 @@ function ShellContents({ children }: Readonly<{ children: ReactNode }>) {
   const router = useRouter();
   const { profileId, profileLabels, isReady, clearProfile } = useProfile();
   const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const inChat = pathname.startsWith("/chat/");
 
   async function createNewChat() {
     if (!profileId) return router.push("/");
+    if (isCreating) return;
+    setCreateError(null);
     setIsCreating(true);
     try {
       const response = await fetch("/api/threads", { method: "POST" });
       const body = (await response.json()) as { thread?: { id: string }; error?: string };
       if (!response.ok || !body.thread) throw new Error(body.error ?? "Could not create a chat.");
       router.push(`/chat/${body.thread.id}`);
+    } catch (createChatError) {
+      setCreateError(createChatError instanceof Error ? createChatError.message : "Could not create a chat.");
     } finally {
       setIsCreating(false);
     }
@@ -76,17 +82,7 @@ function ShellContents({ children }: Readonly<{ children: ReactNode }>) {
 
         <main className={inChat ? "min-h-dvh" : profileId ? "min-h-dvh pb-28 pt-16 lg:pb-8 lg:pt-0" : "min-h-dvh pt-16"}>{children}</main>
 
-        {!inChat && profileId ? <div className="fixed inset-x-0 bottom-0 z-30 h-[112px] lg:hidden">
-          <ProceduralBlur edge="bottom" />
-          <nav className="glass-surface absolute bottom-[max(12px,env(safe-area-inset-bottom))] left-1/2 flex h-[62px] w-[min(calc(100%-28px),410px)] -translate-x-1/2 items-center rounded-[24px] p-1.5" aria-label="Mobile navigation">
-            {navItems.slice(0, 2).map((item) => {
-              const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-              return <Link key={item.href} href={item.href} className={`flex h-full flex-1 items-center justify-center rounded-[18px] text-[12px] transition ${active ? "bg-white/80 font-semibold text-slate-950 shadow-sm" : "font-medium text-slate-400"}`}>{item.label}</Link>;
-            })}
-            <button type="button" onClick={() => void createNewChat()} disabled={isCreating} className="soft-press mx-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#111827] text-white shadow-[0_10px_24px_rgba(17,24,39,.2)] disabled:opacity-55" aria-label="New chat"><PlusSymbol loading={isCreating} /></button>
-            <Link href="/files" className={`flex h-full flex-1 items-center justify-center rounded-[18px] text-[12px] transition ${pathname.startsWith("/files") ? "bg-white/80 font-semibold text-slate-950 shadow-sm" : "font-medium text-slate-400"}`}>Files</Link>
-          </nav>
-        </div> : null}
+        {!inChat && profileId ? <MobileNav pathname={pathname} profileId={profileId} isCreating={isCreating} error={createError} onCreateChat={() => void createNewChat()} /> : null}
       </div>
     </div>
   );
