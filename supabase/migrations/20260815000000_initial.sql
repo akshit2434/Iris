@@ -6,10 +6,6 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
-insert into public.profiles (id, display_name)
-values ('profile-a', 'Profile A'), ('profile-b', 'Profile B')
-on conflict (id) do update set display_name = excluded.display_name;
-
 create table if not exists public.threads (
   id uuid primary key default gen_random_uuid(),
   profile_id text not null references public.profiles(id) on delete cascade,
