@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
 import type { Message, PersistedToolEvent, Thread, ToolActivity } from "@/lib/types";
 import { IrisMark } from "@/components/iris-mark";
+import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
@@ -288,7 +289,7 @@ function MessageBubble({ message, active, toolActivities }: Readonly<{ message: 
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
         {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} /> : null}
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
-          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
+          {message.content ? <AssistantMarkdown content={message.content} flush={phase !== "streaming"} /> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
         </div>
         {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>

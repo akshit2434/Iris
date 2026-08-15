@@ -47,6 +47,10 @@ describe("agent context", () => {
     expect(prompt).toContain("User-local time: 17:30:00");
     expect(prompt).toContain("UTC offset: UTC+05:30");
     expect(prompt).toContain("User-local time is context, not a tool");
+    expect(prompt).toContain("Ask a clarifying question only when ambiguity genuinely blocks a useful answer");
+    expect(prompt).toContain("Do not end every answer with an offer or question");
+    expect(prompt).toContain("Do not produce a long response unless the user explicitly requests or confirms one");
+    expect(prompt).toContain("Be opinionated, candid, and direct");
   });
 
   it("formats local date/time across UTC boundaries and DST transitions", () => {
