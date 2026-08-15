@@ -2,11 +2,11 @@
 
 Iris is a conversation-first personal agent with isolated profiles, chats, and history as the base for future memory, tools, skills, reminders, artifacts, voice, and telemetry.
 
-This repository currently implements **Milestone 1: UI + Base**.
+This repository currently implements **Milestone 2: Agent Runtime** on top of the Milestone 1 UI + Base.
 
 ## Current progress
 
-**Stage:** Milestone 1 — UI + Base is complete and pushed to `main`.
+**Stage:** Milestone 2 — Agent Runtime is complete locally on this branch. A controlled live browser smoke verified live streaming, two-turn continuity, both internal tool calls and results, persistence after reload, and profile isolation. Milestone 3 remains deferred.
 
 The public build is a mobile-first, conversation-first base with isolated profiles, persistent raw chat history, local Supabase development, and the visual language documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
 
@@ -28,6 +28,7 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - Chat creation, history, titles, rename, timestamps, and stable UUIDs
 - Raw user and assistant message persistence owned by Iris
 - Streaming LangChain agent responses through OpenRouter
+- Versioned NDJSON run events with persisted, profile/thread-scoped tool activity
 - Simple responsive Home, Chat, History, and Files surfaces
 - Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur
 - Local Supabase CLI workflow with a safe public seed (`Profile A` / `Profile B`)
@@ -60,16 +61,23 @@ SUPABASE_URL=http://127.0.0.1:56321
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
 OPENROUTER_API_KEY=your-server-only-openrouter-key
 OPENROUTER_MODEL=openai/gpt-5.6-luna
+# Optional development tracing (keep disabled unless a private tracing project is configured).
+LANGCHAIN_TRACING_V2=false
+# LANGCHAIN_API_KEY=your-server-only-langsmith-key
+# LANGCHAIN_PROJECT=iris-development
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` and `OPENROUTER_API_KEY` are server-only. Do not rename them with `NEXT_PUBLIC_` or expose them to browser code.
 
 The model defaults to `openai/gpt-5.6-luna` when `OPENROUTER_MODEL` is omitted.
 
+Automated tests use deterministic LangChain fake models and never call OpenRouter or another live model. The controlled live browser smoke is a separate verification step; no live provider credentials are needed for the repository test suite.
+
 ## Development commands
 
 ```bash
 npm run dev       # local development
+npm test          # deterministic runtime and stream tests; no network/model calls
 npm run lint      # ESLint
 npm run typecheck # TypeScript
 npm run build     # production build
@@ -102,12 +110,7 @@ Private product context and visual references are intentionally local-only and e
 
 ## Next stage
 
-Milestone 2 — Agent Runtime is next:
-
-- expand the thin `createAgent` conversation layer behind the existing chat interface
-- add clean context assembly boundaries for recent raw history, thread continuity, pinned context, and future memory retrieval
-- keep raw messages immutable and canonical
-- add a real OpenRouter streaming smoke test using a private `OPENROUTER_API_KEY`
+Milestone 3 — Memory is next. The runtime keeps raw messages canonical and leaves memory consolidation, retrieval, and compaction for that milestone.
 
 Memory, tools, skills, reminders, artifacts, voice, telemetry, and full authentication remain deferred to their later milestones.
 

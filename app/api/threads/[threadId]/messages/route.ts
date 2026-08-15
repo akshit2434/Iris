@@ -1,21 +1,57 @@
 import { NextResponse } from "next/server";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
-import { streamAssistantReply } from "@/server/agent";
 import {
+  createAgentRun,
   createMessage,
   deriveThreadTitle,
+  findAgentRun,
+  getProfile,
   getThread,
+  getThreadContext,
   getThreadMessages,
+  linkAgentRunMessages,
+  appendAgentEvent,
   renameThread,
   touchThread,
+  updateAgentRunStatus,
 } from "@/server/db/queries";
+import {
+  createAgentContext,
+  resolveBrowserTimezone,
+} from "@/server/agent/context";
+import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
+import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
+import { planAssistantPersistence } from "@/server/agent/persistence";
+import {
+  AGENT_STREAM_PROTOCOL,
+  safeFailure,
+  type AgentStreamEvent,
+} from "@/server/agent/protocol";
 
 type MessagesRouteContext = { params: Promise<{ threadId: string }> };
-type MessageRequest = { content?: unknown };
+type MessageRequest = {
+  content?: unknown;
+  requestId?: unknown;
+  timezone?: unknown;
+};
 
-function ndjson(data: Record<string, unknown>) {
-  return `${JSON.stringify(data)}\n`;
+type OutgoingStreamEvent = {
+  type: AgentStreamEvent["type"];
+  runId: string;
+  [key: string]: unknown;
+};
+
+function ndjson(event: AgentStreamEvent) {
+  return `${JSON.stringify(event)}\n`;
+}
+
+function isRequestId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 200;
+}
+
+function isThreadId(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export async function POST(request: Request, { params }: MessagesRouteContext) {
@@ -31,6 +67,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     if (!profileId) {
       return NextResponse.json({ error: "Select a profile first." }, { status: 400 });
     }
+    if (!isThreadId(threadId)) {
+      return NextResponse.json({ error: "Chat not found." }, { status: 404 });
+    }
 
     const body = (await request.json()) as MessageRequest;
     if (typeof body.content !== "string" || body.content.trim().length === 0) {
@@ -38,53 +77,184 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     }
 
     const content = body.content.trim().slice(0, 12000);
+    const requestId = isRequestId(body.requestId) ? body.requestId.trim() : crypto.randomUUID();
     const thread = await getThread(profileId, threadId);
     if (!thread) {
       return NextResponse.json({ error: "Chat not found." }, { status: 404 });
     }
 
+    const existingRun = await findAgentRun(profileId, threadId, requestId);
+    if (existingRun) {
+      return NextResponse.json(
+        { run: existingRun, duplicate: true },
+        { status: 409, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
+    const profile = await getProfile(profileId);
+    if (!profile) {
+      return NextResponse.json({ error: "Profile not found." }, { status: 404 });
+    }
+
+    const runId = crypto.randomUUID();
     const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
+    const model = getConfiguredModelName();
+    let run;
+    try {
+      run = await createAgentRun({
+        id: runId,
+        profileId,
+        threadId,
+        requestId,
+        model,
+      });
+    } catch {
+      // A concurrent retry can win the unique request key between the lookup
+      // above and insert. Return the existing scoped run instead of duplicating.
+      const concurrentRun = await findAgentRun(profileId, threadId, requestId);
+      if (concurrentRun) {
+        return NextResponse.json(
+          { run: concurrentRun, duplicate: true },
+          { status: 409, headers: { "Cache-Control": "no-store" } },
+        );
+      }
+      throw new Error("Could not create agent run.");
+    }
+
     await createMessage({
       id: userMessageId,
       profileId,
       threadId,
       role: "user",
       content,
+      agentRunId: run.id,
     });
+    await linkAgentRunMessages(profileId, threadId, run.id, { userMessageId });
 
     if (thread.thread.title === "New chat") {
       await renameThread(profileId, threadId, deriveThreadTitle(content));
     }
 
-    const history = await getThreadMessages(profileId, threadId);
-    const assistantMessageId = crypto.randomUUID();
+    const [history, threadContextRow] = await Promise.all([
+      getThreadMessages(profileId, threadId),
+      getThreadContext(profileId, threadId),
+    ]);
+    const agentContext = createAgentContext({
+      profileId,
+      profileLabel: profile.displayName,
+      threadId,
+      threadTitle: thread.thread.title === "New chat"
+        ? deriveThreadTitle(content)
+        : thread.thread.title,
+      browserTimezone: resolveBrowserTimezone(body.timezone),
+      continuitySummary: threadContextRow.continuitySummary,
+      pinnedNotes: threadContextRow.pinnedNotes,
+    });
+    const threadContext = buildThreadAgentContext({
+      messages: history,
+      continuitySummary: threadContextRow.continuitySummary,
+      pinnedNotes: threadContextRow.pinnedNotes,
+    });
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const encoder = new TextEncoder();
+        // Stream sequence numbers cover every client-visible event. Database
+        // event sequences cover semantic persisted events only, so token
+        // deltas never create gaps in either contract.
+        let streamSequence = 0;
+        let persistedSequence = 0;
         let assistantContent = "";
-        controller.enqueue(
-          encoder.encode(
-            ndjson({ type: "start", userMessageId, assistantMessageId }),
-          ),
-        );
+        let assistantPersisted = false;
+        let closed = false;
+
+        const send = (event: OutgoingStreamEvent) => {
+          if (closed) return;
+          const next = {
+            ...event,
+            version: AGENT_STREAM_PROTOCOL,
+            sequence: ++streamSequence,
+          } as AgentStreamEvent;
+          controller.enqueue(encoder.encode(ndjson(next)));
+        };
 
         try {
-          for await (const delta of streamAssistantReply({
+          await appendAgentEvent({
             profileId,
-              messages: history
-                .filter((message) => message.role === "user" || message.role === "assistant")
-              .map((message) => ({
-                role: message.role === "user" ? ("user" as const) : ("assistant" as const),
-                content: message.content,
-              })),
+            threadId,
+            runId: run.id,
+            sequence: ++persistedSequence,
+            type: "run_started",
+            payload: {
+              requestId,
+              userMessageId,
+              assistantMessageId,
+              model,
+            },
+          });
+          send({
+            type: "run_started",
+            runId: run.id,
+            requestId,
+            userMessageId,
+            assistantMessageId,
+            at: new Date().toISOString(),
+          });
+
+          for await (const event of streamAgentEvents({
+            context: agentContext,
+            messages: getModelMessages(threadContext),
           })) {
-            assistantContent += delta;
-            controller.enqueue(encoder.encode(ndjson({ type: "delta", text: delta })));
+            if (event.type === "text_delta") {
+              assistantContent += event.text;
+              send({ type: "text_delta", runId: run.id, text: event.text });
+              continue;
+            }
+
+            if (event.type === "tool_started") {
+              await appendAgentEvent({
+                profileId,
+                threadId,
+                runId: run.id,
+                sequence: ++persistedSequence,
+                type: "tool_call",
+                payload: {
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                  input: event.input,
+                },
+              });
+              send({ ...event, runId: run.id });
+              continue;
+            }
+
+            await appendAgentEvent({
+              profileId,
+              threadId,
+              runId: run.id,
+              sequence: ++persistedSequence,
+              type: "tool_result",
+              payload: {
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                output: event.output,
+                ok: event.ok,
+              },
+            });
+            send({ ...event, runId: run.id });
           }
 
           if (assistantContent.trim().length === 0) {
-            throw new Error("The model returned an empty response.");
+            throw new Error("The assistant returned an empty response.");
+          }
+
+          const completedAssistant = planAssistantPersistence({
+            content: assistantContent,
+            failed: false,
+          });
+          if (!completedAssistant) {
+            throw new Error("The assistant returned an empty response.");
           }
 
           await createMessage({
@@ -92,25 +262,97 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             profileId,
             threadId,
             role: "assistant",
-            content: assistantContent,
+            content: completedAssistant.content,
+            agentRunId: run.id,
+            isComplete: completedAssistant.isComplete,
+          });
+          assistantPersisted = true;
+          await linkAgentRunMessages(profileId, threadId, run.id, { assistantMessageId });
+          const completedAt = new Date().toISOString();
+          await updateAgentRunStatus({
+            profileId,
+            threadId,
+            runId: run.id,
+            status: "completed",
+            completedAt,
+            failedAt: null,
+            errorCode: null,
+            errorMessage: null,
+            errorMetadata: {},
+          });
+          await appendAgentEvent({
+            profileId,
+            threadId,
+            runId: run.id,
+            sequence: ++persistedSequence,
+            type: "run_completed",
+            payload: { assistantMessageId },
           });
           await touchThread(profileId, threadId);
-          controller.enqueue(
-            encoder.encode(
-              ndjson({ type: "done", messageId: assistantMessageId }),
-            ),
-          );
+          send({
+            type: "completed",
+            runId: run.id,
+            assistantMessageId,
+            at: completedAt,
+          });
         } catch (error) {
-          console.error("Iris assistant stream failed", error);
-          controller.enqueue(
-            encoder.encode(
-              ndjson({
-                type: "error",
-                message: "I could not reach the assistant. Check the server configuration and try again.",
-              }),
-            ),
-          );
+          const failure = safeFailure(error);
+          const partialAssistant = planAssistantPersistence({
+            content: assistantContent,
+            failed: true,
+          });
+          if (!assistantPersisted && partialAssistant) {
+            try {
+              await createMessage({
+                id: assistantMessageId,
+                profileId,
+                threadId,
+                role: "assistant",
+                content: partialAssistant.content,
+                agentRunId: run.id,
+                isComplete: partialAssistant.isComplete,
+              });
+              assistantPersisted = true;
+              await linkAgentRunMessages(profileId, threadId, run.id, { assistantMessageId });
+            } catch {
+              // Keep the run failure response safe even if persistence itself fails.
+            }
+          }
+
+          const failedAt = new Date().toISOString();
+          try {
+            await updateAgentRunStatus({
+              profileId,
+              threadId,
+              runId: run.id,
+              status: "failed",
+              completedAt: null,
+              failedAt,
+              errorCode: failure.code,
+              errorMessage: failure.message,
+              errorMetadata: { partial: assistantContent.length > 0 },
+            });
+            await appendAgentEvent({
+              profileId,
+              threadId,
+              runId: run.id,
+              sequence: ++persistedSequence,
+              type: "run_failed",
+              payload: { code: failure.code, partial: assistantContent.length > 0 },
+            });
+          } catch {
+            // Do not expose database/provider details to the stream consumer.
+          }
+          send({
+            type: "failed",
+            runId: run.id,
+            code: failure.code,
+            message: failure.message,
+            partial: assistantContent.length > 0,
+            at: failedAt,
+          });
         } finally {
+          closed = true;
           controller.close();
         }
       },
@@ -124,8 +366,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         "X-Accel-Buffering": "no",
       },
     });
-  } catch (error) {
-    console.error("Could not start Iris assistant stream", error);
+  } catch {
     return NextResponse.json({ error: "Could not send that message." }, { status: 500 });
   }
 }

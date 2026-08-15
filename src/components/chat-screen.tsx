@@ -3,18 +3,26 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import type { Message, Thread } from "@/lib/types";
+import type { Message, PersistedToolEvent, Thread, ToolActivity } from "@/lib/types";
 import { IrisMark } from "@/components/iris-mark";
 import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
+import {
+  AgentStreamParser,
+  createStreamState,
+  failStreamState,
+  groupToolEvents,
+  reduceAgentStream,
+  startOptimisticRun,
+  summarizeToolResult,
+  toolActivitiesForRun,
+  toolDetail,
+  toolLabel,
+  type StreamState,
+} from "@/lib/agent-stream";
 
-type ThreadResponse = { thread: Thread; messages: Message[] };
-type StreamEvent =
-  | { type: "start"; userMessageId: string; assistantMessageId: string }
-  | { type: "delta"; text: string }
-  | { type: "done"; messageId: string }
-  | { type: "error"; message: string };
+type ThreadResponse = { thread: Thread; messages: Message[]; toolActivities?: PersistedToolEvent[] };
 
 function formatMessageTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
@@ -25,7 +33,7 @@ export function ChatScreen() {
   const threadId = params.threadId;
   const { profileId, isReady } = useProfile();
   const [thread, setThread] = useState<Thread | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [streamState, setStreamState] = useState<StreamState>(() => createStreamState());
   const [composer, setComposer] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -34,7 +42,17 @@ export function ChatScreen() {
   const [draftTitle, setDraftTitle] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const activeAssistantIdRef = useRef<string | null>(null);
+
+  function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
+    setStreamState((current) => {
+      const resolved = typeof next === "function" ? next(current) : next;
+      return resolved;
+    });
+  }
+
+  const messages = streamState.messages;
+  const toolActivities = streamState.toolActivities;
+  const hasMessages = messages.length > 0;
 
   useEffect(() => {
     if (!profileId || !threadId) return;
@@ -48,7 +66,10 @@ export function ChatScreen() {
         if (!cancelled) {
           setThread(body.thread);
           setDraftTitle(body.thread.title);
-          setMessages(body.messages);
+          updateStreamState(createStreamState({
+            messages: body.messages,
+            toolActivities: groupToolEvents(body.toolActivities ?? []),
+          }));
         }
       })
       .catch((loadError: unknown) => {
@@ -64,7 +85,9 @@ export function ChatScreen() {
     messagesEndRef.current?.scrollIntoView({ behavior: sending ? "smooth" : "auto" });
   }, [messages, sending]);
 
-  const hasMessages = messages.length > 0;
+  useEffect(() => {
+    if (streamState.status === "failed" && streamState.errorMessage) setError(streamState.errorMessage);
+  }, [streamState.status, streamState.errorMessage]);
 
   async function saveTitle() {
     if (!thread || !draftTitle.trim()) return;
@@ -92,58 +115,76 @@ export function ChatScreen() {
     setSending(true);
     const optimisticUserId = `pending-user-${crypto.randomUUID()}`;
     const optimisticAssistantId = `pending-assistant-${crypto.randomUUID()}`;
-    activeAssistantIdRef.current = optimisticAssistantId;
+    const requestId = crypto.randomUUID();
     const now = new Date().toISOString();
-    setMessages((current) => [
-      ...current,
-      { id: optimisticUserId, threadId: thread.id, profileId: thread.profileId, role: "user", content, createdAt: now },
-      { id: optimisticAssistantId, threadId: thread.id, profileId: thread.profileId, role: "assistant", content: "", createdAt: now },
-    ]);
+    const userMessage: Message = { id: optimisticUserId, threadId: thread.id, profileId: thread.profileId, role: "user", content, createdAt: now };
+    const assistantMessage: Message = { id: optimisticAssistantId, threadId: thread.id, profileId: thread.profileId, role: "assistant", content: "", createdAt: now, isComplete: false };
+    updateStreamState((current) => startOptimisticRun(current, { userMessage, assistantMessage }));
 
     try {
-      const response = await fetch(`/api/threads/${thread.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) });
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      const response = await fetch(`/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, requestId, timezone }),
+      });
+      if (response.status === 409) {
+        await reloadThreadState();
+        setError("That message was already submitted. Showing its saved run.");
+        return;
+      }
       if (!response.ok || !response.body) {
         const body = (await response.json().catch(() => null)) as { error?: string } | null;
         throw new Error(body?.error ?? "Could not send that message.");
       }
 
       const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const parser = new AgentStreamParser();
+      let terminalEventReceived = false;
+      const consumeEvents = (events: Parameters<typeof reduceAgentStream>[1][]) => {
+        for (const streamEvent of events) {
+          if (streamEvent.type === "completed" || streamEvent.type === "failed") {
+            terminalEventReceived = true;
+          }
+          handleStreamEvent(streamEvent);
+        }
+      };
       let done = false;
       while (!done) {
         const result = await reader.read();
         done = result.done;
-        buffer += decoder.decode(result.value ?? new Uint8Array(), { stream: !done });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          handleStreamEvent(JSON.parse(line) as StreamEvent, optimisticUserId, optimisticAssistantId);
-        }
+        consumeEvents(parser.push(result.value ?? new Uint8Array()));
       }
-      if (buffer.trim()) handleStreamEvent(JSON.parse(buffer) as StreamEvent, optimisticUserId, optimisticAssistantId);
+      consumeEvents(parser.finish());
+      if (!terminalEventReceived) {
+        const streamError = "The assistant stream ended before completion.";
+        setError(streamError);
+        updateStreamState((current) => failStreamState(current, streamError));
+      }
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Could not send that message.");
-      setMessages((current) => current.filter((message) => message.id !== optimisticAssistantId));
+      const message = sendError instanceof Error ? sendError.message : "Could not send that message.";
+      setError(message);
+      updateStreamState((current) => failStreamState(current, message));
     } finally {
-      activeAssistantIdRef.current = null;
       setSending(false);
     }
   }
 
-  function handleStreamEvent(event: StreamEvent, optimisticUserId: string, optimisticAssistantId: string) {
-    if (event.type === "start") {
-      activeAssistantIdRef.current = event.assistantMessageId;
-      setMessages((current) => current.map((message) => message.id === optimisticUserId ? { ...message, id: event.userMessageId } : message.id === optimisticAssistantId ? { ...message, id: event.assistantMessageId } : message));
-    } else if (event.type === "delta") {
-      setMessages((current) => current.map((message) => message.id === activeAssistantIdRef.current || message.id === optimisticAssistantId ? { ...message, content: message.content + event.text } : message));
-    } else if (event.type === "done") {
-      setMessages((current) => current.map((message) => message.id === optimisticAssistantId ? { ...message, id: event.messageId } : message));
-    } else if (event.type === "error") {
-      setError(event.message);
-      setMessages((current) => current.filter((message) => message.id !== optimisticAssistantId && message.id !== activeAssistantIdRef.current && !message.id.startsWith("pending-assistant-")));
-    }
+  async function reloadThreadState() {
+    if (!threadId) return;
+    const response = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
+    const body = (await response.json()) as Partial<ThreadResponse> & { error?: string };
+    if (!response.ok || !body.thread || !body.messages) throw new Error(body.error ?? "Could not reload this chat.");
+    setThread(body.thread);
+    setDraftTitle(body.thread.title);
+    updateStreamState(createStreamState({
+      messages: body.messages,
+      toolActivities: groupToolEvents(body.toolActivities ?? []),
+    }));
+  }
+
+  function handleStreamEvent(event: Parameters<typeof reduceAgentStream>[1]) {
+    updateStreamState((current) => reduceAgentStream(current, event));
   }
 
   if (!isReady) return <ChatSkeleton />;
@@ -167,7 +208,8 @@ export function ChatScreen() {
       <div className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
-          {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+          {messages.map((message) => <MessageBubble key={message.id} message={message} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} />)}
+          <UnattachedToolActivities messages={messages} toolActivities={toolActivities} />
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -186,7 +228,7 @@ export function ChatScreen() {
   );
 }
 
-function MessageBubble({ message }: Readonly<{ message: Message }>) {
+function MessageBubble({ message, toolActivities }: Readonly<{ message: Message; toolActivities: ToolActivity[] }>) {
   const isUser = message.role === "user";
   return (
     <div className={`message-arrive flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
@@ -194,8 +236,39 @@ function MessageBubble({ message }: Readonly<{ message: Message }>) {
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
           {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : <span className="inline-flex items-center gap-1.5 py-2 text-slate-400"><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#6f8ee6]" /><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#8da2e4]" /><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#a0a9d9]" /></span>}
         </div>
+        {!isUser && toolActivities.length > 0 ? <ToolActivityList activities={toolActivities} /> : null}
+        {!isUser && message.isComplete === false && message.content ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
       </div>
+    </div>
+  );
+}
+
+function UnattachedToolActivities({ messages, toolActivities }: Readonly<{ messages: Message[]; toolActivities: ToolActivity[] }>) {
+  const attachedRuns = new Set(messages.filter((message) => message.role === "assistant" && message.agentRunId).map((message) => message.agentRunId));
+  const unattached = toolActivities.filter((activity) => !attachedRuns.has(activity.runId));
+  if (unattached.length === 0) return null;
+  const runs = [...new Set(unattached.map((activity) => activity.runId))];
+  return <div className="message-arrive space-y-2 pl-1"><p className="text-[11px] font-medium text-slate-400">Saved run activity</p>{runs.map((runId) => <ToolActivityList key={runId} activities={unattached.filter((activity) => activity.runId === runId)} />)}</div>;
+}
+
+function ToolActivityList({ activities }: Readonly<{ activities: ToolActivity[] }>) {
+  return <div className="mt-2 space-y-1.5" aria-label="Tool activity">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} />)}</div>;
+}
+
+function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
+  const detail = toolDetail(activity);
+  const stateLabel = activity.status === "running" ? "Running" : activity.status === "succeeded" ? "Succeeded" : "Failed";
+  const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "succeeded" ? "text-emerald-600" : "text-red-500";
+  return (
+    <div className="rounded-[16px] border border-white/70 bg-white/42 px-3 py-2 text-xs text-slate-600 shadow-[0_8px_24px_rgba(81,104,151,.06)] backdrop-blur-xl">
+      <div className="flex items-center gap-2">
+        <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[10px] ${stateClass}`} aria-hidden="true">{activity.status === "running" ? "…" : activity.status === "succeeded" ? "✓" : "!"}</span>
+        <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{toolLabel(activity.toolName)}</span>
+        <span className={`shrink-0 text-[10px] font-medium ${stateClass}`}>{stateLabel}</span>
+      </div>
+      <p className="mt-1 pl-7 text-[11px] leading-4 text-slate-500">{summarizeToolResult(activity)}</p>
+      {detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
     </div>
   );
 }
