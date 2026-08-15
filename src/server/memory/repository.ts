@@ -14,6 +14,8 @@ import {
   type MessageSearchResult,
   type MemoryStore,
   type MessageSemanticIndexStore,
+  type MemoryDocumentAudit,
+  type MemoryProvenanceRecord,
 } from "@/server/memory/types";
 import { assertMemoryProfileId, normalizeMemoryLimit, normalizeMemoryQuery, validateApplyMemoryDocumentRevision, validateEmbedding, validateEmbeddingModel, validateLogicalKey, validateMemoryUuid } from "@/server/memory/validation";
 
@@ -65,30 +67,37 @@ function toMessageContextItem(row: {
   };
 }
 
+function compactExcerpt(value: string, max = 280) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > max ? `${compact.slice(0, max - 1).trimEnd()}…` : compact;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase()): MemoryStore & MessageSemanticIndexStore {
   return {
-    async listDocuments(profileId) {
+    async listDocuments(profileId, options = {}) {
       assertMemoryProfileId(profileId);
-      const { data, error } = await database
+      const query = database
         .from("memory_documents")
         .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
-        .eq("profile_id", profileId)
-        .is("archived_at", null)
-        .order("logical_key", { ascending: true });
-      if (error) throw error;
-      return (data ?? []).map((row) => toDocument(row));
+        .eq("profile_id", profileId);
+      const filtered = options.includeArchived ? query : query.is("archived_at", null);
+      const result = await filtered.order("logical_key", { ascending: true });
+      if (result.error) throw result.error;
+      return (result.data ?? []).map((row) => toDocument(row));
     },
 
-    async getDocument(profileId, logicalKey) {
+    async getDocument(profileId, logicalKey, options = {}) {
       assertMemoryProfileId(profileId);
       const validatedLogicalKey = validateLogicalKey(logicalKey);
-      const { data, error } = await database
+      let query = database
         .from("memory_documents")
         .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
         .eq("profile_id", profileId)
-        .eq("logical_key", validatedLogicalKey)
-        .is("archived_at", null)
-        .maybeSingle();
+        .eq("logical_key", validatedLogicalKey);
+      if (!options.includeArchived) query = query.is("archived_at", null);
+      const { data, error } = await query.maybeSingle();
       if (error) throw error;
       return data ? toDocument(data) : null;
     },
@@ -209,16 +218,16 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
       } satisfies MessageContextWindow;
     },
 
-    async searchDocuments(profileId, rawQuery, rawLimit = 5) {
+    async searchDocuments(profileId, rawQuery, rawLimit = 5, options = {}) {
       assertMemoryProfileId(profileId);
       const query = normalizeMemoryQuery(rawQuery);
       const limit = normalizeMemoryLimit(rawLimit);
-      const { data, error } = await database
+      let queryBuilder = database
         .from("memory_documents")
         .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
-        .eq("profile_id", profileId)
-        .is("archived_at", null)
-        .order("logical_key", { ascending: true });
+        .eq("profile_id", profileId);
+      if (!options.includeArchived) queryBuilder = queryBuilder.is("archived_at", null);
+      const { data, error } = await queryBuilder.order("logical_key", { ascending: true });
       if (error) throw error;
       const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
       return (data ?? [])
@@ -242,6 +251,127 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
           documentRevision: document.document_revision,
           updatedAt: document.updated_at,
         } satisfies CanonicalDocumentSearchResult));
+    },
+
+    async listMemoryChanges(profileId, afterRevision, throughRevision, rawLimit = 20) {
+      assertMemoryProfileId(profileId);
+      if (!Number.isSafeInteger(afterRevision) || afterRevision < 0 || !Number.isSafeInteger(throughRevision) || throughRevision < afterRevision) return [];
+      const limit = normalizeMemoryLimit(rawLimit, 20);
+      const { data: revisions, error: revisionError } = await database
+        .from("memory_document_revisions")
+        .select("id, document_id, profile_id, document_revision, profile_global_revision, content_markdown, mutation_kind, created_at")
+        .eq("profile_id", profileId)
+        .gt("profile_global_revision", afterRevision)
+        .lte("profile_global_revision", throughRevision)
+        .order("profile_global_revision", { ascending: true })
+        .limit(Math.min(limit * 8, 100));
+      if (revisionError) throw revisionError;
+      const rows = revisions ?? [];
+      const documentIds = [...new Set(rows.map((row) => row.document_id))];
+      if (documentIds.length === 0) return [];
+      const { data: documents, error: documentError } = await database
+        .from("memory_documents")
+        .select("id, logical_key, archived_at")
+        .eq("profile_id", profileId)
+        .in("id", documentIds);
+      if (documentError) throw documentError;
+      const byDocument = new Map((documents ?? []).map((document) => [document.id, document]));
+      const latest = new Map<string, (typeof rows)[number]>();
+      for (const row of rows) {
+        const document = byDocument.get(row.document_id);
+        if (!document) continue;
+        latest.set(document.logical_key, row);
+      }
+      return [...latest.entries()]
+        .sort((left, right) => left[1].profile_global_revision - right[1].profile_global_revision || left[0].localeCompare(right[0]))
+        .slice(0, limit)
+        .map(([logicalKey, row]) => ({
+          logicalKey,
+          mutationKind: row.mutation_kind,
+          documentRevision: row.document_revision,
+          profileGlobalRevision: row.profile_global_revision,
+          createdAt: row.created_at,
+          archivedAt: row.mutation_kind === "archive" ? row.created_at : null,
+          contentMarkdown: row.content_markdown,
+          excerpt: compactExcerpt(row.content_markdown),
+        }));
+    },
+
+    async getDocumentAudit(profileId, logicalKey) {
+      assertMemoryProfileId(profileId);
+      const validatedLogicalKey = validateLogicalKey(logicalKey);
+      const { data: document, error: documentError } = await database
+        .from("memory_documents")
+        .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
+        .eq("profile_id", profileId)
+        .eq("logical_key", validatedLogicalKey)
+        .maybeSingle();
+      if (documentError) throw documentError;
+      if (!document) return null;
+      const { data: revisions, error: revisionError } = await database
+        .from("memory_document_revisions")
+        .select("id, profile_id, document_id, document_revision, profile_global_revision, content_markdown, content_hash, mutation_kind, idempotency_key, created_at")
+        .eq("profile_id", profileId)
+        .eq("document_id", document.id)
+        .order("document_revision", { ascending: false });
+      if (revisionError) throw revisionError;
+      const revisionIds = (revisions ?? []).map((revision) => revision.id);
+      const { data: provenanceRows, error: provenanceError } = revisionIds.length === 0
+        ? { data: [], error: null }
+        : await database
+          .from("memory_provenance")
+          .select("id, profile_id, document_id, document_revision_id, source_kind, source_thread_id, source_message_id, source_excerpt, created_at")
+          .eq("profile_id", profileId)
+          .in("document_revision_id", revisionIds)
+          .order("created_at", { ascending: true });
+      if (provenanceError) throw provenanceError;
+      const provenanceByRevision = new Map<string, MemoryProvenanceRecord[]>();
+      for (const row of provenanceRows ?? []) {
+        const sourceAction = row.source_thread_id && row.source_message_id && UUID_PATTERN.test(row.source_thread_id) && UUID_PATTERN.test(row.source_message_id)
+          ? { type: "open_message" as const, threadId: row.source_thread_id, messageId: row.source_message_id, label: "Open source" }
+          : undefined;
+        const record: MemoryProvenanceRecord = {
+          id: row.id,
+          sourceKind: row.source_kind,
+          sourceThreadId: row.source_thread_id,
+          sourceMessageId: row.source_message_id,
+          sourceExcerpt: row.source_excerpt,
+          createdAt: row.created_at,
+          ...(sourceAction ? { action: sourceAction } : {}),
+        };
+        const existing = provenanceByRevision.get(row.document_revision_id) ?? [];
+        existing.push(record);
+        provenanceByRevision.set(row.document_revision_id, existing);
+      }
+      return {
+        document: toDocument(document),
+        revisions: (revisions ?? []).map((revision) => ({
+          id: revision.id,
+          profileId: revision.profile_id,
+          documentId: revision.document_id,
+          documentRevision: revision.document_revision,
+          profileGlobalRevision: revision.profile_global_revision,
+          contentMarkdown: revision.content_markdown,
+          contentHash: revision.content_hash,
+          mutationKind: revision.mutation_kind,
+          idempotencyKey: revision.idempotency_key,
+          createdAt: revision.created_at,
+          provenance: provenanceByRevision.get(revision.id) ?? [],
+        })),
+      } satisfies MemoryDocumentAudit;
+    },
+
+    async advanceThreadMemoryRevisionSeen(profileId, threadId, snapshotRevision) {
+      assertMemoryProfileId(profileId);
+      validateMemoryUuid(threadId, "Thread ID");
+      if (!Number.isSafeInteger(snapshotRevision) || snapshotRevision < 0) throw new Error("Invalid memory revision snapshot.");
+      const { data, error } = await database.rpc("advance_thread_memory_revision_seen", {
+        p_profile_id: profileId,
+        p_thread_id: threadId,
+        p_snapshot_revision: snapshotRevision,
+      });
+      if (error) throw error;
+      return typeof data === "number" ? data : Number(data ?? 0);
     },
 
     async getMessageEmbeddingMetadata(profileId, messageId) {

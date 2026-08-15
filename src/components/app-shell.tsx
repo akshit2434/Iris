@@ -14,6 +14,7 @@ const navItems = [
   { href: "/", label: "Home" },
   { href: "/history", label: "History" },
   { href: "/files", label: "Files" },
+  { href: "/memory", label: "Memory" },
 ];
 
 export function AppShell({ children }: Readonly<{ children: ReactNode }>) {

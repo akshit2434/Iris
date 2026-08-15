@@ -3,6 +3,7 @@
 import { FluidReveal } from "@/components/fluid-reveal";
 import { ProfilePicker } from "@/components/profile-picker";
 import { useProfile } from "@/components/profile-provider";
+import Link from "next/link";
 
 export function ProfileScreen() {
   const { profileId, profileLabels, isReady } = useProfile();
@@ -20,6 +21,9 @@ export function ProfileScreen() {
           <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#e7edff] text-base font-bold text-[#4978ed]">{profileLabels[profileId].slice(0, 1)}</span>
           <div><p className="font-semibold tracking-tight text-slate-900">{profileLabels[profileId]}</p><p className="mt-0.5 text-sm text-slate-500">Chats and files stay isolated to this space.</p></div>
         </div>
+      </section>
+      <section data-reveal className="mt-5 rounded-[26px] border border-white/70 bg-white/38 p-5 sm:p-6" aria-labelledby="memory-heading">
+        <div className="flex items-center justify-between gap-4"><div><h2 id="memory-heading" className="font-semibold tracking-tight text-slate-900">Memory</h2><p className="mt-1 text-sm text-slate-500">Inspect the durable notes kept for this space.</p></div><Link href="/memory" className="soft-press rounded-xl bg-[#111827] px-3 py-2 text-xs font-semibold text-white">Open</Link></div>
       </section>
       <section data-reveal className="mt-12" aria-labelledby="switch-profile-heading">
         <h2 id="switch-profile-heading" className="text-lg font-semibold tracking-tight text-slate-900">Switch space</h2>

@@ -17,6 +17,41 @@ export type CanonicalMemoryDocument = {
   archivedAt: string | null;
 };
 
+export type MemoryDocumentListOptions = {
+  includeArchived?: boolean;
+};
+
+export type MemoryRevisionDelta = {
+  logicalKey: string;
+  mutationKind: CanonicalMutationKind;
+  documentRevision: number;
+  profileGlobalRevision: number;
+  createdAt: string;
+  archivedAt: string | null;
+  contentMarkdown: string;
+  excerpt: string;
+};
+
+export type MemoryProvenanceRecord = {
+  id: string;
+  sourceKind: MemorySourceKind;
+  sourceThreadId: string | null;
+  sourceMessageId: string | null;
+  sourceExcerpt: string | null;
+  createdAt: string;
+  action?: {
+    type: "open_message";
+    threadId: string;
+    messageId: string;
+    label: string;
+  };
+};
+
+export type MemoryDocumentAudit = {
+  document: CanonicalMemoryDocument;
+  revisions: Array<MemoryDocumentRevision & { provenance: MemoryProvenanceRecord[] }>;
+};
+
 export type MemoryDocumentRevision = {
   id: string;
   profileId: ProfileId;
@@ -133,13 +168,16 @@ export type MemoryMessageForIndex = {
 };
 
 export type MemoryStore = {
-  listDocuments: (profileId: ProfileId) => Promise<CanonicalMemoryDocument[]>;
-  getDocument: (profileId: ProfileId, logicalKey: string) => Promise<CanonicalMemoryDocument | null>;
+  listDocuments: (profileId: ProfileId, options?: MemoryDocumentListOptions) => Promise<CanonicalMemoryDocument[]>;
+  getDocument: (profileId: ProfileId, logicalKey: string, options?: MemoryDocumentListOptions) => Promise<CanonicalMemoryDocument | null>;
   getCurrentRevision: (profileId: ProfileId) => Promise<number>;
   applyDocumentRevision: (input: ApplyMemoryDocumentRevisionInput) => Promise<AppliedMemoryDocumentRevision>;
   searchMessages: (input: MessageSearchInput) => Promise<MessageSearchResult[]>;
   readMessageContext: (profileId: ProfileId, messageId: string, windowSize?: number) => Promise<MessageContextWindow | null>;
-  searchDocuments: (profileId: ProfileId, query: string, limit?: number) => Promise<CanonicalDocumentSearchResult[]>;
+  searchDocuments: (profileId: ProfileId, query: string, limit?: number, options?: MemoryDocumentListOptions) => Promise<CanonicalDocumentSearchResult[]>;
+  listMemoryChanges?: (profileId: ProfileId, afterRevision: number, throughRevision: number, limit?: number) => Promise<MemoryRevisionDelta[]>;
+  getDocumentAudit?: (profileId: ProfileId, logicalKey: string) => Promise<MemoryDocumentAudit | null>;
+  advanceThreadMemoryRevisionSeen?: (profileId: ProfileId, threadId: string, snapshotRevision: number) => Promise<number>;
 };
 
 export type MemoryConsolidationJobStatus = "pending" | "running" | "completed" | "failed" | "skipped";
@@ -217,4 +255,48 @@ export type MemoryGovernanceStore = {
 export type MessageSemanticIndexStore = {
   getMessageEmbeddingMetadata: (profileId: ProfileId, messageId: string) => Promise<MessageEmbeddingMetadata | null>;
   upsertMessageEmbedding: (input: DerivedMessageEmbedding) => Promise<void>;
+};
+
+export type ThreadCompactionJobStatus = "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+
+export type ThreadCompactionJob = {
+  id: string;
+  profileId: ProfileId;
+  threadId: string;
+  sourceRunId: string;
+  status: ThreadCompactionJobStatus;
+  attempts: number;
+  idempotencyKey: string;
+  expectedCompactedThroughMessageId: string | null;
+  expectedContinuityRevision: number;
+  checkpointMessageId: string;
+  checkpointCreatedAt: string;
+  recentTailMessages: number;
+  availableAt: string;
+  leaseExpiresAt: string | null;
+  lockedAt: string | null;
+  lockedBy: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type ThreadCompactionStore = {
+  enqueueCompactionJob: (profileId: ProfileId, threadId: string, sourceRunId: string, minMessages?: number, recentTailMessages?: number) => Promise<ThreadCompactionJob | null>;
+  claimCompactionJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<ThreadCompactionJob[]>;
+  listCompactionMessages: (profileId: ProfileId, threadId: string, checkpointMessageId: string, limit?: number) => Promise<ThreadCompactionMessage[]>;
+  readCompactionContext?: (profileId: ProfileId, threadId: string) => Promise<{ continuitySummary: string | null; pinnedNotes: string[] }>;
+  applyCompactionCheckpoint: (input: { profileId: ProfileId; jobId: string; workerId: string; summary: string; pinnedNotes: string[]; checkpointMessageId: string; checkpointCreatedAt: string }) => Promise<"applied" | "conflict">;
+  finishCompactionJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Exclude<ThreadCompactionJobStatus, "pending" | "running">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<ThreadCompactionJob>;
+};
+
+export type ThreadCompactionMessage = {
+  messageId: string;
+  profileId: ProfileId;
+  threadId: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  createdAt: string;
 };

@@ -113,6 +113,9 @@ describe("context builder", () => {
     expect(built.continuity).toEqual({
       summary: "Derived continuity",
       pinnedNotes: ["A small pinned constraint"],
+      compactedThroughMessageId: null,
+      compactedThroughCreatedAt: null,
+      continuityRevision: 0,
     });
   });
 
@@ -127,7 +130,21 @@ describe("context builder", () => {
     const prompt = buildDynamicSystemPrompt(withMemory);
     expect(prompt).toContain('<canonical-memory global-revision="4">');
     expect(prompt).toContain("Concise answers.");
-    expect(prompt).toContain("Do not claim a durable write unless memory_patch returned an applied result.");
+    expect(prompt).toContain("Do not claim a durable write unless memory_patch or memory_archive returned an applied result.");
+  });
+
+  it("sends only messages after a durable compaction checkpoint while keeping raw history", () => {
+    const built = buildThreadAgentContext({
+      messages: [
+        { id: "old", role: "user", content: "old" },
+        { id: "checkpoint", role: "assistant", content: "checkpoint" },
+        { id: "new", role: "user", content: "new" },
+      ],
+      continuitySummary: "The old continuity",
+      compactedThroughMessageId: "checkpoint",
+    });
+    expect(built.rawHistory.messages).toHaveLength(3);
+    expect(getModelMessages(built)).toEqual([{ role: "user", content: "new" }]);
   });
 });
 
@@ -149,6 +166,7 @@ describe("internal tools", () => {
       "memory_read",
       "memory_search",
       "memory_patch",
+      "memory_archive",
     ]);
   });
 
@@ -256,7 +274,8 @@ describe("runtime seams", () => {
     const turnContext = createAgentContext({ ...context, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012" });
     await expect(patchMemory(turnContext, { logicalKey: "PROFILE.md", contentMarkdown: "# Profile", expectedDocumentRevision: null, mutationKind: "create" }, mutation, "call-patch")).resolves.toMatchObject({ kind: "memory_patch", status: "applied" });
     expect(mutation.apply).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", threadId: context.threadId, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012", toolCallId: "call-patch" }));
-    expect(createInternalTools().map((internalTool) => internalTool.name)).not.toEqual(expect.arrayContaining(["memory_archive", "memory_delete", "memory_file_write"]));
+    expect(createInternalTools().map((internalTool) => internalTool.name)).toEqual(expect.arrayContaining(["memory_archive"]));
+    expect(createInternalTools().map((internalTool) => internalTool.name)).not.toEqual(expect.arrayContaining(["memory_delete", "memory_file_write"]));
   });
 
   it("constructs the agent with an injected deterministic model", () => {

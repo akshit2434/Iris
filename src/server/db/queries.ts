@@ -299,7 +299,7 @@ export async function getThreadToolEvents(profileId: ProfileId, threadId: string
 export async function getThreadContext(profileId: ProfileId, threadId: string) {
   const { data, error } = await getDatabase()
     .from("thread_context")
-    .select("continuity_summary, pinned_notes")
+    .select("continuity_summary, pinned_notes, memory_revision_seen, compacted_through_message_id, compacted_through_created_at, continuity_revision")
     .eq("profile_id", profileId)
     .eq("thread_id", threadId)
     .maybeSingle();
@@ -310,12 +310,20 @@ export async function getThreadContext(profileId: ProfileId, threadId: string) {
 
   return data
     ? {
-        continuitySummary: data.continuity_summary,
-        pinnedNotes: data.pinned_notes,
+      continuitySummary: data.continuity_summary,
+      pinnedNotes: data.pinned_notes,
+      memoryRevisionSeen: data.memory_revision_seen,
+      compactedThroughMessageId: data.compacted_through_message_id,
+      compactedThroughCreatedAt: data.compacted_through_created_at,
+      continuityRevision: data.continuity_revision,
       }
     : {
         continuitySummary: null,
         pinnedNotes: [],
+        memoryRevisionSeen: 0,
+        compactedThroughMessageId: null,
+        compactedThroughCreatedAt: null,
+        continuityRevision: 0,
       };
 }
 

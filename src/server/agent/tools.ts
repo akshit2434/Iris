@@ -6,6 +6,7 @@ import type { AgentContext } from "@/server/agent/context";
 import { createProductionMemoryRetrievalService, type MemoryRetrieval } from "@/server/memory/retrieval";
 import { normalizeMemoryLimit, normalizeMemoryQuery } from "@/server/memory/validation";
 import { createMemoryMutationService, type MemoryMutationService } from "@/server/memory/mutation";
+import { createMemoryArchiveService, type MemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 
 export type ThreadOverview = {
@@ -40,6 +41,11 @@ const memoryPatchInput = z.object({
   contentMarkdown: z.string().min(1).max(20_000),
   expectedDocumentRevision: z.number().int().nonnegative().nullable(),
   mutationKind: z.enum(["create", "update", "merge"]),
+}).extend(optionalToolProgressSchema.shape);
+const memoryArchiveInput = z.object({
+  logicalKey: z.string().trim().min(1).max(200),
+  expectedDocumentRevision: z.number().int().min(1),
+  reason: z.string().trim().max(240).optional(),
 }).extend(optionalToolProgressSchema.shape);
 
 export async function readCurrentTime(context: AgentContext) {
@@ -185,10 +191,36 @@ export async function patchMemory(context: AgentContext, input: z.infer<typeof m
   };
 }
 
+export async function archiveMemory(context: AgentContext, input: z.infer<typeof memoryArchiveInput>, archive: MemoryArchiveService, toolCallId: string) {
+  if (!context.currentUserMessageId || !context.agentRunId) {
+    return { kind: "memory_archive" as const, status: "conflict" as const, logicalKey: input.logicalKey.trim(), reason: "Memory archives are available only during a persisted user turn." };
+  }
+  const result = await archive.archive({
+    profileId: context.profileId,
+    threadId: context.threadId,
+    currentUserMessageId: context.currentUserMessageId,
+    agentRunId: context.agentRunId,
+    toolCallId,
+    logicalKey: input.logicalKey,
+    expectedDocumentRevision: input.expectedDocumentRevision,
+    reason: input.reason,
+  });
+  if (result.status !== "applied") return { kind: "memory_archive" as const, ...result };
+  return {
+    kind: "memory_archive" as const,
+    status: "applied" as const,
+    logicalKey: result.logicalKey,
+    documentRevision: result.revision.documentRevision,
+    profileGlobalRevision: result.revision.profileGlobalRevision,
+    revisionId: result.revision.revisionId,
+  };
+}
+
 export function createInternalTools(
   reader: ThreadOverviewReader = getThreadOverview,
   memoryRetrieval?: MemoryRetrieval,
   memoryMutation?: MemoryMutationService,
+  memoryArchive?: MemoryArchiveService,
 ) {
   let resolvedMemoryRetrieval = memoryRetrieval;
   const getMemoryRetrieval = () => {
@@ -199,6 +231,11 @@ export function createInternalTools(
   const getMemoryMutation = () => {
     resolvedMemoryMutation ??= createMemoryMutationService(createSupabaseMemoryStore());
     return resolvedMemoryMutation;
+  };
+  let resolvedMemoryArchive = memoryArchive;
+  const getMemoryArchive = () => {
+    resolvedMemoryArchive ??= createMemoryArchiveService(createSupabaseMemoryStore());
+    return resolvedMemoryArchive;
   };
   const threadOverview = tool(
     async (_input, runtime: ToolRuntime<unknown, AgentContext>) =>
@@ -254,10 +291,18 @@ export function createInternalTools(
     async (input: z.infer<typeof memoryPatchInput>, runtime: ToolRuntime<unknown, AgentContext>) => patchMemory(runtime.context, input, getMemoryMutation(), runtime.toolCallId),
     {
       name: "memory_patch",
-      description: "Use only when the user explicitly asks to remember, correct, or preserve a durable fact, or a stable fact clearly has future value. Search/read related memory first when uncertain. Submit a full replacement Markdown document with the current expected revision; do not store transient chatter, secrets, or speculative psychology. This is profile/thread scoped and read-only tools cannot be bypassed. Archive/delete is not supported here.",
+      description: "Use only when the user explicitly asks to remember, correct, or preserve a durable fact, or a stable fact clearly has future value. Search/read related memory first when uncertain. Submit a full replacement Markdown document with the current expected revision; do not store transient chatter, secrets, or speculative psychology. This is profile/thread scoped and read-only tools cannot be bypassed.",
       schema: memoryPatchInput,
     },
   );
+  const memoryArchiveTool = tool(
+    async (input: z.infer<typeof memoryArchiveInput>, runtime: ToolRuntime<unknown, AgentContext>) => archiveMemory(runtime.context, input, getMemoryArchive(), runtime.toolCallId),
+    {
+      name: "memory_archive",
+      description: "Use only when the user clearly asks Iris to forget, stop treating, or archive a canonical memory. Keep the raw transcript; this is not legal or physical erasure and there is no hard-delete tool. Supply the current expected document revision after reading the document.",
+      schema: memoryArchiveInput,
+    },
+  );
 
-  return [threadOverview, searchMessagesTool, readMessagesTool, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool] as const;
+  return [threadOverview, searchMessagesTool, readMessagesTool, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool] as const;
 }

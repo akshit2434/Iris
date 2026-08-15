@@ -482,12 +482,18 @@ export function summarizeToolResult(activity: ToolActivity) {
     const count = Array.isArray(structuredOutput.results) ? structuredOutput.results.length : 0;
     return count === 0 ? "No memory documents found" : `Found ${count} ${count === 1 ? "memory document" : "memory documents"}`;
   }
+  if ((activity.toolName === "memory_patch" || activity.toolName === "memory_archive") && structuredOutput) {
+    const status = structuredOutput.status;
+    if (status === "applied") return activity.toolName === "memory_archive" ? "Archived memory" : "Updated memory";
+    if (status === "stale") return "Memory changed before this request";
+    if (status === "not_found") return "Memory document not found";
+  }
   if (typeof output === "string") return shortText(output) || "Done";
   return "Result ready";
 }
 
 export function toolDetail(activity: ToolActivity) {
-  if (["current_time", "thread_overview", "search_messages", "read_messages", "memory_list", "memory_read", "memory_search"].includes(activity.toolName)) return null;
+  if (["current_time", "thread_overview", "search_messages", "read_messages", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive"].includes(activity.toolName)) return null;
   const value: SafeJson | undefined = activity.output ?? activity.input;
   if (!value || typeof value !== "object") return null;
   return JSON.stringify(value, null, 2).slice(0, 1600);

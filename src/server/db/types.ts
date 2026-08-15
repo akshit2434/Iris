@@ -190,6 +190,9 @@ export type Database = {
           continuity_summary: string | null;
           pinned_notes: string[];
           memory_revision_seen: number;
+          compacted_through_message_id: string | null;
+          compacted_through_created_at: string | null;
+          continuity_revision: number;
           updated_at: string;
         };
         Insert: {
@@ -198,6 +201,9 @@ export type Database = {
           continuity_summary?: string | null;
           pinned_notes?: string[];
           memory_revision_seen?: number;
+          compacted_through_message_id?: string | null;
+          compacted_through_created_at?: string | null;
+          continuity_revision?: number;
           updated_at?: string;
         };
         Update: Partial<{
@@ -501,6 +507,56 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      thread_compaction_jobs: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          status: "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+          attempts: number;
+          idempotency_key: string;
+          expected_compacted_through_message_id: string | null;
+          expected_continuity_revision: number;
+          checkpoint_message_id: string;
+          checkpoint_created_at: string;
+          recent_tail_messages: number;
+          available_at: string;
+          lease_expires_at: string | null;
+          locked_at: string | null;
+          locked_by: string | null;
+          last_error_code: string | null;
+          last_error_message: string | null;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          status?: "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+          attempts?: number;
+          idempotency_key: string;
+          expected_compacted_through_message_id?: string | null;
+          expected_continuity_revision?: number;
+          checkpoint_message_id: string;
+          checkpoint_created_at: string;
+          recent_tail_messages?: number;
+          available_at?: string;
+          lease_expires_at?: string | null;
+          locked_at?: string | null;
+          locked_by?: string | null;
+          last_error_code?: string | null;
+          last_error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          completed_at?: string | null;
+        };
+        Update: Partial<Database["public"]["Tables"]["thread_compaction_jobs"]["Insert"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -584,6 +640,26 @@ export type Database = {
           provenance_id: string | null;
           reason: string | null;
         }>;
+      };
+      advance_thread_memory_revision_seen: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_snapshot_revision: number };
+        Returns: number;
+      };
+      enqueue_thread_compaction_job: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string; p_min_messages?: number; p_recent_tail_messages?: number };
+        Returns: Array<Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]>;
+      };
+      claim_thread_compaction_jobs: {
+        Args: { p_worker_id: string; p_limit?: number; p_lease_seconds?: number };
+        Returns: Array<Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]>;
+      };
+      apply_thread_compaction_checkpoint: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_continuity_summary: string; p_pinned_notes: string[]; p_checkpoint_message_id: string; p_checkpoint_created_at: string };
+        Returns: string;
+      };
+      finish_thread_compaction_job: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_status: "completed" | "failed" | "conflict" | "skipped"; p_error_code?: string | null; p_error_message?: string | null; p_retry?: boolean; p_available_at?: string | null };
+        Returns: Array<Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]>;
       };
     };
     Enums: Record<string, never>;

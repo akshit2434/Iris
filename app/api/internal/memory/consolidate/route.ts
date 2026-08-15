@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProductionConsolidationWorker } from "@/server/memory/consolidation";
+import { createProductionThreadCompactionWorker } from "@/server/memory/compaction";
 import { hasWorkerSecret as compareWorkerSecret } from "@/server/memory/worker-auth";
 
 export const runtime = "nodejs";
@@ -11,14 +12,25 @@ export function hasWorkerSecret(request: Request) {
 
 export async function POST(request: Request) {
   if (!hasWorkerSecret(request)) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
-  if (process.env.MEMORY_CONSOLIDATION_ENABLED !== "true") {
-    return NextResponse.json({ enabled: false, claimed: 0, completed: 0, skipped: 0, failed: 0 }, { status: 200 });
-  }
   try {
     const body = (await request.json().catch(() => ({}))) as { limit?: unknown };
     const limit = typeof body.limit === "number" && Number.isInteger(body.limit) ? Math.min(Math.max(body.limit, 1), 3) : 1;
-    const result = await createProductionConsolidationWorker({ limit, maxDurationMs: 25_000, workerId: `http-${crypto.randomUUID()}` });
-    return NextResponse.json(result, { status: 200, headers: { "Cache-Control": "no-store" } });
+    const workerId = `http-${crypto.randomUUID()}`;
+    const consolidation = process.env.MEMORY_CONSOLIDATION_ENABLED === "true"
+      ? await createProductionConsolidationWorker({ limit, maxDurationMs: 25_000, workerId })
+      : { claimed: 0, completed: 0, skipped: 0, failed: 0, conflicts: 0, indexingErrors: 0 };
+    const compaction = process.env.THREAD_COMPACTION_ENABLED === "true"
+      ? await createProductionThreadCompactionWorker({ limit, maxDurationMs: 25_000, workerId })
+      : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0 };
+    return NextResponse.json({
+      enabled: process.env.MEMORY_CONSOLIDATION_ENABLED === "true" || process.env.THREAD_COMPACTION_ENABLED === "true",
+      claimed: consolidation.claimed + compaction.claimed,
+      completed: consolidation.completed + compaction.completed,
+      skipped: consolidation.skipped + compaction.skipped,
+      failed: consolidation.failed + compaction.failed,
+      consolidation,
+      compaction,
+    }, { status: 200, headers: { "Cache-Control": "no-store" } });
   } catch {
     return NextResponse.json({ error: "Consolidation worker failed." }, { status: 500 });
   }

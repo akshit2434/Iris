@@ -25,10 +25,14 @@ import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
 import { resolveThreadTitle } from "@/server/agent/title";
 import { createProductionMemoryRetrievalService } from "@/server/memory/retrieval";
 import { createMemoryMutationService } from "@/server/memory/mutation";
+import { createMemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
 import { budgetCanonicalMemory } from "@/server/memory/context-budget";
 import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
+import { readMemoryChangeHint } from "@/server/memory/reconciliation";
+import { createSupabaseThreadCompactionStore } from "@/server/memory/compaction-repository";
+import { getThreadCompactionConfig } from "@/server/memory/compaction";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
   AGENT_STREAM_PROTOCOL,
@@ -143,15 +147,24 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       ? await claimAutomaticThreadTitle(profileId, threadId)
       : null;
 
+    const memoryStore = createSupabaseMemoryStore();
     const memoryRetrieval = createProductionMemoryRetrievalService();
-    const canonicalMemoryPromise = Promise.all([
-      memoryRetrieval.listMemory(profileId),
-      memoryRetrieval.currentRevision(profileId),
-    ]).then(([documents, globalRevision]) => budgetCanonicalMemory(documents, globalRevision, { profileId })).catch(() => ({ globalRevision: 0, documents: [] }));
-    const [history, threadContextRow, canonicalMemory] = await Promise.all([
+    const memoryRevisionSnapshotPromise = memoryStore.getCurrentRevision(profileId).catch(() => 0);
+    const [history, threadContextRow, memoryRevisionSnapshot] = await Promise.all([
       getThreadMessages(profileId, threadId),
       getThreadContext(profileId, threadId),
-      canonicalMemoryPromise,
+      memoryRevisionSnapshotPromise,
+    ]);
+    const [canonicalMemory, memoryChangeHint] = await Promise.all([
+      Promise.all([memoryStore.listDocuments(profileId), Promise.resolve(memoryRevisionSnapshot)])
+        .then(([documents, globalRevision]) => budgetCanonicalMemory(documents, globalRevision, { profileId }))
+        .catch(() => ({ globalRevision: 0, documents: [] })),
+      readMemoryChangeHint({
+        store: memoryStore,
+        profileId,
+        afterRevision: threadContextRow.memoryRevisionSeen,
+        throughRevision: memoryRevisionSnapshot,
+      }).catch(() => ({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] })),
     ]);
     const agentContext = createAgentContext({
       profileId,
@@ -161,18 +174,27 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       browserTimezone: resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
+      compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
+      compactedThroughCreatedAt: threadContextRow.compactedThroughCreatedAt,
+      continuityRevision: threadContextRow.continuityRevision,
       currentUserMessageId: userMessageId,
       agentRunId: run.id,
       canonicalMemory,
+      memoryChangeHint,
     });
     const threadContext = buildThreadAgentContext({
       messages: history,
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
+      compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
+      compactedThroughCreatedAt: threadContextRow.compactedThroughCreatedAt,
+      continuityRevision: threadContextRow.continuityRevision,
       canonicalMemory,
     });
-    const memoryMutation = createMemoryMutationService(createSupabaseMemoryStore());
+    const memoryMutation = createMemoryMutationService(memoryStore);
+    const memoryArchive = createMemoryArchiveService(memoryStore);
     const memoryGovernance = createSupabaseMemoryGovernanceStore();
+    const compactionStore = createSupabaseThreadCompactionStore();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -240,6 +262,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             messages: getModelMessages(threadContext),
             memoryRetrieval,
             memoryMutation,
+            memoryArchive,
           })) {
             if (event.type === "text_delta") {
               assistantContent += event.text;
@@ -328,12 +351,25 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             payload: { assistantMessageId },
           });
           await touchThread(profileId, threadId);
+          if (memoryStore.advanceThreadMemoryRevisionSeen) {
+            try {
+              await memoryStore.advanceThreadMemoryRevisionSeen(profileId, threadId, memoryRevisionSnapshot);
+            } catch {
+              // A reconciliation update must never turn a completed chat run into a failure.
+            }
+          }
           if (shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted })) {
             try {
               await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id);
             } catch {
               // Memory queue availability must not turn a completed chat run into a failure.
             }
+          }
+          try {
+            const compactionConfig = getThreadCompactionConfig();
+            await compactionStore.enqueueCompactionJob(profileId, threadId, run.id, compactionConfig.minMessages, compactionConfig.recentTailMessages);
+          } catch {
+            // Compaction is a durable, opt-in follow-up and never blocks chat completion.
           }
           send({
             type: "completed",
