@@ -26,6 +26,7 @@ export type MemoryDocumentRevision = {
   contentMarkdown: string;
   contentHash: string;
   mutationKind: CanonicalMutationKind;
+  idempotencyKey: string | null;
   createdAt: string;
 };
 
@@ -46,6 +47,7 @@ export type ApplyMemoryDocumentRevisionInput = {
   mutationKind: CanonicalMutationKind;
   expectedDocumentRevision?: number | null;
   provenance?: MemoryProvenanceInput;
+  idempotencyKey?: string | null;
 };
 
 export type AppliedMemoryDocumentRevision = {
@@ -138,6 +140,78 @@ export type MemoryStore = {
   searchMessages: (input: MessageSearchInput) => Promise<MessageSearchResult[]>;
   readMessageContext: (profileId: ProfileId, messageId: string, windowSize?: number) => Promise<MessageContextWindow | null>;
   searchDocuments: (profileId: ProfileId, query: string, limit?: number) => Promise<CanonicalDocumentSearchResult[]>;
+};
+
+export type MemoryConsolidationJobStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type MemoryMutationProposalStatus = "proposed" | "applied" | "rejected" | "conflict";
+
+export type MemoryConsolidationJob = {
+  id: string;
+  profileId: ProfileId;
+  threadId: string;
+  sourceRunId: string;
+  status: MemoryConsolidationJobStatus;
+  attempts: number;
+  availableAt: string;
+  leaseExpiresAt: string | null;
+  lockedAt: string | null;
+  lockedBy: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type MemoryMutationProposal = {
+  id: string;
+  profileId: ProfileId;
+  threadId: string;
+  sourceRunId: string;
+  jobId: string;
+  proposalIndex: number;
+  idempotencyKey: string;
+  logicalKey: string;
+  proposedContentMarkdown: string;
+  expectedDocumentRevision: number | null;
+  mutationKind: Extract<CanonicalMutationKind, "create" | "update" | "merge">;
+  sourceMessageIds: string[];
+  rationale: string | null;
+  status: MemoryMutationProposalStatus;
+  reason: string | null;
+  resultRevisionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+};
+
+export type MemoryProposalApplyResult = {
+  status: "applied" | "conflict" | "rejected";
+  proposalId: string;
+  documentId: string | null;
+  documentRevision: number | null;
+  profileGlobalRevision: number | null;
+  revisionId: string | null;
+  provenanceId: string | null;
+  reason: string | null;
+};
+
+export type MemoryGovernanceStore = {
+  enqueueConsolidationJob: (profileId: ProfileId, threadId: string, sourceRunId: string) => Promise<MemoryConsolidationJob>;
+  claimConsolidationJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<MemoryConsolidationJob[]>;
+  finishConsolidationJob: (input: {
+    profileId: ProfileId;
+    jobId: string;
+    workerId: string;
+    status: Extract<MemoryConsolidationJobStatus, "completed" | "failed" | "skipped">;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    retry?: boolean;
+    availableAt?: string | null;
+  }) => Promise<MemoryConsolidationJob>;
+  listJobMessages: (profileId: ProfileId, threadId: string, sourceRunId: string, limit?: number) => Promise<MemoryMessageForIndex[]>;
+  insertMutationProposal: (proposal: Omit<MemoryMutationProposal, "id" | "status" | "reason" | "resultRevisionId" | "createdAt" | "updatedAt" | "appliedAt">) => Promise<MemoryMutationProposal>;
+  applyMutationProposal: (profileId: ProfileId, jobId: string, proposalId: string, workerId: string) => Promise<MemoryProposalApplyResult>;
 };
 
 export type MessageSemanticIndexStore = {

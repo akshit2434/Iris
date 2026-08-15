@@ -277,6 +277,7 @@ export type Database = {
           content_markdown: string;
           content_hash: string;
           mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          idempotency_key: string | null;
           created_at: string;
         };
         Insert: {
@@ -288,6 +289,7 @@ export type Database = {
           content_markdown: string;
           content_hash: string;
           mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          idempotency_key?: string | null;
           created_at?: string;
         };
         Update: Partial<{
@@ -299,6 +301,7 @@ export type Database = {
           content_markdown: string;
           content_hash: string;
           mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          idempotency_key?: string | null;
           created_at: string;
         }>;
         Relationships: [];
@@ -378,6 +381,126 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      memory_consolidation_jobs: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          status: "pending" | "running" | "completed" | "failed" | "skipped";
+          attempts: number;
+          available_at: string;
+          lease_expires_at: string | null;
+          locked_at: string | null;
+          locked_by: string | null;
+          last_error_code: string | null;
+          last_error_message: string | null;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          status?: "pending" | "running" | "completed" | "failed" | "skipped";
+          attempts?: number;
+          available_at?: string;
+          lease_expires_at?: string | null;
+          locked_at?: string | null;
+          locked_by?: string | null;
+          last_error_code?: string | null;
+          last_error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          completed_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          status: "pending" | "running" | "completed" | "failed" | "skipped";
+          attempts: number;
+          available_at: string;
+          lease_expires_at: string | null;
+          locked_at: string | null;
+          locked_by: string | null;
+          last_error_code: string | null;
+          last_error_message: string | null;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        }>;
+        Relationships: [];
+      };
+      memory_mutation_proposals: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          job_id: string;
+          proposal_index: number;
+          idempotency_key: string;
+          logical_key: string;
+          proposed_content_markdown: string;
+          expected_document_revision: number | null;
+          mutation_kind: "create" | "update" | "merge";
+          source_message_ids: string[];
+          rationale: string | null;
+          status: "proposed" | "applied" | "rejected" | "conflict";
+          reason: string | null;
+          result_revision_id: string | null;
+          created_at: string;
+          updated_at: string;
+          applied_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          job_id: string;
+          proposal_index: number;
+          idempotency_key: string;
+          logical_key: string;
+          proposed_content_markdown: string;
+          expected_document_revision?: number | null;
+          mutation_kind: "create" | "update" | "merge";
+          source_message_ids: string[];
+          rationale?: string | null;
+          status?: "proposed" | "applied" | "rejected" | "conflict";
+          reason?: string | null;
+          result_revision_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          applied_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          source_run_id: string;
+          job_id: string;
+          proposal_index: number;
+          idempotency_key: string;
+          logical_key: string;
+          proposed_content_markdown: string;
+          expected_document_revision: number | null;
+          mutation_kind: "create" | "update" | "merge";
+          source_message_ids: string[];
+          rationale: string | null;
+          status: "proposed" | "applied" | "rejected" | "conflict";
+          reason: string | null;
+          result_revision_id: string | null;
+          created_at: string;
+          updated_at: string;
+          applied_at: string | null;
+        }>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -417,6 +540,7 @@ export type Database = {
           p_source_agent_run_id?: string | null;
           p_source_excerpt?: string | null;
           p_source_metadata?: Json;
+          p_idempotency_key?: string | null;
         };
         Returns: Array<{
           profile_id: "profile-a" | "profile-b";
@@ -425,6 +549,40 @@ export type Database = {
           profile_global_revision: number;
           revision_id: string;
           provenance_id: string;
+        }>;
+      };
+      enqueue_memory_consolidation_job: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string };
+        Returns: Array<Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]>;
+      };
+      claim_memory_consolidation_jobs: {
+        Args: { p_worker_id: string; p_limit?: number; p_lease_seconds?: number };
+        Returns: Array<Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]>;
+      };
+      finish_memory_consolidation_job: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_job_id: string;
+          p_worker_id: string;
+          p_status: "completed" | "failed" | "skipped";
+          p_error_code?: string | null;
+          p_error_message?: string | null;
+          p_retry?: boolean;
+          p_available_at?: string | null;
+        };
+        Returns: Array<Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]>;
+      };
+      apply_memory_mutation_proposal: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_proposal_id: string; p_worker_id: string };
+        Returns: Array<{
+          status: "applied" | "conflict" | "rejected";
+          proposal_id: string;
+          document_id: string | null;
+          document_revision: number | null;
+          profile_global_revision: number | null;
+          revision_id: string | null;
+          provenance_id: string | null;
+          reason: string | null;
         }>;
       };
     };

@@ -120,6 +120,7 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
         p_source_agent_run_id: source.sourceAgentRunId ?? null,
         p_source_excerpt: source.sourceExcerpt ?? null,
         p_source_metadata: (source.metadata ?? {}) as Json,
+        p_idempotency_key: validated.idempotencyKey ?? null,
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;

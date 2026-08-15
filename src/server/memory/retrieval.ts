@@ -28,6 +28,7 @@ export type MemoryRetrieval = {
   }) => Promise<MessageSearchResult[]>;
   readMessages: (profileId: ProfileId, messageId: string, windowSize?: number) => Promise<MessageContextWindow | null>;
   listMemory: (profileId: ProfileId) => Promise<Awaited<ReturnType<MemoryStore["listDocuments"]>>>;
+  currentRevision: (profileId: ProfileId) => Promise<number>;
   readMemory: (profileId: ProfileId, logicalKey: string) => Promise<Awaited<ReturnType<MemoryStore["getDocument"]>>>;
   searchMemory: (profileId: ProfileId, query: string, limit?: number) => Promise<CanonicalDocumentSearchResult[]>;
 };
@@ -67,6 +68,10 @@ export function createMemoryRetrievalService(options: MemoryRetrievalOptions): M
 
     async listMemory(profileId) {
       return options.store.listDocuments(profileId);
+    },
+
+    async currentRevision(profileId) {
+      return options.store.getCurrentRevision(profileId);
     },
 
     async readMemory(profileId, logicalKey) {

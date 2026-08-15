@@ -11,8 +11,9 @@ import {
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
 import { createIrisAgent, extractAgentMessageEvents, parseToolOutput, streamAgentEvents } from "@/server/agent";
 import { planAssistantPersistence } from "@/server/agent/persistence";
-import { createInternalTools, optionalToolProgressSchema, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
+import { createInternalTools, optionalToolProgressSchema, patchMemory, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
+import type { MemoryMutationService } from "@/server/memory/mutation";
 import type { MessageContextWindow, MessageSearchResult } from "@/server/memory/types";
 import { AGENT_STREAM_PROTOCOL, sanitizeForEvent, sanitizeStatusMessage } from "@/server/agent/protocol";
 
@@ -92,6 +93,12 @@ describe("context builder", () => {
       { role: "user", content: "old" },
       { role: "assistant", content: "reply" },
     ]);
+
+    const withMemory = buildThreadAgentContext({
+      messages: [{ role: "user", content: "latest" }],
+      canonicalMemory: { globalRevision: 3, documents: [{ logicalKey: "CURRENT.md", contentMarkdown: "# Current", documentRevision: 1, updatedAt: "now" }] },
+    });
+    expect(withMemory.futureMemory).toMatchObject({ globalRevision: 3, global: [{ logicalKey: "CURRENT.md" }] });
   });
 
   it("keeps existing continuity and pinned notes separate from raw history", () => {
@@ -107,6 +114,20 @@ describe("context builder", () => {
       summary: "Derived continuity",
       pinnedNotes: ["A small pinned constraint"],
     });
+  });
+
+  it("injects bounded canonical memory separately from raw model history", () => {
+    const withMemory = createAgentContext({
+      ...context,
+      canonicalMemory: {
+        globalRevision: 4,
+        documents: [{ logicalKey: "PROFILE.md", contentMarkdown: "# Profile\n\nConcise answers.", documentRevision: 2, updatedAt: "2026-08-15T12:00:00.000Z" }],
+      },
+    });
+    const prompt = buildDynamicSystemPrompt(withMemory);
+    expect(prompt).toContain('<canonical-memory global-revision="4">');
+    expect(prompt).toContain("Concise answers.");
+    expect(prompt).toContain("Do not claim a durable write unless memory_patch returned an applied result.");
   });
 });
 
@@ -127,6 +148,7 @@ describe("internal tools", () => {
       "memory_list",
       "memory_read",
       "memory_search",
+      "memory_patch",
     ]);
   });
 
@@ -220,12 +242,21 @@ describe("runtime seams", () => {
       listMemory: vi.fn(async () => []),
       readMemory: vi.fn(async () => null),
       searchMemory: vi.fn(async () => []),
+      currentRevision: vi.fn(async () => 0),
     };
 
     await expect(searchMessages(context, { query: " prior  decision ", limit: 5 }, retrieval)).resolves.toMatchObject({ kind: "message_search" });
     expect(retrieval.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", query: "prior decision" }));
     await expect(readMessages(context, { messageId: "00000000-0000-4000-8000-000000000010", windowSize: 2 }, retrieval)).resolves.toMatchObject({ kind: "message_read", found: true });
     expect(retrieval.readMessages).toHaveBeenCalledWith("profile-a", "00000000-0000-4000-8000-000000000010", 2);
+  });
+
+  it("registers only the governed memory patch write and derives its source from context", async () => {
+    const mutation: MemoryMutationService = { apply: vi.fn(async (input) => ({ status: "applied" as const, logicalKey: input.logicalKey, revision: { profileId: input.profileId, documentId: "doc", documentRevision: 1, profileGlobalRevision: 1, revisionId: "rev", provenanceId: "prov" } })) };
+    const turnContext = createAgentContext({ ...context, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012" });
+    await expect(patchMemory(turnContext, { logicalKey: "PROFILE.md", contentMarkdown: "# Profile", expectedDocumentRevision: null, mutationKind: "create" }, mutation, "call-patch")).resolves.toMatchObject({ kind: "memory_patch", status: "applied" });
+    expect(mutation.apply).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", threadId: context.threadId, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012", toolCallId: "call-patch" }));
+    expect(createInternalTools().map((internalTool) => internalTool.name)).not.toEqual(expect.arrayContaining(["memory_archive", "memory_delete", "memory_file_write"]));
   });
 
   it("constructs the agent with an injected deterministic model", () => {
@@ -297,6 +328,7 @@ describe("runtime seams", () => {
       listMemory: vi.fn(async () => []),
       readMemory: vi.fn(async () => null),
       searchMemory: vi.fn(async () => []),
+      currentRevision: vi.fn(async () => 0),
     };
     const events = [];
     for await (const event of streamAgentEvents({

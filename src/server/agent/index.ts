@@ -15,6 +15,7 @@ import {
 } from "@/server/agent/context";
 import { createInternalTools, type ThreadOverviewReader } from "@/server/agent/tools";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
+import type { MemoryMutationService } from "@/server/memory/mutation";
 import { sanitizeForEvent, sanitizeStatusMessage, type SafeJson } from "@/server/agent/protocol";
 
 export const DEFAULT_MODEL = "openai/gpt-5.6-luna";
@@ -60,6 +61,7 @@ export function createIrisAgent(input: {
   model: AgentModel;
   threadOverviewReader?: ThreadOverviewReader;
   memoryRetrieval?: MemoryRetrieval;
+  memoryMutation?: MemoryMutationService;
 }): RuntimeAgent {
   const dynamicPrompt = dynamicSystemPromptMiddleware<AgentContext>((_state, runtime) =>
     buildDynamicSystemPrompt(runtime.context),
@@ -69,18 +71,20 @@ export function createIrisAgent(input: {
     model: input.model,
     contextSchema: agentContextSchema,
     middleware: [dynamicPrompt],
-    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval)],
+    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation)],
   });
 }
 
 export function createProductionAgent(input?: {
   threadOverviewReader?: ThreadOverviewReader;
   memoryRetrieval?: MemoryRetrieval;
+  memoryMutation?: MemoryMutationService;
 }): RuntimeAgent {
   return createIrisAgent({
     model: createProductionChatModel(),
     threadOverviewReader: input?.threadOverviewReader,
     memoryRetrieval: input?.memoryRetrieval,
+    memoryMutation: input?.memoryMutation,
   });
 }
 
@@ -203,10 +207,11 @@ export async function* streamAgentEvents(input: {
   model?: AgentModel;
   threadOverviewReader?: ThreadOverviewReader;
   memoryRetrieval?: MemoryRetrieval;
+  memoryMutation?: MemoryMutationService;
 }): AsyncGenerator<AgentRuntimeEvent> {
   const agent = input.model
-    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval })
-    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval });
+    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation })
+    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation });
   const stream = await agent.stream(
     { messages: input.messages },
     { context: input.context, streamMode: "messages" },
@@ -242,6 +247,7 @@ export async function* streamAssistantReply(input: {
   model?: AgentModel;
   threadOverviewReader?: ThreadOverviewReader;
   memoryRetrieval?: MemoryRetrieval;
+  memoryMutation?: MemoryMutationService;
 }) {
   void input.profileId;
   for await (const event of streamAgentEvents(input)) {

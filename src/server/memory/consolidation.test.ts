@@ -1,0 +1,68 @@
+import { describe, expect, it, vi } from "vitest";
+import { createInjectedMemoryConsolidator, processConsolidationJobs, shouldEnqueueConsolidation, validateConsolidationProposals } from "@/server/memory/consolidation";
+import type { MemoryConsolidationJob, MemoryGovernanceStore, MemoryStore } from "@/server/memory/types";
+
+const job: MemoryConsolidationJob = {
+  id: "00000000-0000-4000-8000-000000000030", profileId: "profile-a", threadId: "00000000-0000-4000-8000-000000000011", sourceRunId: "00000000-0000-4000-8000-000000000012", status: "running", attempts: 1, availableAt: "now", leaseExpiresAt: null, lockedAt: "now", lockedBy: "worker", lastErrorCode: null, lastErrorMessage: null, createdAt: "now", updatedAt: "now", completedAt: null,
+};
+const messages = [{ messageId: "00000000-0000-4000-8000-000000000010", profileId: "profile-a" as const, threadId: job.threadId, content: "I prefer concise answers." }];
+
+function memoryStore(): MemoryStore {
+  return {
+    listDocuments: vi.fn(async () => []), getDocument: vi.fn(async () => null), getCurrentRevision: vi.fn(async () => 0),
+    applyDocumentRevision: vi.fn(), searchMessages: vi.fn(async () => []), readMessageContext: vi.fn(async () => null), searchDocuments: vi.fn(async () => []),
+  };
+}
+
+function governanceStore(): MemoryGovernanceStore {
+  const stored = { id: "00000000-0000-4000-8000-000000000031", profileId: "profile-a" as const, threadId: job.threadId, sourceRunId: job.sourceRunId, jobId: job.id, proposalIndex: 0, idempotencyKey: "key", logicalKey: "PROFILE.md", proposedContentMarkdown: "# Profile", expectedDocumentRevision: null, mutationKind: "create" as const, sourceMessageIds: [messages[0].messageId], rationale: null, status: "proposed" as const, reason: null, resultRevisionId: null, createdAt: "now", updatedAt: "now", appliedAt: null };
+  return {
+    claimConsolidationJobs: vi.fn(async () => [job]),
+    listJobMessages: vi.fn(async () => messages),
+    insertMutationProposal: vi.fn(async () => stored),
+    applyMutationProposal: vi.fn(async () => ({ status: "applied" as const, proposalId: stored.id, documentId: "doc", documentRevision: 1, profileGlobalRevision: 1, revisionId: "rev", provenanceId: "prov", reason: null })),
+    finishConsolidationJob: vi.fn(async () => job),
+    enqueueConsolidationJob: vi.fn(async () => job),
+  };
+}
+
+describe("durable memory consolidation", () => {
+  it("enqueues only after a successful run with a persisted assistant", () => {
+    expect(shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted: true })).toBe(true);
+    expect(shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted: false })).toBe(false);
+    expect(shouldEnqueueConsolidation({ runStatus: "failed", assistantPersisted: true })).toBe(false);
+  });
+
+  it("rejects foreign sources, duplicate keys, and malformed proposals", () => {
+    expect(() => validateConsolidationProposals({ job, messages, documents: [] }, [{ logicalKey: "x.md", proposedContentMarkdown: "# x", expectedDocumentRevision: null, mutationKind: "create", sourceMessageIds: ["00000000-0000-4000-8000-000000000099"] }])).toThrow("foreign");
+    expect(() => validateConsolidationProposals({ job, messages, documents: [] }, [
+      { logicalKey: "x.md", proposedContentMarkdown: "# x", expectedDocumentRevision: null, mutationKind: "create", sourceMessageIds: [messages[0].messageId] },
+      { logicalKey: "x.md", proposedContentMarkdown: "# y", expectedDocumentRevision: null, mutationKind: "create", sourceMessageIds: [messages[0].messageId] },
+    ])).toThrow("duplicate");
+  });
+
+  it("processes a bounded job with replay-safe proposal identity and no model/network call", async () => {
+    const governance = governanceStore();
+    const producer = vi.fn(async () => [{ logicalKey: "PROFILE.md", proposedContentMarkdown: "# Profile\n\nConcise answers.", expectedDocumentRevision: null, mutationKind: "create", sourceMessageIds: [messages[0].messageId], rationale: "Stable preference" }]);
+    const result = await processConsolidationJobs({ governanceStore: governance, memoryStore: memoryStore(), consolidator: createInjectedMemoryConsolidator(producer), workerId: "worker" });
+    expect(result).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+    expect(governance.insertMutationProposal).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: expect.stringContaining(`consolidation:${job.sourceRunId}:0:`) }));
+    expect(governance.applyMutationProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a job skipped when no source messages exist", async () => {
+    const governance = governanceStore();
+    vi.mocked(governance.listJobMessages).mockResolvedValue([]);
+    const result = await processConsolidationJobs({ governanceStore: governance, memoryStore: memoryStore(), consolidator: { propose: vi.fn() }, workerId: "worker" });
+    expect(result).toMatchObject({ claimed: 1, skipped: 1 });
+    expect(governance.finishConsolidationJob).toHaveBeenCalledWith(expect.objectContaining({ status: "skipped" }));
+  });
+
+  it("keeps failed processing retryable and bounds the claim", async () => {
+    const governance = governanceStore();
+    const result = await processConsolidationJobs({ governanceStore: governance, memoryStore: memoryStore(), consolidator: { propose: vi.fn(async () => { throw new Error("temporary provider failure"); }) }, workerId: "worker", limit: 3, leaseSeconds: 45 });
+    expect(result.failed).toBe(1);
+    expect(governance.claimConsolidationJobs).toHaveBeenCalledWith("worker", 3, 45);
+    expect(governance.finishConsolidationJob).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", retry: true, errorCode: "CONSOLIDATION_FAILED" }));
+  });
+});

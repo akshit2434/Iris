@@ -5,6 +5,8 @@ import { getThreadOverview } from "@/server/db/queries";
 import type { AgentContext } from "@/server/agent/context";
 import { createProductionMemoryRetrievalService, type MemoryRetrieval } from "@/server/memory/retrieval";
 import { normalizeMemoryLimit, normalizeMemoryQuery } from "@/server/memory/validation";
+import { createMemoryMutationService, type MemoryMutationService } from "@/server/memory/mutation";
+import { createSupabaseMemoryStore } from "@/server/memory/repository";
 
 export type ThreadOverview = {
   title: string;
@@ -33,6 +35,12 @@ const searchMessagesInput = z.object({
 const readMessagesInput = z.object({ messageId: z.string().uuid(), windowSize: z.number().int().min(1).max(10).default(3) });
 const memoryReadInput = z.object({ logicalKey: z.string().trim().min(1).max(200) });
 const memorySearchInput = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(10).default(5) }).extend(optionalToolProgressSchema.shape);
+const memoryPatchInput = z.object({
+  logicalKey: z.string().trim().min(1).max(200),
+  contentMarkdown: z.string().min(1).max(20_000),
+  expectedDocumentRevision: z.number().int().nonnegative().nullable(),
+  mutationKind: z.enum(["create", "update", "merge"]),
+}).extend(optionalToolProgressSchema.shape);
 
 export async function readCurrentTime(context: AgentContext) {
   return {
@@ -151,14 +159,46 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
   };
 }
 
+export async function patchMemory(context: AgentContext, input: z.infer<typeof memoryPatchInput>, mutation: MemoryMutationService, toolCallId: string) {
+  if (!context.currentUserMessageId || !context.agentRunId) {
+    return { kind: "memory_patch" as const, status: "conflict" as const, logicalKey: input.logicalKey.trim(), reason: "Memory writes are available only during a persisted user turn.", candidates: [] };
+  }
+  const result = await mutation.apply({
+    profileId: context.profileId,
+    threadId: context.threadId,
+    currentUserMessageId: context.currentUserMessageId,
+    agentRunId: context.agentRunId,
+    toolCallId,
+    logicalKey: input.logicalKey,
+    contentMarkdown: input.contentMarkdown,
+    expectedDocumentRevision: input.expectedDocumentRevision,
+    mutationKind: input.mutationKind,
+  });
+  if (result.status !== "applied") return { kind: "memory_patch" as const, ...result };
+  return {
+    kind: "memory_patch" as const,
+    status: "applied" as const,
+    logicalKey: result.logicalKey,
+    documentRevision: result.revision.documentRevision,
+    profileGlobalRevision: result.revision.profileGlobalRevision,
+    revisionId: result.revision.revisionId,
+  };
+}
+
 export function createInternalTools(
   reader: ThreadOverviewReader = getThreadOverview,
   memoryRetrieval?: MemoryRetrieval,
+  memoryMutation?: MemoryMutationService,
 ) {
   let resolvedMemoryRetrieval = memoryRetrieval;
   const getMemoryRetrieval = () => {
     resolvedMemoryRetrieval ??= createProductionMemoryRetrievalService();
     return resolvedMemoryRetrieval;
+  };
+  let resolvedMemoryMutation = memoryMutation;
+  const getMemoryMutation = () => {
+    resolvedMemoryMutation ??= createMemoryMutationService(createSupabaseMemoryStore());
+    return resolvedMemoryMutation;
   };
   const threadOverview = tool(
     async (_input, runtime: ToolRuntime<unknown, AgentContext>) =>
@@ -210,6 +250,14 @@ export function createInternalTools(
       schema: memorySearchInput,
     },
   );
+  const memoryPatchTool = tool(
+    async (input: z.infer<typeof memoryPatchInput>, runtime: ToolRuntime<unknown, AgentContext>) => patchMemory(runtime.context, input, getMemoryMutation(), runtime.toolCallId),
+    {
+      name: "memory_patch",
+      description: "Use only when the user explicitly asks to remember, correct, or preserve a durable fact, or a stable fact clearly has future value. Search/read related memory first when uncertain. Submit a full replacement Markdown document with the current expected revision; do not store transient chatter, secrets, or speculative psychology. This is profile/thread scoped and read-only tools cannot be bypassed. Archive/delete is not supported here.",
+      schema: memoryPatchInput,
+    },
+  );
 
-  return [threadOverview, searchMessagesTool, readMessagesTool, memoryListTool, memoryReadTool, memorySearchTool] as const;
+  return [threadOverview, searchMessagesTool, readMessagesTool, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool] as const;
 }

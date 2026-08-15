@@ -4,6 +4,7 @@ import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryDocumentRevisionInput, typ
 const LOGICAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const MAX_MARKDOWN_LENGTH = 500_000;
 const MAX_EXCERPT_LENGTH = 2_000;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 240;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function assertMemoryProfileId(value: unknown): asserts value is ProfileId {
@@ -52,8 +53,12 @@ export function validateApplyMemoryDocumentRevision(input: ApplyMemoryDocumentRe
   if (input.expectedDocumentRevision !== undefined && input.expectedDocumentRevision !== null && (!Number.isSafeInteger(input.expectedDocumentRevision) || input.expectedDocumentRevision < 0)) {
     throw new Error("Expected memory document revision must be a non-negative integer.");
   }
+  const idempotencyKey = input.idempotencyKey === undefined || input.idempotencyKey === null ? null : input.idempotencyKey.trim();
+  if (idempotencyKey !== null && (!idempotencyKey || idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH)) {
+    throw new Error("Memory idempotency keys must be short and non-empty.");
+  }
   validateProvenance(input.provenance);
-  return { ...input, logicalKey, contentMarkdown };
+  return { ...input, logicalKey, contentMarkdown, idempotencyKey };
 }
 
 export function validateEmbedding(vector: readonly number[]) {

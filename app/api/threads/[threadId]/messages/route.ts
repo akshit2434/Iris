@@ -24,6 +24,11 @@ import { buildThreadAgentContext, getModelMessages } from "@/server/agent/contex
 import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
 import { resolveThreadTitle } from "@/server/agent/title";
 import { createProductionMemoryRetrievalService } from "@/server/memory/retrieval";
+import { createMemoryMutationService } from "@/server/memory/mutation";
+import { createSupabaseMemoryStore } from "@/server/memory/repository";
+import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
+import { budgetCanonicalMemory } from "@/server/memory/context-budget";
+import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
   AGENT_STREAM_PROTOCOL,
@@ -138,9 +143,15 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       ? await claimAutomaticThreadTitle(profileId, threadId)
       : null;
 
-    const [history, threadContextRow] = await Promise.all([
+    const memoryRetrieval = createProductionMemoryRetrievalService();
+    const canonicalMemoryPromise = Promise.all([
+      memoryRetrieval.listMemory(profileId),
+      memoryRetrieval.currentRevision(profileId),
+    ]).then(([documents, globalRevision]) => budgetCanonicalMemory(documents, globalRevision, { profileId })).catch(() => ({ globalRevision: 0, documents: [] }));
+    const [history, threadContextRow, canonicalMemory] = await Promise.all([
       getThreadMessages(profileId, threadId),
       getThreadContext(profileId, threadId),
+      canonicalMemoryPromise,
     ]);
     const agentContext = createAgentContext({
       profileId,
@@ -150,13 +161,18 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       browserTimezone: resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
+      currentUserMessageId: userMessageId,
+      agentRunId: run.id,
+      canonicalMemory,
     });
     const threadContext = buildThreadAgentContext({
       messages: history,
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
+      canonicalMemory,
     });
-    const memoryRetrieval = createProductionMemoryRetrievalService();
+    const memoryMutation = createMemoryMutationService(createSupabaseMemoryStore());
+    const memoryGovernance = createSupabaseMemoryGovernanceStore();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -223,6 +239,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             context: agentContext,
             messages: getModelMessages(threadContext),
             memoryRetrieval,
+            memoryMutation,
           })) {
             if (event.type === "text_delta") {
               assistantContent += event.text;
@@ -311,6 +328,13 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             payload: { assistantMessageId },
           });
           await touchThread(profileId, threadId);
+          if (shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted })) {
+            try {
+              await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id);
+            } catch {
+              // Memory queue availability must not turn a completed chat run into a failure.
+            }
+          }
           send({
             type: "completed",
             runId: run.id,
