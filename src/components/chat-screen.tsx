@@ -1,10 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, Edit3, LoaderCircle, Send, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import type { Message, Thread } from "@/lib/types";
+import { IrisMark } from "@/components/iris-mark";
+import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
 
@@ -145,34 +146,41 @@ export function ChatScreen() {
     }
   }
 
-  if (!isReady) return <div className="mx-auto max-w-5xl animate-pulse p-5 sm:p-8"><div className="h-8 w-52 rounded-xl bg-white" /><div className="mt-6 h-[55vh] rounded-3xl bg-white" /></div>;
+  if (!isReady) return <ChatSkeleton />;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center px-5 py-12 sm:px-8"><ProfilePicker /></div>;
-  if (loading) return <div className="mx-auto max-w-5xl animate-pulse p-5 sm:p-8"><div className="h-8 w-64 rounded-xl bg-white" /><div className="mt-6 h-[55vh] rounded-3xl bg-white" /></div>;
-  if (!thread) return <div className="mx-auto max-w-2xl px-5 py-16 sm:px-8"><div className="rounded-[28px] border border-red-100 bg-white p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-slate-600">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-bold text-[var(--iris-accent)] hover:underline">Back to history</Link></div></div>;
+  if (loading) return <ChatSkeleton />;
+  if (!thread) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-5xl flex-col px-3 sm:px-6 lg:px-8">
-      <div className="flex items-center gap-3 border-b border-slate-200 px-2 py-4 sm:px-0">
-        <Link href="/history" className="rounded-xl p-2 text-slate-400 transition hover:bg-white hover:text-slate-900" aria-label="Back to history"><ArrowLeft size={18} /></Link>
-        <div className="min-w-0 flex-1">
-          {editingTitle ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm font-semibold outline-none focus:border-[var(--iris-accent)]" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="rounded-lg p-1.5 text-emerald-600 hover:bg-emerald-50"><Check size={16} /></button><button type="button" onClick={() => setEditingTitle(false)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X size={16} /></button></div> : <button type="button" onClick={() => setEditingTitle(true)} className="group flex max-w-full items-center gap-2 text-left"><span className="truncate text-sm font-semibold text-slate-900">{thread.title}</span><Edit3 size={13} className="shrink-0 text-slate-300 transition group-hover:text-[var(--iris-accent)]" /></button>}
+    <div className="relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden">
+      <header className="absolute inset-x-0 top-0 z-20 h-28">
+        <ProceduralBlur edge="top" />
+        <div className="relative flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
+          <Link href="/history" className="soft-press flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-white/58 text-xl font-light text-slate-700 shadow-[inset_0_0_0_1px_rgba(255,255,255,.8)] backdrop-blur-xl" aria-label="Back to history">←</Link>
+          <div className="min-w-0 flex-1">
+            {editingTitle ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-xl bg-white/65 px-3 py-2 text-sm font-semibold outline-none backdrop-blur-xl" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="rounded-xl bg-[#111827] px-3 py-2 text-xs font-semibold text-white">{savingTitle ? "…" : "Save"}</button><button type="button" onClick={() => setEditingTitle(false)} className="px-2 py-2 text-xs font-semibold text-slate-500">Cancel</button></div> : <button type="button" onClick={() => setEditingTitle(true)} className="max-w-full truncate text-left text-sm font-semibold tracking-tight text-slate-800">{thread.title}</button>}
+          </div>
+          <IrisMark size={34} />
         </div>
-      </div>
+      </header>
 
-      <div className="iris-scrollbar flex-1 overflow-y-auto py-6 sm:py-8">
-        {!hasMessages ? <div className="flex min-h-[48vh] flex-col items-center justify-center rounded-[32px] bg-gradient-to-br from-[#e5f4ff] via-[#eef0ff] to-transparent px-6 text-center"><span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/75 text-[var(--iris-accent)]"><Sparkles size={24} /></span><h1 className="mt-5 text-2xl font-semibold tracking-tight text-slate-900">What would you like to think through?</h1></div> : null}
-        <div className="space-y-5">
+      <div className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
+        {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
+        <div className="mx-auto max-w-3xl space-y-7">
           {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
           <div ref={messagesEndRef} />
         </div>
       </div>
 
-      <div className="pb-4 pt-2 sm:pb-6">
-        {error ? <p className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-600">{error}</p> : null}
-        <form onSubmit={sendMessage} className="rounded-[26px] border border-white/90 bg-white/85 p-2 shadow-[0_14px_44px_rgba(120,145,190,0.12)] transition focus-within:border-[var(--iris-accent)] focus-within:shadow-md">
-          <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows={2} placeholder="Message Iris…" className="max-h-36 min-h-14 w-full resize-none bg-transparent px-3 py-2 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400" disabled={sending} />
-          <div className="flex justify-end px-2 pb-1"><button type="submit" disabled={!composer.trim() || sending} className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-950 text-white transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Send message">{sending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}</button></div>
-        </form>
+      <div className="absolute inset-x-0 bottom-0 z-20 h-40 px-4 pb-[max(14px,env(safe-area-inset-bottom))] sm:h-44 sm:px-8">
+        <ProceduralBlur edge="bottom" />
+        <div className="relative mx-auto flex h-full max-w-3xl flex-col justify-end">
+          {error ? <p className="mb-2 rounded-xl bg-red-50/90 px-3 py-2 text-xs font-medium text-red-600 backdrop-blur-xl">{error}</p> : null}
+          <form onSubmit={sendMessage} className="glass-surface rounded-[28px] p-2 transition focus-within:bg-white/78 focus-within:shadow-[0_26px_70px_rgba(73,98,145,.18)]">
+            <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder="Message Iris" className="max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 outline-none placeholder:text-slate-400" disabled={sending} />
+            <div className="flex justify-end px-1 pb-1"><button type="submit" disabled={!composer.trim() || sending} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button></div>
+          </form>
+        </div>
       </div>
     </div>
   );
@@ -181,13 +189,17 @@ export function ChatScreen() {
 function MessageBubble({ message }: Readonly<{ message: Message }>) {
   const isUser = message.role === "user";
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
-      <div className={`max-w-[88%] sm:max-w-[75%] ${isUser ? "items-end" : "items-start"}`}>
-        <div className={`rounded-3xl px-4 py-3 text-sm leading-6 ${isUser ? "rounded-br-md bg-slate-950 text-white" : "rounded-bl-md border border-slate-200 bg-white text-slate-700 shadow-sm"}`}>
-          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : <span className="inline-flex items-center gap-1.5 text-slate-400"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300 [animation-delay:-0.3s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300 [animation-delay:-0.15s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300" /></span>}
+    <div className={`message-arrive flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
+      <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
+        <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
+          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : <span className="inline-flex items-center gap-1.5 py-2 text-slate-400"><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#6f8ee6]" /><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#8da2e4]" /><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#a0a9d9]" /></span>}
         </div>
-        <p className={`mt-1.5 px-1 text-[11px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
+        <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
       </div>
     </div>
   );
+}
+
+function ChatSkeleton() {
+  return <div className="mx-auto h-dvh max-w-4xl animate-pulse px-5 pt-8"><div className="h-10 w-44 rounded-2xl bg-white/55" /><div className="mt-[52vh] h-24 rounded-[28px] bg-white/55" /></div>;
 }

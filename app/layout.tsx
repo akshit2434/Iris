@@ -1,7 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { Geist } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/service-worker-register";
+
+const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
   title: "Iris",
@@ -20,7 +23,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en">
-      <body>
+      <body className={geist.variable}>
         <ServiceWorkerRegister />
         {children}
       </body>

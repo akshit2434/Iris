@@ -1,66 +1,128 @@
 @import "tailwindcss";
 
 :root {
-  --iris-background: #f5f7fc;
-  --iris-foreground: #121a2a;
-  --iris-muted: #748097;
-  --iris-border: #e4e9f2;
-  --iris-accent: #6687ed;
-  --iris-accent-soft: #eaf0ff;
+  --iris-background: #f5f7fb;
+  --iris-foreground: #111827;
+  --iris-muted: #7b8494;
+  --iris-border: rgba(255, 255, 255, 0.72);
+  --iris-accent: #4978ed;
+  --iris-accent-soft: #e7edff;
+  --iris-glass: rgba(255, 255, 255, 0.68);
+  --iris-shadow: 0 22px 70px rgba(81, 104, 151, 0.13);
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 html {
   min-height: 100%;
   background: var(--iris-background);
+  overscroll-behavior-y: none;
 }
 
 body {
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
   background:
-    radial-gradient(circle at 88% -8%, rgba(182, 217, 255, 0.42), transparent 29rem),
-    radial-gradient(circle at 16% 18%, rgba(224, 220, 255, 0.24), transparent 26rem),
+    radial-gradient(ellipse 85% 56% at 92% -4%, rgba(101, 184, 255, 0.34), transparent 68%),
+    radial-gradient(ellipse 78% 58% at -8% 20%, rgba(197, 188, 255, 0.28), transparent 66%),
+    radial-gradient(ellipse 62% 40% at 54% 100%, rgba(192, 230, 255, 0.2), transparent 68%),
     var(--iris-background);
   color: var(--iris-foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
   text-rendering: optimizeLegibility;
 }
 
-button,
-a,
-textarea,
-input {
-  -webkit-tap-highlight-color: transparent;
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  content: "";
+  opacity: 0.25;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.08'/%3E%3C/svg%3E");
+  pointer-events: none;
 }
 
-button:focus-visible,
-a:focus-visible,
-textarea:focus-visible,
-input:focus-visible {
-  outline: 3px solid rgba(102, 135, 237, 0.3);
-  outline-offset: 2px;
+button, a, textarea, input { -webkit-tap-highlight-color: transparent; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; }
+
+:focus-visible {
+  outline: 3px solid rgba(73, 120, 237, 0.28);
+  outline-offset: 3px;
 }
 
-::selection {
-  background: #dce6ff;
+::selection { background: #dce7ff; }
+
+.iris-mark {
+  display: block;
+  object-fit: contain;
+  filter: saturate(0.94) drop-shadow(0 8px 16px rgba(44, 100, 188, 0.16));
 }
 
-.iris-scrollbar {
-  scrollbar-color: #c8ccda transparent;
-  scrollbar-width: thin;
+.glass-surface {
+  border: 1px solid var(--iris-border);
+  background: linear-gradient(145deg, rgba(255,255,255,.78), rgba(255,255,255,.48));
+  box-shadow: var(--iris-shadow), inset 0 1px 0 rgba(255,255,255,.8);
+  backdrop-filter: blur(24px) saturate(145%);
+  -webkit-backdrop-filter: blur(24px) saturate(145%);
 }
 
-.iris-scrollbar::-webkit-scrollbar {
-  width: 8px;
+.soft-press {
+  transition: transform .35s cubic-bezier(.2,.8,.2,1), box-shadow .35s ease, background-color .25s ease;
 }
+.soft-press:hover { transform: translateY(-2px); }
+.soft-press:active { transform: scale(.975); transition-duration: .12s; }
 
-.iris-scrollbar::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
+.procedural-blur {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 116px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.procedural-blur--top { top: 0; }
+.procedural-blur--bottom { bottom: 0; transform: rotate(180deg); }
+.procedural-blur__wash,
+.procedural-blur__layer { position: absolute; inset: 0; }
+.procedural-blur__wash { background: linear-gradient(to bottom, rgba(245,247,251,.96) 0%, rgba(245,247,251,.68) 42%, transparent 100%); }
+.procedural-blur__layer { backdrop-filter: blur(1px); -webkit-backdrop-filter: blur(1px); mask-image: linear-gradient(to bottom, #000, transparent); -webkit-mask-image: linear-gradient(to bottom, #000, transparent); }
+.procedural-blur__layer--1 { backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); mask-image: linear-gradient(to bottom,#000 0 18%,transparent 46%); -webkit-mask-image: linear-gradient(to bottom,#000 0 18%,transparent 46%); }
+.procedural-blur__layer--2 { backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); mask-image: linear-gradient(to bottom,transparent 14%,#000 30%,transparent 62%); -webkit-mask-image: linear-gradient(to bottom,transparent 14%,#000 30%,transparent 62%); }
+.procedural-blur__layer--3 { backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); mask-image: linear-gradient(to bottom,transparent 31%,#000 50%,transparent 78%); -webkit-mask-image: linear-gradient(to bottom,transparent 31%,#000 50%,transparent 78%); }
+.procedural-blur__layer--4 { backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); mask-image: linear-gradient(to bottom,transparent 54%,#000 76%,transparent 100%); -webkit-mask-image: linear-gradient(to bottom,transparent 54%,#000 76%,transparent 100%); }
+
+.ambient-orb {
+  position: absolute;
+  width: min(74vw, 520px);
+  aspect-ratio: 1;
   border-radius: 999px;
-  background: #c8ccda;
-  background-clip: padding-box;
+  background: radial-gradient(circle at 40% 38%, rgba(114,205,255,.42), rgba(159,151,255,.18) 44%, transparent 72%);
+  filter: blur(18px);
+  pointer-events: none;
+  animation: ambient-drift 12s ease-in-out infinite alternate;
+}
+
+.iris-scrollbar { scrollbar-color: rgba(122,136,162,.28) transparent; scrollbar-width: thin; }
+.iris-scrollbar::-webkit-scrollbar { width: 6px; }
+.iris-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(122,136,162,.25); }
+
+.thinking-dot { animation: thinking 1.15s ease-in-out infinite; }
+.thinking-dot:nth-child(2) { animation-delay: .14s; }
+.thinking-dot:nth-child(3) { animation-delay: .28s; }
+.message-arrive { animation: message-arrive .42s cubic-bezier(.2,.8,.2,1) both; }
+
+@keyframes thinking { 0%,70%,100% { transform: translateY(0); opacity:.32; } 35% { transform: translateY(-4px); opacity:1; } }
+@keyframes ambient-drift { from { transform: translate3d(-2%, -2%, 0) scale(.96); } to { transform: translate3d(4%, 3%, 0) scale(1.05); } }
+@keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-surface { background: rgba(255,255,255,.94); }
+  .procedural-blur__wash { background: linear-gradient(to bottom, var(--iris-background) 0 44%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

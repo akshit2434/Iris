@@ -60,6 +60,8 @@ npm run check:secrets # scan tracked files for credential-like content
 
 Repository workflow is documented in [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [PUBLIC_REPOSITORY_POLICY.md](PUBLIC_REPOSITORY_POLICY.md).
 
+The mobile-first visual and interaction rules are documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
+
 ## Data and privacy
 
 Profiles are separate namespaces. Server routes derive the active profile from an HTTP-only profile cookie; database queries include `profile_id`, and the schema enforces matching profile/thread ownership with composite foreign keys. Row Level Security is enabled on the core tables.

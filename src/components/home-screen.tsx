@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowUpRight, LoaderCircle, Plus, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import type { Thread } from "@/lib/types";
+import { FluidReveal } from "@/components/fluid-reveal";
+import { IrisMark } from "@/components/iris-mark";
 import { ProfilePicker } from "@/components/profile-picker";
 import { ThreadList } from "@/components/thread-list";
 import { useProfile } from "@/components/profile-provider";
@@ -13,6 +14,7 @@ export function HomeScreen() {
   const { profileId, profileLabels, isReady } = useProfile();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadThreads = useCallback(async () => {
@@ -21,9 +23,7 @@ export function HomeScreen() {
     try {
       const response = await fetch("/api/threads", { cache: "no-store" });
       const body = (await response.json()) as { threads?: Thread[]; error?: string };
-      if (!response.ok || !body.threads) {
-        throw new Error(body.error ?? "Could not load chats.");
-      }
+      if (!response.ok || !body.threads) throw new Error(body.error ?? "Could not load chats.");
       setThreads(body.threads);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load chats.");
@@ -32,71 +32,59 @@ export function HomeScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    if (profileId) {
-      void loadThreads();
-    }
-  }, [loadThreads, profileId]);
+  useEffect(() => { if (profileId) void loadThreads(); }, [loadThreads, profileId]);
 
   async function createChat() {
     setError(null);
+    setIsCreating(true);
     try {
       const response = await fetch("/api/threads", { method: "POST" });
       const body = (await response.json()) as { thread?: Thread; error?: string };
-      if (!response.ok || !body.thread) {
-        throw new Error(body.error ?? "Could not create a chat.");
-      }
+      if (!response.ok || !body.thread) throw new Error(body.error ?? "Could not create a chat.");
       router.push(`/chat/${body.thread.id}`);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not create a chat.");
+      setIsCreating(false);
     }
   }
 
-  if (!isReady) {
-    return <div className="mx-auto w-full max-w-5xl animate-pulse p-5 sm:p-8"><div className="h-8 w-52 rounded-xl bg-white" /><div className="mt-6 h-40 rounded-3xl bg-white" /></div>;
-  }
+  if (!isReady) return <HomeSkeleton />;
 
   if (!profileId) {
-    return (
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-5xl items-center px-5 py-12 sm:px-8">
-        <div className="w-full">
-          <div className="mb-10 max-w-xl">
-            <h1 className="text-4xl font-semibold tracking-tight text-slate-950 sm:text-6xl">A quieter place to think.</h1>
-          </div>
-          <ProfilePicker />
-        </div>
+    return <FluidReveal className="relative mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-4xl items-center overflow-hidden px-5 py-12 sm:px-9">
+      <div className="ambient-orb -right-36 top-10" />
+      <div className="relative w-full">
+        <div data-reveal className="mb-14 max-w-xl"><IrisMark size={58} priority /><h1 className="mt-7 text-[clamp(2.65rem,11vw,5.4rem)] font-medium leading-[.98] tracking-[-.055em] text-slate-950">Choose your space.</h1></div>
+        <div data-reveal><ProfilePicker /></div>
       </div>
-    );
+    </FluidReveal>;
   }
 
-  return (
-    <div className="mx-auto w-full max-w-5xl px-5 py-8 sm:px-8 sm:py-12">
-      <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">What matters now, {profileLabels[profileId]}?</h1>
-        </div>
-        <button type="button" onClick={() => void createChat()} className="inline-flex w-fit items-center gap-2 rounded-[18px] bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-slate-800"><Plus size={17} /> New chat</button>
+  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl overflow-hidden px-5 pb-8 pt-10 sm:px-9 sm:pt-16 lg:min-h-dvh lg:pt-20">
+    <div className="ambient-orb -right-40 -top-20" />
+    <section className="relative mx-auto max-w-3xl pt-3 sm:pt-7">
+      <div data-reveal className="flex items-start justify-between gap-6">
+        <h1 className="max-w-2xl text-[clamp(2.55rem,9.5vw,5.8rem)] font-medium leading-[.98] tracking-[-.06em] text-slate-950">What’s on your mind, {profileLabels[profileId]}?</h1>
+        <IrisMark size={52} priority />
       </div>
 
-      <section className="mt-10 rounded-[32px] border border-white/80 bg-gradient-to-br from-[#dff1ff] via-[#edf0ff] to-white p-6 shadow-[0_18px_60px_rgba(120,145,190,0.12)] sm:p-9">
-        <div className="flex items-start justify-between gap-5">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-900">Start a new thought.</h2>
-          </div>
-          <span className="hidden rounded-2xl bg-white/70 p-3 text-[var(--iris-accent)] sm:block"><Sparkles size={19} /></span>
-        </div>
-        <button type="button" onClick={() => void createChat()} className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-[var(--iris-accent)] hover:underline">New chat <ArrowUpRight size={16} /></button>
-      </section>
+      <button data-reveal type="button" onClick={() => void createChat()} disabled={isCreating} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
+        <span className="flex-1 text-base font-medium text-slate-500 sm:text-lg">Start a conversation</span>
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#111827] text-white shadow-[0_10px_24px_rgba(17,24,39,.18)] transition group-hover:translate-x-0.5" aria-hidden="true">
+          {isCreating ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : <span className="text-xl font-light">↗</span>}
+        </span>
+      </button>
 
-      <section className="mt-10">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-slate-900">Recent chats</h2>
-          {isLoading ? <LoaderCircle size={18} className="animate-spin text-slate-300" /> : null}
-        </div>
-        {error ? <p className="mb-4 rounded-2xl bg-red-50 px-4 py-3 text-sm font-medium text-red-600">{error}</p> : null}
-        <ThreadList threads={threads.slice(0, 6)} emptyMessage="No chats yet." />
-        {threads.length > 6 ? <button type="button" onClick={() => router.push("/history")} className="mt-4 text-sm font-semibold text-[var(--iris-accent)] hover:underline">View all history</button> : null}
+      <section data-reveal className="mt-14 sm:mt-20">
+        <div className="mb-4 flex items-center justify-between px-1"><h2 className="text-[15px] font-semibold tracking-tight text-slate-900">Recent</h2>{isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#4978ed]" aria-label="Loading chats" /> : null}</div>
+        {error ? <p className="mb-4 rounded-2xl bg-red-50/80 px-4 py-3 text-sm font-medium text-red-600">{error}</p> : null}
+        <ThreadList threads={threads.slice(0, 5)} emptyMessage="No chats yet." />
+        {threads.length > 5 ? <button type="button" onClick={() => router.push("/history")} className="mt-5 px-1 text-sm font-semibold text-[#4978ed]">All history</button> : null}
       </section>
-    </div>
-  );
+    </section>
+  </FluidReveal>;
+}
+
+function HomeSkeleton() {
+  return <div className="mx-auto max-w-3xl animate-pulse px-5 pt-14"><div className="h-12 w-3/4 rounded-2xl bg-white/55" /><div className="mt-10 h-20 rounded-[28px] bg-white/55" /></div>;
 }
