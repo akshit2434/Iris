@@ -6,6 +6,7 @@ export function ProceduralBlur({ edge, className = "" }: Readonly<{ edge: "top" 
       <span className="procedural-blur__layer procedural-blur__layer--2" />
       <span className="procedural-blur__layer procedural-blur__layer--3" />
       <span className="procedural-blur__layer procedural-blur__layer--4" />
+      <span className="procedural-blur__layer procedural-blur__layer--5" />
     </div>
   );
 }

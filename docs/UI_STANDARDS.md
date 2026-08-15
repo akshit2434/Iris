@@ -14,8 +14,8 @@ Iris is a quiet conversation space. The interface should feel continuous, tactil
 ## Procedural blur
 
 - Fixed UI must dissolve into scrolling content instead of ending at a hard horizontal edge.
-- Build top and bottom fades from overlapping masked blur bands. Increase blur gradually toward the fixed control.
-- Put a translucent color wash behind the blur bands so the fallback remains legible.
+- Build top and bottom fades from at least five overlapping masked blur bands. Increase blur gradually toward the fixed control.
+- Keep the color wash translucent; the source content should visibly distort and soften rather than disappear into white.
 - Use procedural blur around chat headers, composers, and the mobile dock. Do not place it behind ordinary static content.
 - Preserve contrast and provide an opaque fallback when backdrop filters are unavailable.
 
