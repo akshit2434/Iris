@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --iris-background: #f5f7fc;
+  --iris-foreground: #121a2a;
+  --iris-muted: #748097;
+  --iris-border: #e4e9f2;
+  --iris-accent: #6687ed;
+  --iris-accent-soft: #eaf0ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--iris-background);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 88% -8%, rgba(182, 217, 255, 0.42), transparent 29rem),
+    radial-gradient(circle at 16% 18%, rgba(224, 220, 255, 0.24), transparent 26rem),
+    var(--iris-background);
+  color: var(--iris-foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+a,
+textarea,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(102, 135, 237, 0.3);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #dce6ff;
+}
+
+.iris-scrollbar {
+  scrollbar-color: #c8ccda transparent;
+  scrollbar-width: thin;
+}
+
+.iris-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.iris-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #c8ccda;
+  background-clip: padding-box;
+}

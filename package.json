@@ -1,0 +1,35 @@
+{
+  "name": "iris",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:privacy": "node scripts/check-privacy.mjs",
+    "setup:git": "git config core.hooksPath .githooks"
+  },
+  "dependencies": {
+    "@langchain/openrouter": "^0.4.8",
+    "@supabase/supabase-js": "^2.112.3",
+    "langchain": "^1.5.9",
+    "lucide-react": "^0.511.0",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  }
+}

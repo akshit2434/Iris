@@ -1,0 +1,32 @@
+node_modules/
+.next/
+*.tsbuildinfo
+.env*
+!.env.example
+.playwright-cli/
+output-playwright/
+.DS_Store
+
+# Private product context belongs only in the local checkout.
+iris_context_pack/
+.private/
+private_context/
+
+# Local/private runtime data. Never commit user exports or telemetry.
+local-data/
+data/
+artifacts/
+exports/
+backups/
+uploads/
+storage/
+supabase/.temp/
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
