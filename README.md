@@ -26,6 +26,10 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - Exactly two locally persisted profiles
 - Profile-scoped Supabase Postgres persistence
 - Chat creation, history, titles, rename, timestamps, and stable UUIDs
+- First-turn automatic chat titles use one additional small provider request;
+  `OPENROUTER_TITLE_MODEL` can override the title model and defaults to the
+  configured `OPENROUTER_MODEL`. Title generation never delays first-token
+  streaming and falls back locally if it fails.
 - Raw user and assistant message persistence owned by Iris
 - Streaming LangChain agent responses through OpenRouter
 - Versioned NDJSON run events with persisted, profile/thread-scoped tool activity
@@ -61,6 +65,8 @@ SUPABASE_URL=http://127.0.0.1:56321
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
 OPENROUTER_API_KEY=your-server-only-openrouter-key
 OPENROUTER_MODEL=openai/gpt-5.6-luna
+# Optional; defaults to OPENROUTER_MODEL for the one small first-turn title request.
+# OPENROUTER_TITLE_MODEL=openai/gpt-5.6-luna
 # Optional development tracing (keep disabled unless a private tracing project is configured).
 LANGCHAIN_TRACING_V2=false
 # LANGCHAIN_API_KEY=your-server-only-langsmith-key

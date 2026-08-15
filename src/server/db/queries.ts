@@ -5,6 +5,7 @@ import type { Message, PersistedToolEvent, Thread } from "@/lib/types";
 import { getDatabase } from "@/server/db/client";
 import type { Json } from "@/server/db/types";
 import { sanitizeForEvent } from "@/server/agent/protocol";
+import { deriveThreadTitle } from "@/lib/thread-title";
 
 export type ProfileSummary = {
   id: ProfileId;
@@ -73,6 +74,8 @@ function toThread(row: {
   id: string;
   profile_id: ProfileId;
   title: string;
+  title_source: Thread["titleSource"];
+  title_generation_attempted: boolean;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
@@ -81,6 +84,7 @@ function toThread(row: {
     id: row.id,
     profileId: row.profile_id,
     title: row.title,
+    titleSource: row.title_source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,
@@ -195,7 +199,7 @@ const AGENT_RUN_COLUMNS =
 export async function listThreads(profileId: ProfileId) {
   const { data, error } = await getDatabase()
     .from("threads")
-    .select("id, profile_id, title, created_at, updated_at, archived_at")
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
     .eq("profile_id", profileId)
     .is("archived_at", null)
     .order("updated_at", { ascending: false });
@@ -211,7 +215,7 @@ export async function createThread(profileId: ProfileId) {
   const { data, error } = await getDatabase()
     .from("threads")
     .insert({ profile_id: profileId, title: "New chat" })
-    .select("id, profile_id, title, created_at, updated_at, archived_at")
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
     .single();
 
   if (error) {
@@ -224,7 +228,7 @@ export async function createThread(profileId: ProfileId) {
 export async function getThread(profileId: ProfileId, threadId: string) {
   const { data: thread, error: threadError } = await getDatabase()
     .from("threads")
-    .select("id, profile_id, title, created_at, updated_at, archived_at")
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
     .eq("id", threadId)
     .eq("profile_id", profileId)
     .maybeSingle();
@@ -517,16 +521,50 @@ export async function updateAgentRunStatus(input: {
 export async function renameThread(profileId: ProfileId, threadId: string, title: string) {
   const { data, error } = await getDatabase()
     .from("threads")
-    .update({ title: title.trim().slice(0, 120) })
+    .update({ title: title.trim().slice(0, 120), title_source: "manual", title_generation_attempted: true })
     .eq("id", threadId)
     .eq("profile_id", profileId)
-    .select("id, profile_id, title, created_at, updated_at, archived_at")
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
     .maybeSingle();
 
   if (error) {
     throw error;
   }
 
+  return data ? toThread(data) : null;
+}
+
+/** Claim the single automatic-title attempt; the update is the race guard. */
+export async function claimAutomaticThreadTitle(profileId: ProfileId, threadId: string) {
+  const { data, error } = await getDatabase()
+    .from("threads")
+    .update({ title_generation_attempted: true })
+    .eq("id", threadId)
+    .eq("profile_id", profileId)
+    .eq("title", "New chat")
+    .eq("title_source", "default")
+    .eq("title_generation_attempted", false)
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
+    .maybeSingle();
+
+  if (error) throw error;
+  return data ? toThread(data) : null;
+}
+
+/** Apply a generated title only while the thread is still eligible. */
+export async function applyAutomaticThreadTitle(profileId: ProfileId, threadId: string, title: string) {
+  const { data, error } = await getDatabase()
+    .from("threads")
+    .update({ title: title.trim().slice(0, 120), title_source: "automatic" })
+    .eq("id", threadId)
+    .eq("profile_id", profileId)
+    .eq("title", "New chat")
+    .eq("title_source", "default")
+    .eq("title_generation_attempted", true)
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
+    .maybeSingle();
+
+  if (error) throw error;
   return data ? toThread(data) : null;
 }
 
@@ -542,7 +580,4 @@ export async function touchThread(profileId: ProfileId, threadId: string) {
   }
 }
 
-export function deriveThreadTitle(content: string) {
-  const title = content.replace(/\s+/g, " ").trim();
-  return title.length > 48 ? `${title.slice(0, 48).trimEnd()}…` : title;
-}
+export { deriveThreadTitle };

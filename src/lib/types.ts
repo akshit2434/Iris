@@ -6,6 +6,7 @@ export type Thread = {
   id: string;
   profileId: ProfileId;
   title: string;
+  titleSource: "default" | "automatic" | "manual";
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;

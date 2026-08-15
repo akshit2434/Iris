@@ -13,6 +13,7 @@ export type StreamState = {
   lastSequence: number;
   status: StreamStatus;
   errorMessage: string | null;
+  title: string | null;
 };
 
 export type AssistantStreamPhase = "thinking" | "streaming" | "complete" | "incomplete";
@@ -127,6 +128,8 @@ export function parseAgentStreamEvent(value: unknown): AgentStreamEvent | null {
       return hasString(value, "assistantMessageId") && hasString(value, "at")
         ? value as unknown as AgentStreamEvent
         : null;
+    case "title_updated":
+      return hasString(value, "title") ? value as unknown as AgentStreamEvent : null;
     case "failed":
       return hasString(value, "code") && hasString(value, "message") && typeof value.partial === "boolean" && hasString(value, "at")
         ? value as unknown as AgentStreamEvent
@@ -280,6 +283,7 @@ export function createStreamState(input?: {
     lastSequence: 0,
     status: "idle",
     errorMessage: null,
+    title: null,
   };
 }
 
@@ -336,6 +340,10 @@ export function reduceAgentStream(state: StreamState, event: AgentStreamEvent): 
     };
   }
 
+  if (event.type === "title_updated") {
+    return { ...nextBase, runId, title: event.title };
+  }
+
   if (event.type === "tool_started" || event.type === "tool_finished") {
     return { ...nextBase, runId, status: "running", toolActivities: applyToolEvent(nextBase.toolActivities, event) };
   }
@@ -375,6 +383,15 @@ export function failStreamState(state: StreamState, message: string): StreamStat
 
 export function toolActivitiesForRun(activities: readonly ToolActivity[], runId: string | null | undefined) {
   return runId ? activities.filter((activity) => activity.runId === runId) : [];
+}
+
+export function summarizeToolActivity(activities: readonly ToolActivity[]) {
+  const failed = activities.filter((activity) => activity.status === "failed").length;
+  const running = activities.filter((activity) => activity.status === "running").length;
+  if (running > 0) return `Using ${activities.length} ${activities.length === 1 ? "tool" : "tools"}`;
+  if (failed > 0) return `${failed} ${failed === 1 ? "tool" : "tools"} failed`;
+  if (activities.length === 1) return `Used ${toolLabel(activities[0].toolName).toLocaleLowerCase()}`;
+  return `Used ${activities.length} tools`;
 }
 
 export function toolLabel(toolName: string) {

@@ -47,6 +47,13 @@ export type AgentStreamEvent =
     }
   | {
       version: typeof AGENT_STREAM_PROTOCOL;
+      type: "title_updated";
+      sequence: number;
+      runId: string;
+      title: string;
+    }
+  | {
+      version: typeof AGENT_STREAM_PROTOCOL;
       type: "completed";
       sequence: number;
       runId: string;

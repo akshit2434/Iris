@@ -9,6 +9,7 @@ import {
   groupToolEvents,
   reduceAgentStream,
   startOptimisticRun,
+  summarizeToolActivity,
   summarizeToolResult,
 } from "@/lib/agent-stream";
 import type { Message } from "@/lib/types";
@@ -136,6 +137,15 @@ describe("agent stream reducer", () => {
     expect(next.status).toBe("completed");
   });
 
+  it("updates the live title without changing stream ordering", () => {
+    let next = reduceAgentStream(runningState(), event({
+      type: "run_started", runId: "run-1", requestId: "request-1", userMessageId: "user-1", assistantMessageId: "assistant-1", at: "now",
+    }));
+    next = reduceAgentStream(next, event({ type: "title_updated", runId: "run-1", title: "Plan a study sprint" }, 2));
+    expect(next.title).toBe("Plan a study sprint");
+    expect(next.status).toBe("running");
+  });
+
   it("ignores duplicate and late events by stream sequence", () => {
     let next = reduceAgentStream(runningState(), event({
       type: "run_started", runId: "run-1", requestId: "request-1", userMessageId: "user-1", assistantMessageId: "assistant-1", at: "now",
@@ -185,5 +195,18 @@ describe("agent stream reducer", () => {
       runId: "run-1", toolCallId: "call-2", toolName: "thread_overview", status: "succeeded",
       output: JSON.stringify({ found: true, title: "Runtime test", messageCount: 4 }),
     })).toBe("Runtime test · 4 messages");
+  });
+
+  it("keeps tool activity concise while preserving failure and detail states", () => {
+    expect(summarizeToolActivity([
+      { runId: "run-1", toolCallId: "call-1", toolName: "current_time", status: "running" },
+    ])).toBe("Using 1 tool");
+    expect(summarizeToolActivity([
+      { runId: "run-1", toolCallId: "call-1", toolName: "current_time", status: "succeeded" },
+    ])).toBe("Used current time");
+    expect(summarizeToolActivity([
+      { runId: "run-1", toolCallId: "call-1", toolName: "current_time", status: "failed" },
+      { runId: "run-1", toolCallId: "call-2", toolName: "thread_overview", status: "succeeded" },
+    ])).toBe("1 tool failed");
   });
 });

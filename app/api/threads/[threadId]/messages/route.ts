@@ -4,7 +4,8 @@ import { getSelectedProfile } from "@/server/auth/profile";
 import {
   createAgentRun,
   createMessage,
-  deriveThreadTitle,
+  applyAutomaticThreadTitle,
+  claimAutomaticThreadTitle,
   findAgentRun,
   getProfile,
   getThread,
@@ -12,7 +13,6 @@ import {
   getThreadMessages,
   linkAgentRunMessages,
   appendAgentEvent,
-  renameThread,
   touchThread,
   updateAgentRunStatus,
 } from "@/server/db/queries";
@@ -22,6 +22,7 @@ import {
 } from "@/server/agent/context";
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
 import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
+import { resolveThreadTitle } from "@/server/agent/title";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
   AGENT_STREAM_PROTOCOL,
@@ -132,9 +133,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     });
     await linkAgentRunMessages(profileId, threadId, run.id, { userMessageId });
 
-    if (thread.thread.title === "New chat") {
-      await renameThread(profileId, threadId, deriveThreadTitle(content));
-    }
+    const titleClaim = thread.thread.titleSource === "default"
+      ? await claimAutomaticThreadTitle(profileId, threadId)
+      : null;
 
     const [history, threadContextRow] = await Promise.all([
       getThreadMessages(profileId, threadId),
@@ -144,9 +145,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       profileId,
       profileLabel: profile.displayName,
       threadId,
-      threadTitle: thread.thread.title === "New chat"
-        ? deriveThreadTitle(content)
-        : thread.thread.title,
+      threadTitle: thread.thread.title,
       browserTimezone: resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
@@ -168,6 +167,11 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         let assistantContent = "";
         let assistantPersisted = false;
         let closed = false;
+        // Start the tiny title request before the agent iterator. It has its
+        // own timeout/fallback and is never allowed to delay first-token work.
+        const titlePromise = titleClaim
+          ? resolveThreadTitle({ request: content })
+          : null;
 
         const send = (event: OutgoingStreamEvent) => {
           if (closed) return;
@@ -180,6 +184,17 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         };
 
         try {
+          const titleTask = titlePromise
+            ? titlePromise.then(async (title) => {
+                try {
+                  const updated = await applyAutomaticThreadTitle(profileId, threadId, title);
+                  if (updated) send({ type: "title_updated", runId: run.id, title: updated.title });
+                } catch {
+                  // A title provider/database failure must never fail the run.
+                }
+              }).catch(() => undefined)
+            : Promise.resolve();
+
           await appendAgentEvent({
             profileId,
             threadId,
@@ -244,6 +259,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             });
             send({ ...event, runId: run.id });
           }
+
+          await titleTask;
 
           if (assistantContent.trim().length === 0) {
             throw new Error("The assistant returned an empty response.");

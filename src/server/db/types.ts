@@ -34,6 +34,8 @@ export type Database = {
           id: string;
           profile_id: "profile-a" | "profile-b";
           title: string;
+          title_source: "default" | "automatic" | "manual";
+          title_generation_attempted: boolean;
           created_at: string;
           updated_at: string;
           archived_at: string | null;
@@ -42,6 +44,8 @@ export type Database = {
           id?: string;
           profile_id: "profile-a" | "profile-b";
           title?: string;
+          title_source?: "default" | "automatic" | "manual";
+          title_generation_attempted?: boolean;
           created_at?: string;
           updated_at?: string;
           archived_at?: string | null;
@@ -50,6 +54,8 @@ export type Database = {
           id: string;
           profile_id: "profile-a" | "profile-b";
           title: string;
+          title_source: "default" | "automatic" | "manual";
+          title_generation_attempted: boolean;
           created_at: string;
           updated_at: string;
           archived_at: string | null;

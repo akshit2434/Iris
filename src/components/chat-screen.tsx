@@ -18,6 +18,7 @@ import {
   groupToolEvents,
   reduceAgentStream,
   startOptimisticRun,
+  summarizeToolActivity,
   summarizeToolResult,
   toolActivitiesForRun,
   toolDetail,
@@ -127,6 +128,13 @@ export function ChatScreen() {
   useEffect(() => {
     if (streamState.status === "failed" && streamState.errorMessage) setError(streamState.errorMessage);
   }, [streamState.status, streamState.errorMessage]);
+
+  useEffect(() => {
+    const title = streamState.title;
+    if (!title || !thread || title === thread.title) return;
+    setThread((current) => current ? { ...current, title, titleSource: "automatic" } : current);
+    setDraftTitle(title);
+  }, [streamState.title, thread]);
 
   async function saveTitle() {
     if (!thread || !draftTitle.trim()) return;
@@ -277,10 +285,10 @@ function MessageBubble({ message, active, toolActivities }: Readonly<{ message: 
   return (
     <div className={`message-arrive flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
+        {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} /> : null}
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
           {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : phase === "thinking" ? <ThinkingIndicator /> : null}
         </div>
-        {!isUser && toolActivities.length > 0 ? <ToolActivityList activities={toolActivities} /> : null}
         {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
       </div>
@@ -302,11 +310,28 @@ function UnattachedToolActivities({ messages, toolActivities }: Readonly<{ messa
   const unattached = toolActivities.filter((activity) => !attachedRuns.has(activity.runId));
   if (unattached.length === 0) return null;
   const runs = [...new Set(unattached.map((activity) => activity.runId))];
-  return <div className="message-arrive space-y-2 pl-1"><p className="text-[11px] font-medium text-slate-400">Saved run activity</p>{runs.map((runId) => <ToolActivityList key={runId} activities={unattached.filter((activity) => activity.runId === runId)} />)}</div>;
+  return <div className="message-arrive space-y-2 pl-1"><p className="text-[11px] font-medium text-slate-400">Saved run activity</p>{runs.map((runId) => <ToolActivityDisclosure key={runId} activities={unattached.filter((activity) => activity.runId === runId)} active={false} />)}</div>;
 }
 
-function ToolActivityList({ activities }: Readonly<{ activities: ToolActivity[] }>) {
-  return <div className="mt-2 space-y-1.5" aria-label="Tool activity">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} />)}</div>;
+function ToolActivityDisclosure({ activities, active }: Readonly<{ activities: ToolActivity[]; active: boolean }>) {
+  const [expanded, setExpanded] = useState(active);
+  const wasActive = useRef(active);
+
+  useEffect(() => {
+    if (!active && wasActive.current) setExpanded(false);
+    wasActive.current = active;
+  }, [active]);
+
+  return <div className="tool-activity-disclosure mt-2 max-w-full rounded-[16px] border border-white/62 bg-white/34 px-3 py-1.5 shadow-[0_8px_24px_rgba(81,104,151,.045)] backdrop-blur-xl">
+    <button type="button" className="flex min-h-7 w-full items-center gap-2 text-left text-[11px] font-medium text-slate-500" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
+      <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/65 text-[9px] ${activities.some((activity) => activity.status === "failed") ? "text-red-500" : activities.some((activity) => activity.status === "running") ? "text-[#5577d8]" : "text-emerald-600"}`} aria-hidden="true">
+        {activities.some((activity) => activity.status === "running") ? <span className="tool-pulse h-1.5 w-1.5 rounded-full bg-current" /> : activities.some((activity) => activity.status === "failed") ? "!" : "✓"}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{summarizeToolActivity(activities)}</span>
+      <span className={`text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true">⌄</span>
+    </button>
+    {expanded ? <div className="space-y-1.5 pb-1.5 pt-1" aria-label="Tool activity details">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} />)}</div> : null}
+  </div>;
 }
 
 function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
@@ -314,7 +339,7 @@ function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
   const stateLabel = activity.status === "running" ? "Running" : activity.status === "succeeded" ? "Succeeded" : "Failed";
   const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "succeeded" ? "text-emerald-600" : "text-red-500";
   return (
-    <div className="tool-activity-row rounded-[16px] border border-white/70 bg-white/42 px-3 py-2 text-xs text-slate-600 shadow-[0_8px_24px_rgba(81,104,151,.06)] backdrop-blur-xl" aria-label={`${toolLabel(activity.toolName)} ${stateLabel}`} aria-live={activity.status === "running" ? "polite" : "off"}>
+    <div className="tool-activity-row rounded-xl bg-white/38 px-2 py-1.5 text-xs text-slate-600" aria-label={`${toolLabel(activity.toolName)} ${stateLabel}`} aria-live={activity.status === "running" ? "polite" : "off"}>
       <div className="flex items-center gap-2">
         <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[10px] ${stateClass}`} aria-hidden="true">{activity.status === "running" ? <span className="tool-pulse h-1.5 w-1.5 rounded-full bg-current" /> : activity.status === "succeeded" ? "✓" : "!"}</span>
         <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{toolLabel(activity.toolName)}</span>
