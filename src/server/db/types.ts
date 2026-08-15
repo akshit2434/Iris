@@ -72,6 +72,7 @@ export type Database = {
           agent_run_id: string | null;
           is_complete: boolean;
           created_at: string;
+          search_vector: string | null;
         };
         Insert: {
           id?: string;
@@ -209,9 +210,224 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      profile_memory_state: {
+        Row: {
+          profile_id: "profile-a" | "profile-b";
+          current_revision: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          profile_id: "profile-a" | "profile-b";
+          current_revision?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<{
+          profile_id: "profile-a" | "profile-b";
+          current_revision: number;
+          created_at: string;
+          updated_at: string;
+        }>;
+        Relationships: [];
+      };
+      memory_documents: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          logical_key: string;
+          content_markdown: string;
+          document_revision: number;
+          content_hash: string;
+          created_at: string;
+          updated_at: string;
+          archived_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          logical_key: string;
+          content_markdown: string;
+          document_revision?: number;
+          content_hash: string;
+          created_at?: string;
+          updated_at?: string;
+          archived_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          logical_key: string;
+          content_markdown: string;
+          document_revision: number;
+          content_hash: string;
+          created_at: string;
+          updated_at: string;
+          archived_at: string | null;
+        }>;
+        Relationships: [];
+      };
+      memory_document_revisions: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision: number;
+          profile_global_revision: number;
+          content_markdown: string;
+          content_hash: string;
+          mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision: number;
+          profile_global_revision: number;
+          content_markdown: string;
+          content_hash: string;
+          mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          created_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision: number;
+          profile_global_revision: number;
+          content_markdown: string;
+          content_hash: string;
+          mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
+      memory_provenance: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision_id: string;
+          source_kind: "message" | "thread" | "agent_event" | "manual" | "system";
+          source_thread_id: string | null;
+          source_message_id: string | null;
+          source_agent_event_id: string | null;
+          source_agent_run_id: string | null;
+          source_excerpt: string | null;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision_id: string;
+          source_kind: "message" | "thread" | "agent_event" | "manual" | "system";
+          source_thread_id?: string | null;
+          source_message_id?: string | null;
+          source_agent_event_id?: string | null;
+          source_agent_run_id?: string | null;
+          source_excerpt?: string | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision_id: string;
+          source_kind: "message" | "thread" | "agent_event" | "manual" | "system";
+          source_thread_id: string | null;
+          source_message_id: string | null;
+          source_agent_event_id: string | null;
+          source_agent_run_id: string | null;
+          source_excerpt: string | null;
+          metadata: Json;
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
+      message_semantic_index: {
+        Row: {
+          message_id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          embedding: number[] | null;
+          embedding_model: string | null;
+          content_hash: string;
+          indexed_at: string;
+        };
+        Insert: {
+          message_id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          embedding?: number[] | null;
+          embedding_model?: string | null;
+          content_hash: string;
+          indexed_at?: string;
+        };
+        Update: Partial<{
+          message_id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          embedding: number[] | null;
+          embedding_model: string | null;
+          content_hash: string;
+          indexed_at: string;
+        }>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      search_messages: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_query?: string;
+          p_query_embedding?: number[] | null;
+          p_thread_id?: string | null;
+          p_from?: string | null;
+          p_to?: string | null;
+          p_limit?: number;
+        };
+        Returns: Array<{
+          message_id: string;
+          thread_id: string;
+          profile_id: "profile-a" | "profile-b";
+          role: MessageRole;
+          content: string;
+          created_at: string;
+          lexical_score: number;
+          semantic_score: number | null;
+          combined_score: number;
+        }>;
+      };
+      apply_memory_document_revision: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_logical_key: string;
+          p_content_markdown: string;
+          p_mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          p_expected_document_revision?: number | null;
+          p_source_kind?: "message" | "thread" | "agent_event" | "manual" | "system";
+          p_source_thread_id?: string | null;
+          p_source_message_id?: string | null;
+          p_source_agent_event_id?: string | null;
+          p_source_agent_run_id?: string | null;
+          p_source_excerpt?: string | null;
+          p_source_metadata?: Json;
+        };
+        Returns: Array<{
+          profile_id: "profile-a" | "profile-b";
+          document_id: string;
+          document_revision: number;
+          profile_global_revision: number;
+          revision_id: string;
+          provenance_id: string;
+        }>;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };
