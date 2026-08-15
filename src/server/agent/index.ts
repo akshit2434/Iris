@@ -4,6 +4,7 @@ import { ChatOpenRouter } from "@langchain/openrouter";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
   createAgent,
+  createMiddleware,
   dynamicSystemPromptMiddleware,
 } from "langchain";
 import type { ProfileId } from "@/lib/profiles";
@@ -13,7 +14,7 @@ import {
   buildDynamicSystemPrompt,
   type AgentContext,
 } from "@/server/agent/context";
-import { createInternalTools, type ThreadOverviewReader } from "@/server/agent/tools";
+import { createInternalTools, type InternalToolOptions, type ThreadOverviewReader } from "@/server/agent/tools";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
 import type { MemoryMutationService } from "@/server/memory/mutation";
 import type { MemoryArchiveService } from "@/server/memory/archive";
@@ -64,16 +65,30 @@ export function createIrisAgent(input: {
   memoryRetrieval?: MemoryRetrieval;
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
+  returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  forceToolName?: string;
 }): RuntimeAgent {
   const dynamicPrompt = dynamicSystemPromptMiddleware<AgentContext>((_state, runtime) =>
     buildDynamicSystemPrompt(runtime.context),
   );
+  const acceptanceToolChoice = input.forceToolName
+    ? createMiddleware({
+        name: "acceptance-tool-choice",
+        wrapModelCall: async (request, handler) => handler({
+          ...request,
+          modelSettings: {
+            ...request.modelSettings,
+            tool_choice: { type: "function", function: { name: input.forceToolName } },
+          },
+        }),
+      })
+    : null;
 
   return createAgent({
     model: input.model,
     contextSchema: agentContextSchema,
-    middleware: [dynamicPrompt],
-    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive)],
+    middleware: acceptanceToolChoice ? [dynamicPrompt, acceptanceToolChoice] : [dynamicPrompt],
+    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive, { returnDirectTools: input.returnDirectTools })],
   });
 }
 
@@ -82,6 +97,8 @@ export function createProductionAgent(input?: {
   memoryRetrieval?: MemoryRetrieval;
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
+  returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  forceToolName?: string;
 }): RuntimeAgent {
   return createIrisAgent({
     model: createProductionChatModel(),
@@ -89,6 +106,8 @@ export function createProductionAgent(input?: {
     memoryRetrieval: input?.memoryRetrieval,
     memoryMutation: input?.memoryMutation,
     memoryArchive: input?.memoryArchive,
+    returnDirectTools: input?.returnDirectTools,
+    forceToolName: input?.forceToolName,
   });
 }
 
@@ -213,10 +232,12 @@ export async function* streamAgentEvents(input: {
   memoryRetrieval?: MemoryRetrieval;
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
+  returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  forceToolName?: string;
 }): AsyncGenerator<AgentRuntimeEvent> {
   const agent = input.model
-    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive })
-    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive });
+    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, forceToolName: input.forceToolName })
+    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, forceToolName: input.forceToolName });
   const stream = await agent.stream(
     { messages: input.messages },
     { context: input.context, streamMode: "messages" },
@@ -254,6 +275,8 @@ export async function* streamAssistantReply(input: {
   memoryRetrieval?: MemoryRetrieval;
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
+  returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  forceToolName?: string;
 }) {
   void input.profileId;
   for await (const event of streamAgentEvents(input)) {

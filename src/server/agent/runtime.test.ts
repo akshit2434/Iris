@@ -340,6 +340,78 @@ describe("runtime seams", () => {
     expect(events.some((event) => event.type === "tool_finished")).toBe(true);
   });
 
+  it("can terminate an injected acceptance turn after the structured tool result", async () => {
+    const events = [];
+    for await (const event of streamAgentEvents({
+      model: new FakeToolCallingModel({
+        toolCalls: [[{ id: "call-direct", name: "thread_overview", args: {} }]],
+      }),
+      context,
+      threadOverviewReader: vi.fn(async () => ({
+        title: "Runtime test",
+        createdAt: "2026-08-15T11:00:00.000Z",
+        updatedAt: "2026-08-15T12:00:00.000Z",
+        messageCount: 3,
+      })),
+      returnDirectTools: ["thread_overview"],
+      messages: [{ role: "user", content: "Inspect this synthetic thread." }],
+    })) {
+      events.push(event);
+    }
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool_started", toolName: "thread_overview" }),
+      expect.objectContaining({ type: "tool_finished", toolName: "thread_overview", ok: true }),
+    ]));
+  });
+
+  it("runs governed memory tools through the real agent event path with fakes", async () => {
+    const mutation: MemoryMutationService = {
+      apply: vi.fn(async (input) => ({
+        status: "applied" as const,
+        logicalKey: input.logicalKey,
+        revision: {
+          profileId: input.profileId,
+          documentId: "00000000-0000-4000-8000-000000000020",
+          documentRevision: 1,
+          profileGlobalRevision: 1,
+          revisionId: "00000000-0000-4000-8000-000000000021",
+          provenanceId: "00000000-0000-4000-8000-000000000022",
+        },
+      })),
+    };
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => []),
+      readMessages: vi.fn(async () => null),
+      listMemory: vi.fn(async () => []),
+      readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => []),
+      currentRevision: vi.fn(async () => 0),
+    };
+    const turnContext = createAgentContext({
+      ...context,
+      currentUserMessageId: "00000000-0000-4000-8000-000000000010",
+      agentRunId: "00000000-0000-4000-8000-000000000012",
+    });
+    const events = [];
+    for await (const event of streamAgentEvents({
+      model: new FakeToolCallingModel({
+        toolCalls: [[{ id: "call-patch", name: "memory_patch", args: { logicalKey: "PROFILE.md", contentMarkdown: "# Profile\n\nThe demo color is cobalt blue.", expectedDocumentRevision: null, mutationKind: "create" } }]],
+      }),
+      context: turnContext,
+      memoryMutation: mutation,
+      memoryRetrieval: retrieval,
+      returnDirectTools: ["memory_patch"],
+      messages: [{ role: "user", content: "Remember this synthetic durable fact." }],
+    })) {
+      events.push(event);
+    }
+    expect(mutation.apply).toHaveBeenCalledWith(expect.objectContaining({ logicalKey: "PROFILE.md", toolCallId: "call-patch" }));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool_started", toolName: "memory_patch" }),
+      expect.objectContaining({ type: "tool_finished", toolName: "memory_patch", ok: true, output: expect.objectContaining({ status: "applied" }) }),
+    ]));
+  });
+
   it("streams structured historical search results through the fake model seam", async () => {
     const retrieval: MemoryRetrieval = {
       searchMessages: vi.fn(async () => []),
