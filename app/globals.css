@@ -114,12 +114,14 @@ button:disabled { cursor: default; }
 .iris-scrollbar::-webkit-scrollbar { width: 6px; }
 .iris-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(122,136,162,.25); }
 
-.thinking-dot { animation: thinking 1.15s ease-in-out infinite; }
-.thinking-dot:nth-child(2) { animation-delay: .14s; }
-.thinking-dot:nth-child(3) { animation-delay: .28s; }
+.assistant-thinking { animation: assistant-thinking-enter .24s cubic-bezier(.2,.8,.2,1) both; }
+.tool-activity-row { animation: tool-activity-enter .24s cubic-bezier(.2,.8,.2,1) both; transition: background-color .25s ease, border-color .25s ease, box-shadow .25s ease; }
+.tool-pulse { animation: tool-pulse 1.4s ease-in-out infinite; }
 .message-arrive { animation: message-arrive .42s cubic-bezier(.2,.8,.2,1) both; }
 
-@keyframes thinking { 0%,70%,100% { transform: translateY(0); opacity:.32; } 35% { transform: translateY(-4px); opacity:1; } }
+@keyframes assistant-thinking-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes tool-activity-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes tool-pulse { 0%,100% { opacity: .42; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
 @keyframes ambient-drift { from { transform: translate3d(-2%, -2%, 0) scale(.96); } to { transform: translate3d(4%, 3%, 0) scale(1.05); } }
 @keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
 

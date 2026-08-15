@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { ThinkingOrb } from "thinking-orbs";
 import type { Message, PersistedToolEvent, Thread, ToolActivity } from "@/lib/types";
 import { IrisMark } from "@/components/iris-mark";
 import { ProceduralBlur } from "@/components/procedural-blur";
@@ -10,6 +11,8 @@ import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
 import {
   AgentStreamParser,
+  assistantStreamPhase,
+  createStreamEventBuffer,
   createStreamState,
   failStreamState,
   groupToolEvents,
@@ -28,6 +31,10 @@ function formatMessageTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
 
+function isNearScrollEnd(element: HTMLElement, threshold = 120) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
+}
+
 export function ChatScreen() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
@@ -42,6 +49,10 @@ export function ChatScreen() {
   const [draftTitle, setDraftTitle] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const streamBufferRef = useRef<ReturnType<typeof createStreamEventBuffer> | null>(null);
+  const shouldFollowRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
 
   function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
     setStreamState((current) => {
@@ -82,8 +93,36 @@ export function ChatScreen() {
   }, [profileId, threadId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: sending ? "smooth" : "auto" });
-  }, [messages, sending]);
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const updateFollowState = () => {
+      shouldFollowRef.current = isNearScrollEnd(container);
+    };
+    updateFollowState();
+    container.addEventListener("scroll", updateFollowState, { passive: true });
+    return () => container.removeEventListener("scroll", updateFollowState);
+  }, [threadId]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !shouldFollowRef.current) return;
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      if (shouldFollowRef.current) container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
+    });
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
+  }, [messages, toolActivities]);
+
+  useEffect(() => () => {
+    streamBufferRef.current?.cancel();
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
 
   useEffect(() => {
     if (streamState.status === "failed" && streamState.errorMessage) setError(streamState.errorMessage);
@@ -120,6 +159,10 @@ export function ChatScreen() {
     const userMessage: Message = { id: optimisticUserId, threadId: thread.id, profileId: thread.profileId, role: "user", content, createdAt: now };
     const assistantMessage: Message = { id: optimisticAssistantId, threadId: thread.id, profileId: thread.profileId, role: "assistant", content: "", createdAt: now, isComplete: false };
     updateStreamState((current) => startOptimisticRun(current, { userMessage, assistantMessage }));
+    const streamBuffer = createStreamEventBuffer((events) => {
+      updateStreamState((current) => events.reduce(reduceAgentStream, current));
+    });
+    streamBufferRef.current = streamBuffer;
 
     try {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -142,12 +185,11 @@ export function ChatScreen() {
       const parser = new AgentStreamParser();
       let terminalEventReceived = false;
       const consumeEvents = (events: Parameters<typeof reduceAgentStream>[1][]) => {
-        for (const streamEvent of events) {
-          if (streamEvent.type === "completed" || streamEvent.type === "failed") {
-            terminalEventReceived = true;
-          }
-          handleStreamEvent(streamEvent);
+        if (events.some((streamEvent) => streamEvent.type === "completed" || streamEvent.type === "failed")) {
+          terminalEventReceived = true;
         }
+        streamBuffer.push(events);
+        if (terminalEventReceived) streamBuffer.flush();
       };
       let done = false;
       while (!done) {
@@ -156,6 +198,7 @@ export function ChatScreen() {
         consumeEvents(parser.push(result.value ?? new Uint8Array()));
       }
       consumeEvents(parser.finish());
+      streamBuffer.flush();
       if (!terminalEventReceived) {
         const streamError = "The assistant stream ended before completion.";
         setError(streamError);
@@ -163,9 +206,13 @@ export function ChatScreen() {
       }
     } catch (sendError) {
       const message = sendError instanceof Error ? sendError.message : "Could not send that message.";
+      streamBuffer.flush();
       setError(message);
       updateStreamState((current) => failStreamState(current, message));
     } finally {
+      streamBuffer.flush();
+      streamBuffer.cancel();
+      if (streamBufferRef.current === streamBuffer) streamBufferRef.current = null;
       setSending(false);
     }
   }
@@ -181,10 +228,6 @@ export function ChatScreen() {
       messages: body.messages,
       toolActivities: groupToolEvents(body.toolActivities ?? []),
     }));
-  }
-
-  function handleStreamEvent(event: Parameters<typeof reduceAgentStream>[1]) {
-    updateStreamState((current) => reduceAgentStream(current, event));
   }
 
   if (!isReady) return <ChatSkeleton />;
@@ -205,10 +248,10 @@ export function ChatScreen() {
         </div>
       </header>
 
-      <div className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
+      <div ref={scrollContainerRef} className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
-          {messages.map((message) => <MessageBubble key={message.id} message={message} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} />)}
+          {messages.map((message) => <MessageBubble key={message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} />)}
           <UnattachedToolActivities messages={messages} toolActivities={toolActivities} />
           <div ref={messagesEndRef} />
         </div>
@@ -228,18 +271,28 @@ export function ChatScreen() {
   );
 }
 
-function MessageBubble({ message, toolActivities }: Readonly<{ message: Message; toolActivities: ToolActivity[] }>) {
+function MessageBubble({ message, active, toolActivities }: Readonly<{ message: Message; active: boolean; toolActivities: ToolActivity[] }>) {
   const isUser = message.role === "user";
+  const phase = assistantStreamPhase(message, active);
   return (
     <div className={`message-arrive flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
-          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : <span className="inline-flex items-center gap-1.5 py-2 text-slate-400"><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#6f8ee6]" /><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#8da2e4]" /><span className="thinking-dot h-1.5 w-1.5 rounded-full bg-[#a0a9d9]" /></span>}
+          {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : phase === "thinking" ? <ThinkingIndicator /> : null}
         </div>
         {!isUser && toolActivities.length > 0 ? <ToolActivityList activities={toolActivities} /> : null}
-        {!isUser && message.isComplete === false && message.content ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
+        {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
       </div>
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="assistant-thinking inline-flex items-center gap-2 py-1.5" role="status" aria-live="polite">
+      <ThinkingOrb state="breathing" size={20} theme="auto" aria-label="Thinking" className="shrink-0" />
+      <span className="text-xs font-medium text-slate-400">Thinking</span>
     </div>
   );
 }
@@ -261,9 +314,9 @@ function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
   const stateLabel = activity.status === "running" ? "Running" : activity.status === "succeeded" ? "Succeeded" : "Failed";
   const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "succeeded" ? "text-emerald-600" : "text-red-500";
   return (
-    <div className="rounded-[16px] border border-white/70 bg-white/42 px-3 py-2 text-xs text-slate-600 shadow-[0_8px_24px_rgba(81,104,151,.06)] backdrop-blur-xl">
+    <div className="tool-activity-row rounded-[16px] border border-white/70 bg-white/42 px-3 py-2 text-xs text-slate-600 shadow-[0_8px_24px_rgba(81,104,151,.06)] backdrop-blur-xl" aria-label={`${toolLabel(activity.toolName)} ${stateLabel}`} aria-live={activity.status === "running" ? "polite" : "off"}>
       <div className="flex items-center gap-2">
-        <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[10px] ${stateClass}`} aria-hidden="true">{activity.status === "running" ? "…" : activity.status === "succeeded" ? "✓" : "!"}</span>
+        <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[10px] ${stateClass}`} aria-hidden="true">{activity.status === "running" ? <span className="tool-pulse h-1.5 w-1.5 rounded-full bg-current" /> : activity.status === "succeeded" ? "✓" : "!"}</span>
         <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{toolLabel(activity.toolName)}</span>
         <span className={`shrink-0 text-[10px] font-medium ${stateClass}`}>{stateLabel}</span>
       </div>

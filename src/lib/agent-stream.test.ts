@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { AGENT_STREAM_PROTOCOL, type AgentStreamEvent } from "@/server/agent/protocol";
 import {
   AgentStreamParser,
+  assistantStreamPhase,
+  createStreamEventBuffer,
   createStreamState,
   failStreamState,
   groupToolEvents,
@@ -54,6 +56,61 @@ describe("agent stream parser", () => {
 });
 
 describe("agent stream reducer", () => {
+  it("batches text deltas in order until the scheduled frame flushes", () => {
+    const scheduled: Array<() => void> = [];
+    const batches: AgentStreamEvent[][] = [];
+    const buffer = createStreamEventBuffer((events) => batches.push(events), {
+      schedule: (callback) => {
+        scheduled.push(callback);
+        return callback;
+      },
+      cancel: () => undefined,
+    });
+    const first = event({ type: "text_delta", runId: "run-1", text: "Hello" }, 2);
+    const second = event({ type: "text_delta", runId: "run-1", text: " world" }, 3);
+
+    buffer.push([first]);
+    buffer.push([second]);
+    expect(batches).toHaveLength(0);
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    expect(batches).toEqual([[first, second]]);
+  });
+
+  it("flushes a terminal event with all preceding text and drops cancelled work", () => {
+    const batches: AgentStreamEvent[][] = [];
+    const buffer = createStreamEventBuffer((events) => batches.push(events), {
+      schedule: (callback) => callback,
+      cancel: () => undefined,
+    });
+    const text = event({ type: "text_delta", runId: "run-1", text: "Done" }, 2);
+    const completed = event({ type: "completed", runId: "run-1", assistantMessageId: "assistant-1", at: "later" }, 3);
+    buffer.push([text, completed]);
+    buffer.flush();
+    expect(batches).toEqual([[text, completed]]);
+
+    buffer.push([event({ type: "text_delta", runId: "run-1", text: "ignored" }, 4)]);
+    buffer.cancel();
+    expect(batches).toHaveLength(1);
+  });
+
+  it("moves cleanly from thinking to visible text and keeps failures incomplete", () => {
+    const emptyAssistant: Message = { id: ids.assistant, threadId: ids.threadId, profileId: ids.profileId, role: "assistant", content: "", createdAt: "2026-08-15T12:00:00.000Z", isComplete: false };
+    const partialAssistant = { ...emptyAssistant, content: "Visible" };
+    const completeAssistant = { ...partialAssistant, isComplete: true };
+    expect(assistantStreamPhase(emptyAssistant)).toBe("thinking");
+    expect(assistantStreamPhase(partialAssistant, true)).toBe("streaming");
+    expect(assistantStreamPhase(partialAssistant)).toBe("incomplete");
+    expect(assistantStreamPhase(completeAssistant)).toBe("complete");
+
+    let failed = reduceAgentStream(runningState(), event({
+      type: "run_started", runId: "run-1", requestId: "request-1", userMessageId: "user-1", assistantMessageId: "assistant-1", at: "now",
+    }));
+    failed = reduceAgentStream(failed, event({ type: "failed", runId: "run-1", code: "AGENT_RUN_FAILED", message: "Could not start", partial: false, at: "later" }, 2));
+    expect(failed.status).toBe("failed");
+    expect(failed.messages).toHaveLength(1);
+  });
+
   it("replaces optimistic IDs with authoritative run IDs", () => {
     const next = reduceAgentStream(runningState(), event({
       type: "run_started",

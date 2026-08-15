@@ -15,6 +15,81 @@ export type StreamState = {
   errorMessage: string | null;
 };
 
+export type AssistantStreamPhase = "thinking" | "streaming" | "complete" | "incomplete";
+
+type StreamEventBufferOptions = {
+  schedule?: (callback: () => void) => unknown;
+  cancel?: (handle: unknown) => void;
+};
+
+type StreamEventBuffer = {
+  push: (events: readonly AgentStreamEvent[]) => void;
+  flush: () => void;
+  cancel: () => void;
+};
+
+function scheduleStreamFrame(callback: () => void) {
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    return window.requestAnimationFrame(callback);
+  }
+  return setTimeout(callback, 0);
+}
+
+function cancelStreamFrame(handle: unknown) {
+  if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function" && typeof handle === "number") {
+    window.cancelAnimationFrame(handle);
+    return;
+  }
+  clearTimeout(handle as ReturnType<typeof setTimeout>);
+}
+
+/**
+ * Batch provider events into one reducer commit per animation frame. A frame
+ * flush keeps text deltas ordered while preventing a React render per token.
+ * The scheduler is injectable so ordering and terminal flushes stay testable.
+ */
+export function createStreamEventBuffer(
+  onFlush: (events: AgentStreamEvent[]) => void,
+  options: StreamEventBufferOptions = {},
+): StreamEventBuffer {
+  const schedule = options.schedule ?? scheduleStreamFrame;
+  const cancel = options.cancel ?? cancelStreamFrame;
+  let pending: AgentStreamEvent[] = [];
+  let frame: unknown = null;
+  let cancelled = false;
+
+  function flush() {
+    if (cancelled) return;
+    if (frame !== null) {
+      cancel(frame);
+      frame = null;
+    }
+    if (pending.length === 0) return;
+    const events = pending;
+    pending = [];
+    onFlush(events);
+  }
+
+  return {
+    push(events) {
+      if (cancelled || events.length === 0) return;
+      pending.push(...events);
+      if (frame === null) frame = schedule(() => {
+        frame = null;
+        flush();
+      });
+    },
+    flush,
+    cancel() {
+      if (cancelled) return;
+      if (frame !== null) cancel(frame);
+      frame = null;
+      pending = [];
+      cancelled = true;
+    },
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -222,6 +297,15 @@ export function startOptimisticRun(state: StreamState, input: {
     status: "running",
     errorMessage: null,
   };
+}
+
+export function assistantStreamPhase(message: Pick<Message, "role" | "content" | "isComplete">, isActive = false): AssistantStreamPhase | null {
+  if (message.role !== "assistant") return null;
+  if (message.isComplete === false) {
+    if (!message.content) return "thinking";
+    return isActive ? "streaming" : "incomplete";
+  }
+  return "complete";
 }
 
 export function reduceAgentStream(state: StreamState, event: AgentStreamEvent): StreamState {
