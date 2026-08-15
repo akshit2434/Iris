@@ -14,7 +14,6 @@ export function HomeScreen() {
   const { profileId, profileLabels, isReady } = useProfile();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadThreads = useCallback(async () => {
@@ -34,18 +33,9 @@ export function HomeScreen() {
 
   useEffect(() => { if (profileId) void loadThreads(); }, [loadThreads, profileId]);
 
-  async function createChat() {
+  function createChat() {
     setError(null);
-    setIsCreating(true);
-    try {
-      const response = await fetch("/api/threads", { method: "POST" });
-      const body = (await response.json()) as { thread?: Thread; error?: string };
-      if (!response.ok || !body.thread) throw new Error(body.error ?? "Could not create a chat.");
-      router.push(`/chat/${body.thread.id}`);
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Could not create a chat.");
-      setIsCreating(false);
-    }
+    router.push("/chat/new");
   }
 
   if (!isReady) return <HomeSkeleton />;
@@ -68,10 +58,10 @@ export function HomeScreen() {
         <IrisMark size={52} priority />
       </div>
 
-      <button data-reveal type="button" onClick={() => void createChat()} disabled={isCreating} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
+      <button data-reveal type="button" onClick={createChat} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
         <span className="flex-1 text-base font-medium text-slate-500 sm:text-lg">Start a conversation</span>
         <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#111827] text-white shadow-[0_10px_24px_rgba(17,24,39,.18)] transition group-hover:translate-x-0.5" aria-hidden="true">
-          {isCreating ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : <span className="text-xl font-light">↗</span>}
+          <span className="text-xl font-light">↗</span>
         </span>
       </button>
 

@@ -6,6 +6,7 @@ import {
   createMessage,
   applyAutomaticThreadTitle,
   claimAutomaticThreadTitle,
+  createThreadWithFirstMessage,
   findAgentRun,
   getProfile,
   getThread,
@@ -74,11 +75,12 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
 
   try {
     const profileId = await getSelectedProfile();
-    const { threadId } = await params;
+    let { threadId } = await params;
     if (!profileId) {
       return NextResponse.json({ error: "Select a profile first." }, { status: 400 });
     }
-    if (!isThreadId(threadId)) {
+    const isNewThread = threadId === "new";
+    if (!isNewThread && !isThreadId(threadId)) {
       return NextResponse.json({ error: "Chat not found." }, { status: 404 });
     }
 
@@ -89,19 +91,6 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
 
     const content = body.content.trim().slice(0, 12000);
     const requestId = isRequestId(body.requestId) ? body.requestId.trim() : crypto.randomUUID();
-    const thread = await getThread(profileId, threadId);
-    if (!thread) {
-      return NextResponse.json({ error: "Chat not found." }, { status: 404 });
-    }
-
-    const existingRun = await findAgentRun(profileId, threadId, requestId);
-    if (existingRun) {
-      return NextResponse.json(
-        { run: existingRun, duplicate: true },
-        { status: 409, headers: { "Cache-Control": "no-store" } },
-      );
-    }
-
     const profile = await getProfile(profileId);
     if (!profile) {
       return NextResponse.json({ error: "Profile not found." }, { status: 404 });
@@ -111,37 +100,74 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const userMessageId = crypto.randomUUID();
     const assistantMessageId = crypto.randomUUID();
     const model = getConfiguredModelName();
+    let thread;
     let run;
-    try {
-      run = await createAgentRun({
-        id: runId,
+    if (isNewThread) {
+      const created = await createThreadWithFirstMessage({
         profileId,
-        threadId,
+        threadId: crypto.randomUUID(),
+        userMessageId,
+        runId,
+        assistantMessageId,
         requestId,
+        content,
         model,
       });
-    } catch {
-      // A concurrent retry can win the unique request key between the lookup
-      // above and insert. Return the existing scoped run instead of duplicating.
-      const concurrentRun = await findAgentRun(profileId, threadId, requestId);
-      if (concurrentRun) {
+      threadId = created.threadId;
+      thread = await getThread(profileId, threadId);
+      if (!thread) throw new Error("Could not load the created chat.");
+      run = await findAgentRun(profileId, threadId, requestId);
+      if (!run) throw new Error("Could not load the created run.");
+      if (created.duplicate) {
         return NextResponse.json(
-          { run: concurrentRun, duplicate: true },
+          { run, threadId, duplicate: true },
           { status: 409, headers: { "Cache-Control": "no-store" } },
         );
       }
-      throw new Error("Could not create agent run.");
-    }
+    } else {
+      const existingThread = await getThread(profileId, threadId);
+      if (!existingThread) {
+        return NextResponse.json({ error: "Chat not found." }, { status: 404 });
+      }
+      const existingRun = await findAgentRun(profileId, threadId, requestId);
+      if (existingRun) {
+        return NextResponse.json(
+          { run: existingRun, duplicate: true },
+          { status: 409, headers: { "Cache-Control": "no-store" } },
+        );
+      }
+      thread = existingThread;
+      try {
+        run = await createAgentRun({
+          id: runId,
+          profileId,
+          threadId,
+          requestId,
+          model,
+        });
+      } catch {
+        // A concurrent retry can win the unique request key between the lookup
+        // above and insert. Return the existing scoped run instead of duplicating.
+        const concurrentRun = await findAgentRun(profileId, threadId, requestId);
+        if (concurrentRun) {
+          return NextResponse.json(
+            { run: concurrentRun, duplicate: true },
+            { status: 409, headers: { "Cache-Control": "no-store" } },
+          );
+        }
+        throw new Error("Could not create agent run.");
+      }
 
-    await createMessage({
-      id: userMessageId,
-      profileId,
-      threadId,
-      role: "user",
-      content,
-      agentRunId: run.id,
-    });
-    await linkAgentRunMessages(profileId, threadId, run.id, { userMessageId });
+      await createMessage({
+        id: userMessageId,
+        profileId,
+        threadId,
+        role: "user",
+        content,
+        agentRunId: run.id,
+      });
+      await linkAgentRunMessages(profileId, threadId, run.id, { userMessageId });
+    }
 
     const titleClaim = thread.thread.titleSource === "default"
       ? await claimAutomaticThreadTitle(profileId, threadId)
@@ -243,6 +269,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             type: "run_started",
             payload: {
               requestId,
+              threadId,
               userMessageId,
               assistantMessageId,
               model,
@@ -251,6 +278,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           send({
             type: "run_started",
             runId: run.id,
+            threadId,
             requestId,
             userMessageId,
             assistantMessageId,
@@ -446,6 +474,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         Connection: "keep-alive",
         "Content-Type": "application/x-ndjson; charset=utf-8",
         "X-Accel-Buffering": "no",
+        "X-Iris-Thread-Id": threadId,
       },
     });
   } catch {

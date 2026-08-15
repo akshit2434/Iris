@@ -205,7 +205,7 @@ const AGENT_RUN_COLUMNS =
 export async function listThreads(profileId: ProfileId) {
   const { data, error } = await getDatabase()
     .from("threads")
-    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
+    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at, messages!inner(id)")
     .eq("profile_id", profileId)
     .is("archived_at", null)
     .order("updated_at", { ascending: false });
@@ -214,21 +214,49 @@ export async function listThreads(profileId: ProfileId) {
     throw error;
   }
 
-  return (data ?? []).map(toThread);
+  return (data ?? []).map((row) => toThread(row as Parameters<typeof toThread>[0]));
 }
 
-export async function createThread(profileId: ProfileId) {
-  const { data, error } = await getDatabase()
-    .from("threads")
-    .insert({ profile_id: profileId, title: "New chat" })
-    .select("id, profile_id, title, title_source, title_generation_attempted, created_at, updated_at, archived_at")
-    .single();
+export type FirstMessageCreation = {
+  threadId: string;
+  userMessageId: string;
+  runId: string;
+  assistantMessageId: string;
+  duplicate: boolean;
+};
 
-  if (error) {
-    throw error;
-  }
+/** Atomically create a nonblank thread and its first run/message. */
+export async function createThreadWithFirstMessage(input: {
+  profileId: ProfileId;
+  threadId: string;
+  userMessageId: string;
+  runId: string;
+  assistantMessageId: string;
+  requestId: string;
+  content: string;
+  model: string;
+}): Promise<FirstMessageCreation> {
+  const { data, error } = await getDatabase().rpc("create_thread_with_first_message", {
+    p_profile_id: input.profileId,
+    p_thread_id: input.threadId,
+    p_user_message_id: input.userMessageId,
+    p_run_id: input.runId,
+    p_assistant_message_id: input.assistantMessageId,
+    p_request_id: input.requestId,
+    p_content: input.content,
+    p_model: input.model,
+  });
 
-  return toThread(data);
+  if (error) throw error;
+  const row = data?.[0];
+  if (!row) throw new Error("Could not create the first message.");
+  return {
+    threadId: row.thread_id,
+    userMessageId: row.user_message_id,
+    runId: row.run_id,
+    assistantMessageId: row.assistant_message_id,
+    duplicate: row.duplicate,
+  };
 }
 
 export async function getThread(profileId: ProfileId, threadId: string) {

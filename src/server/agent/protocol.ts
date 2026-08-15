@@ -14,6 +14,8 @@ export type AgentStreamEvent =
       type: "run_started";
       sequence: number;
       runId: string;
+      /** Present for first-message creation so the client can adopt the persisted route. */
+      threadId?: string;
       requestId: string;
       userMessageId: string;
       assistantMessageId: string;

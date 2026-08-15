@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
-import { createThread, listThreads } from "@/server/db/queries";
+import { listThreads } from "@/server/db/queries";
 
 export async function GET() {
   try {
@@ -29,17 +29,8 @@ export async function POST() {
   } catch {
     return NextResponse.json({ error: "App access is required." }, { status: 401 });
   }
-
-  try {
-    const profileId = await getSelectedProfile();
-    if (!profileId) {
-      return NextResponse.json({ error: "Select a profile first." }, { status: 400 });
-    }
-
-    const thread = await createThread(profileId);
-    return NextResponse.json({ thread }, { status: 201 });
-  } catch (error) {
-    console.error("Could not create Iris thread", error);
-    return NextResponse.json({ error: "Could not create a new chat." }, { status: 500 });
-  }
+  return NextResponse.json(
+    { error: "A chat is created when its first message is submitted." },
+    { status: 405, headers: { Allow: "GET" } },
+  );
 }

@@ -560,6 +560,25 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      create_thread_with_first_message: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_thread_id: string;
+          p_user_message_id: string;
+          p_run_id: string;
+          p_assistant_message_id: string;
+          p_request_id: string;
+          p_content: string;
+          p_model: string;
+        };
+        Returns: Array<{
+          thread_id: string;
+          user_message_id: string;
+          run_id: string;
+          assistant_message_id: string;
+          duplicate: boolean;
+        }>;
+      };
       search_messages: {
         Args: {
           p_profile_id: "profile-a" | "profile-b";

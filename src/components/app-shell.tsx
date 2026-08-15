@@ -9,6 +9,7 @@ import { ProceduralBlur } from "@/components/procedural-blur";
 import { ProfileProvider, useProfile } from "@/components/profile-provider";
 import { ChatSurfaceProvider, useChatSurface } from "@/components/chat-surface-context";
 import { canStartChatCreation, createChatExitCoordinator, type ChatExitCoordinator } from "@/lib/chat-transition";
+import { isUnsavedChatPath } from "@/lib/chat-route";
 
 const navItems = [
   { href: "/", label: "Home" },
@@ -49,22 +50,13 @@ function ShellContents({ children }: Readonly<{ children: ReactNode }>) {
 
   async function createNewChat() {
     if (!profileId) return router.push("/");
+    // /chat/new is already the unsaved composer. Keeping this guard before
+    // the surface check makes the action a true no-op with no request or exit.
+    if (isUnsavedChatPath(pathname)) return;
     if (!canStartChatCreation({ hasProfile: Boolean(profileId), isCreating, isExiting, surface: currentSurface })) return;
     setCreateError(null);
-    setIsCreating(true);
-    try {
-      const response = await fetch("/api/threads", { method: "POST" });
-      const body = (await response.json()) as { thread?: { id: string }; error?: string };
-      if (!response.ok || !body.thread) throw new Error(body.error ?? "Could not create a chat.");
-      const newThreadId = body.thread.id;
-      setIsExiting(true);
-      exitCoordinator().begin(() => router.push(`/chat/${newThreadId}`));
-    } catch (createChatError) {
-      setIsExiting(false);
-      setCreateError(createChatError instanceof Error ? createChatError.message : "Could not create a chat.");
-    } finally {
-      setIsCreating(false);
-    }
+    setIsExiting(true);
+    exitCoordinator().begin(() => router.push("/chat/new"));
   }
 
   async function switchProfile() {

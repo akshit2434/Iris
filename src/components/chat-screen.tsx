@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
 import type { Message, PersistedToolEvent, Thread, ToolActivity } from "@/lib/types";
 import type { ProfileId } from "@/lib/profiles";
@@ -15,6 +15,7 @@ import { useChatSurface } from "@/components/chat-surface-context";
 import { buildOpenMessageHref, canonicalMemoryRows, memorySourceRows } from "@/lib/memory-source";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
+import { isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
 import {
   AgentStreamParser,
   assistantStreamPhase,
@@ -46,12 +47,14 @@ function isNearScrollEnd(element: HTMLElement, threshold = 120) {
 export function ChatScreen() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
+  const isNewChat = threadId === UNSAVED_CHAT_ID;
+  const router = useRouter();
   const { profileId, isReady } = useProfile();
   const { setSurface } = useChatSurface();
   const [thread, setThread] = useState<Thread | null>(null);
   const [streamState, setStreamState] = useState<StreamState>(() => createStreamState());
   const [composer, setComposer] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!isNewChat);
   const [sending, setSending] = useState(false);
   const [presentationActive, setPresentationActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +69,7 @@ export function ChatScreen() {
   const entryAnimationRef = useRef(false);
   const [animateEmptyEntry, setAnimateEmptyEntry] = useState(false);
   const resolvedHashRef = useRef<string | null>(null);
+  const persistedThreadIdRef = useRef<string | null>(null);
 
   function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
     setStreamState((current) => {
@@ -86,22 +90,30 @@ export function ChatScreen() {
   useEffect(() => {
     setSurface({
       threadId,
-      ready: !loading && Boolean(thread),
-      isEmpty: !loading && Boolean(thread) && messages.length === 0,
+      ready: !loading && (isNewChat || Boolean(thread)),
+      isEmpty: !loading && messages.length === 0,
       isSending: sending,
     });
-  }, [loading, messages.length, sending, setSurface, thread, threadId]);
+  }, [isNewChat, loading, messages.length, sending, setSurface, thread, threadId]);
 
   useEffect(() => () => setSurface(null), [setSurface, threadId]);
 
   useEffect(() => {
-    if (loading || !thread || messages.length !== 0 || entryAnimationRef.current) return;
+    if (loading || (!thread && !isNewChat) || messages.length !== 0 || entryAnimationRef.current) return;
     entryAnimationRef.current = true;
     setAnimateEmptyEntry(true);
-  }, [loading, messages.length, thread]);
+  }, [isNewChat, loading, messages.length, thread]);
 
   useEffect(() => {
     if (!profileId || !threadId) return;
+    if (isNewChat) {
+      setThread(null);
+      setDraftTitle("New chat");
+      updateStreamState(createStreamState());
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -125,7 +137,7 @@ export function ChatScreen() {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [profileId, threadId]);
+  }, [isNewChat, profileId, threadId]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -220,8 +232,10 @@ export function ChatScreen() {
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!profileId) return;
     const content = composer.trim();
-    if (!thread || !canSubmitMessage(content, sending, presentationActive, true)) return;
+    const hasChatTarget = Boolean(thread) || isNewChat;
+    if (!canSubmitMessage(content, sending, presentationActive, hasChatTarget)) return;
     setComposer("");
     setError(null);
     setSending(true);
@@ -230,22 +244,39 @@ export function ChatScreen() {
     const optimisticAssistantId = `pending-assistant-${crypto.randomUUID()}`;
     const requestId = crypto.randomUUID();
     const now = new Date().toISOString();
-    const userMessage: Message = { id: optimisticUserId, presentationId: optimisticUserId, threadId: thread.id, profileId: thread.profileId, role: "user", content, createdAt: now };
-    const assistantMessage: Message = { id: optimisticAssistantId, presentationId: optimisticAssistantId, threadId: thread.id, profileId: thread.profileId, role: "assistant", content: "", createdAt: now, isComplete: false };
+    const optimisticThreadId = thread?.id ?? UNSAVED_CHAT_ID;
+    const optimisticProfileId = thread?.profileId ?? profileId;
+    const userMessage: Message = { id: optimisticUserId, presentationId: optimisticUserId, threadId: optimisticThreadId, profileId: optimisticProfileId, role: "user", content, createdAt: now };
+    const assistantMessage: Message = { id: optimisticAssistantId, presentationId: optimisticAssistantId, threadId: optimisticThreadId, profileId: optimisticProfileId, role: "assistant", content: "", createdAt: now, isComplete: false };
     updateStreamState((current) => startOptimisticRun(current, { userMessage, assistantMessage }));
     const streamBuffer = createStreamEventBuffer((events) => {
       updateStreamState((current) => events.reduce(reduceAgentStream, current));
     });
     streamBufferRef.current = streamBuffer;
+    const adoptPersistedRoute = (nextThreadId: string) => {
+      persistedThreadIdRef.current = nextThreadId;
+      // The transaction has committed before the response headers exist. Keep
+      // reload/back addressable during a long stream without remounting the
+      // active composer; the router handoff below completes after terminal.
+      if (isNewChat && typeof window !== "undefined" && window.location.pathname === "/chat/new") {
+        window.history.replaceState(window.history.state, "", `/chat/${nextThreadId}`);
+      }
+    };
 
     try {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-      const response = await fetch(`/api/threads/${thread.id}/messages`, {
+      const response = await fetch(messageEndpointForThread(threadId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, requestId, timezone }),
       });
       if (response.status === 409) {
+        const duplicateBody = (await response.json().catch(() => null)) as { threadId?: string } | null;
+        const duplicateThreadId = duplicateBody?.threadId ?? null;
+        if (isNewChat && isPersistedThreadId(duplicateThreadId)) {
+          router.replace(`/chat/${duplicateThreadId}`, { scroll: false });
+          return;
+        }
         await reloadThreadState();
         setPresentationActive(false);
         setError("That message was already submitted. Showing its saved run.");
@@ -256,10 +287,22 @@ export function ChatScreen() {
         throw new Error(body?.error ?? "Could not send that message.");
       }
 
+      if (isNewChat) {
+        const responseThreadId = response.headers.get("X-Iris-Thread-Id");
+        if (isPersistedThreadId(responseThreadId)) adoptPersistedRoute(responseThreadId);
+      }
+
       const reader = response.body.getReader();
       const parser = new AgentStreamParser();
       let terminalEventReceived = false;
       const consumeEvents = (events: Parameters<typeof reduceAgentStream>[1][]) => {
+        if (isNewChat) {
+          const started = events.find((streamEvent) => streamEvent.type === "run_started" && streamEvent.threadId);
+          const startedThreadId = started?.type === "run_started" ? started.threadId ?? null : null;
+          if (isPersistedThreadId(startedThreadId)) {
+            adoptPersistedRoute(startedThreadId);
+          }
+        }
         if (events.some((streamEvent) => streamEvent.type === "completed" || streamEvent.type === "failed")) {
           terminalEventReceived = true;
         }
@@ -289,6 +332,9 @@ export function ChatScreen() {
       streamBuffer.cancel();
       if (streamBufferRef.current === streamBuffer) streamBufferRef.current = null;
       setSending(false);
+      if (isNewChat && persistedThreadIdRef.current) {
+        router.replace(`/chat/${persistedThreadIdRef.current}`, { scroll: false });
+      }
     }
   }
 
@@ -316,7 +362,7 @@ export function ChatScreen() {
   if (!isReady) return <ChatSkeleton />;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center px-5 py-12 sm:px-8"><ProfilePicker /></div>;
   if (loading) return <ChatSkeleton />;
-  if (!thread) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
+  if (!thread && !isNewChat) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
     <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""}`}>
@@ -325,7 +371,7 @@ export function ChatScreen() {
         <div className="relative flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
           <Link href="/history" className="soft-press flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-white/58 text-xl font-light text-slate-700 shadow-[inset_0_0_0_1px_rgba(255,255,255,.8)] backdrop-blur-xl" aria-label="Back to history">←</Link>
           <div className="min-w-0 flex-1">
-            {editingTitle ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-xl bg-white/65 px-3 py-2 text-sm font-semibold backdrop-blur-xl" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="rounded-xl bg-[#111827] px-3 py-2 text-xs font-semibold text-white">{savingTitle ? "…" : "Save"}</button><button type="button" onClick={() => setEditingTitle(false)} className="px-2 py-2 text-xs font-semibold text-slate-500">Cancel</button></div> : <button type="button" onClick={() => setEditingTitle(true)} className="max-w-full truncate text-left text-sm font-semibold tracking-tight text-slate-800">{thread.title}</button>}
+            {editingTitle && thread ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-xl bg-white/65 px-3 py-2 text-sm font-semibold backdrop-blur-xl" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="rounded-xl bg-[#111827] px-3 py-2 text-xs font-semibold text-white">{savingTitle ? "…" : "Save"}</button><button type="button" onClick={() => setEditingTitle(false)} className="px-2 py-2 text-xs font-semibold text-slate-500">Cancel</button></div> : thread ? <button type="button" onClick={() => setEditingTitle(true)} className="max-w-full truncate text-left text-sm font-semibold tracking-tight text-slate-800">{thread.title}</button> : <span className="block max-w-full truncate text-sm font-semibold tracking-tight text-slate-800">New chat</span>}
           </div>
           <IrisMark size={34} />
         </div>
@@ -346,7 +392,7 @@ export function ChatScreen() {
           {error ? <p className="mb-2 rounded-xl bg-red-50/90 px-3 py-2 text-xs font-medium text-red-600 backdrop-blur-xl">{error}</p> : null}
           <form onSubmit={sendMessage} className="chat-composer-focus-cue glass-surface rounded-[28px] p-2 transition focus-within:bg-white/78 focus-within:shadow-[0_26px_70px_rgba(73,98,145,.18)]">
             <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!sending && !presentationActive) event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder="Message Iris" className="max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 placeholder:text-slate-400" />
-            <div className="flex justify-end px-1 pb-1"><button type="submit" disabled={!canSubmitMessage(composer, sending, presentationActive, Boolean(thread))} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button></div>
+            <div className="flex justify-end px-1 pb-1"><button type="submit" disabled={!canSubmitMessage(composer, sending, presentationActive, Boolean(thread) || isNewChat)} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button></div>
           </form>
         </div>
       </div>
