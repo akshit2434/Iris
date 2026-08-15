@@ -4,6 +4,20 @@ Iris is a conversation-first personal agent with isolated profiles, chats, and h
 
 This repository currently implements **Milestone 1: UI + Base**.
 
+## Current progress
+
+**Stage:** Milestone 1 — UI + Base is complete and pushed to `main`.
+
+The public build is a mobile-first, conversation-first base with isolated profiles, persistent raw chat history, local Supabase development, and the visual language documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
+
+### UI preview
+
+| Home | Chat |
+| --- | --- |
+| <img src="docs/screenshots/mobile-home.jpg" alt="Iris mobile home screen" width="260"> | <img src="docs/screenshots/mobile-chat-blur.jpg" alt="Iris mobile chat with progressive edge blur" width="260"> |
+
+These previews use only generic seeded labels and temporary QA copy. No private personal context is included.
+
 ## What is included
 
 - Next.js App Router, TypeScript, and Tailwind CSS
@@ -15,29 +29,34 @@ This repository currently implements **Milestone 1: UI + Base**.
 - Raw user and assistant message persistence owned by Iris
 - Streaming LangChain agent responses through OpenRouter
 - Simple responsive Home, Chat, History, and Files surfaces
+- Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur
+- Local Supabase CLI workflow with a safe public seed (`Profile A` / `Profile B`)
 - Reserved module boundaries for memory, tools, skills, reminders, artifacts, and telemetry
 
 ## Quick start
 
-Requirements: Node.js 20.9+ and a Supabase project.
+Requirements: Node.js 20.9+, Docker, and the Supabase CLI.
 
 ```bash
 npm install
+supabase start
+supabase db reset
+supabase status -o env
 cp .env.example .env.local
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-Before using chats, run the migration in `supabase/migrations/20260815000000_initial.sql` through the Supabase SQL editor or Supabase CLI.
+`supabase db reset` applies the migration and safe public seed. Use `supabase status -o env` to get the local API URL and server-only service-role key for `.env.local`; do not commit `.env.local`.
 
-After the migration, set the two display names directly in the private `profiles` table. Names are runtime configuration and are never committed to this repository.
+For a hosted environment, replace the local Supabase values with the private project URL and service-role key. Personal display names are runtime database configuration and are never committed to this repository.
 
 ## Environment
 
 ```env
 IRIS_APP_PIN=replace-with-a-private-pin
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=http://127.0.0.1:56321
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
 OPENROUTER_API_KEY=your-server-only-openrouter-key
 OPENROUTER_MODEL=openai/gpt-5.6-luna
@@ -80,6 +99,17 @@ supabase/migrations/          Database schema
 ```
 
 Private product context and visual references are intentionally local-only and excluded from Git.
+
+## Next stage
+
+Milestone 2 — Agent Runtime is next:
+
+- expand the thin `createAgent` conversation layer behind the existing chat interface
+- add clean context assembly boundaries for recent raw history, thread continuity, pinned context, and future memory retrieval
+- keep raw messages immutable and canonical
+- add a real OpenRouter streaming smoke test using a private `OPENROUTER_API_KEY`
+
+Memory, tools, skills, reminders, artifacts, voice, telemetry, and full authentication remain deferred to their later milestones.
 
 ## Intentionally deferred
 
