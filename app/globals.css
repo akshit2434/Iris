@@ -136,12 +136,16 @@ button:disabled { cursor: default; }
 .tool-activity-row { animation: tool-activity-enter .24s cubic-bezier(.2,.8,.2,1) both; transition: background-color .25s ease, border-color .25s ease, box-shadow .25s ease; }
 .tool-pulse { animation: tool-pulse 1.4s ease-in-out infinite; }
 .message-arrive { animation: message-arrive .42s cubic-bezier(.2,.8,.2,1) both; }
+.chat-route-exit { animation: chat-route-exit .15s cubic-bezier(.22,.8,.24,1) both; pointer-events: none; transform-origin: 50% 42%; }
+.chat-empty-entry { animation: chat-empty-entry .28s cubic-bezier(.2,.8,.2,1) both; transform-origin: 50% 44%; }
 
 @keyframes assistant-thinking-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @keyframes tool-activity-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 @keyframes tool-pulse { 0%,100% { opacity: .42; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
 @keyframes ambient-drift { from { transform: translate3d(-2%, -2%, 0) scale(.96); } to { transform: translate3d(4%, 3%, 0) scale(1.05); } }
 @keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
+@keyframes chat-route-exit { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: .04; transform: translate3d(-6px, 0, 0) scale(.996); } }
+@keyframes chat-empty-entry { from { opacity: 0; transform: translate3d(0, 7px, 0) scale(.997); } to { opacity: 1; transform: none; } }
 
 @supports not (backdrop-filter: blur(1px)) {
   .glass-surface { background: rgba(255,255,255,.94); }

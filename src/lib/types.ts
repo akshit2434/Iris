@@ -14,6 +14,8 @@ export type Thread = {
 
 export type Message = {
   id: string;
+  /** Client-only React identity kept stable while an optimistic row is reconciled. */
+  presentationId?: string;
   threadId: string;
   profileId: ProfileId;
   role: MessageRole;

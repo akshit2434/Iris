@@ -116,7 +116,9 @@ describe("agent stream reducer", () => {
   });
 
   it("replaces optimistic IDs with authoritative run IDs", () => {
-    const next = reduceAgentStream(runningState(), event({
+    const initial = runningState();
+    initial.messages = initial.messages.map((message) => ({ ...message, presentationId: `presentation-${message.id}` }));
+    const next = reduceAgentStream(initial, event({
       type: "run_started",
       runId: "run-1",
       requestId: "request-1",
@@ -128,6 +130,7 @@ describe("agent stream reducer", () => {
     expect(next.userMessageId).toBe("user-1");
     expect(next.assistantMessageId).toBe("assistant-1");
     expect(next.runId).toBe("run-1");
+    expect(next.messages.map((message) => message.presentationId)).toEqual(["presentation-pending-user", "presentation-pending-assistant"]);
   });
 
   it("marks a completed assistant response complete", () => {

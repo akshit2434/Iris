@@ -270,10 +270,15 @@ function applyToolEvent(activities: ToolActivity[], event: Extract<AgentStreamEv
 
 function replaceMessageId(messages: Message[], oldId: string | null, newId: string) {
   if (!oldId || oldId === newId) return messages;
+  const oldMessage = messages.find((message) => message.id === oldId);
   const alreadyExists = messages.some((message) => message.id === newId);
-  return messages.flatMap((message) => message.id === oldId
-    ? alreadyExists ? [] : [{ ...message, id: newId }]
-    : [message]);
+  return messages.flatMap((message) => {
+    if (message.id === oldId) return alreadyExists ? [] : [{ ...message, id: newId }];
+    if (message.id === newId && oldMessage?.presentationId && !message.presentationId) {
+      return [{ ...message, presentationId: oldMessage.presentationId }];
+    }
+    return [message];
+  });
 }
 
 function updateAssistant(messages: Message[], assistantMessageId: string | null, update: (message: Message) => Message) {

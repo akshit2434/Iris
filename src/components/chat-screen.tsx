@@ -10,6 +10,7 @@ import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
+import { useChatSurface } from "@/components/chat-surface-context";
 import { canSubmitMessage } from "@/lib/chat-composer";
 import {
   AgentStreamParser,
@@ -43,6 +44,7 @@ export function ChatScreen() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
   const { profileId, isReady } = useProfile();
+  const { setSurface } = useChatSurface();
   const [thread, setThread] = useState<Thread | null>(null);
   const [streamState, setStreamState] = useState<StreamState>(() => createStreamState());
   const [composer, setComposer] = useState("");
@@ -58,6 +60,8 @@ export function ChatScreen() {
   const streamBufferRef = useRef<ReturnType<typeof createStreamEventBuffer> | null>(null);
   const shouldFollowRef = useRef(true);
   const scrollFrameRef = useRef<number | null>(null);
+  const entryAnimationRef = useRef(false);
+  const [animateEmptyEntry, setAnimateEmptyEntry] = useState(false);
 
   function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
     setStreamState((current) => {
@@ -69,6 +73,28 @@ export function ChatScreen() {
   const messages = streamState.messages;
   const toolActivities = streamState.toolActivities;
   const hasMessages = messages.length > 0;
+
+  useEffect(() => {
+    entryAnimationRef.current = false;
+    setAnimateEmptyEntry(false);
+  }, [threadId]);
+
+  useEffect(() => {
+    setSurface({
+      threadId,
+      ready: !loading && Boolean(thread),
+      isEmpty: !loading && Boolean(thread) && messages.length === 0,
+      isSending: sending,
+    });
+  }, [loading, messages.length, sending, setSurface, thread, threadId]);
+
+  useEffect(() => () => setSurface(null), [setSurface, threadId]);
+
+  useEffect(() => {
+    if (loading || !thread || messages.length !== 0 || entryAnimationRef.current) return;
+    entryAnimationRef.current = true;
+    setAnimateEmptyEntry(true);
+  }, [loading, messages.length, thread]);
 
   useEffect(() => {
     if (!profileId || !threadId) return;
@@ -169,8 +195,8 @@ export function ChatScreen() {
     const optimisticAssistantId = `pending-assistant-${crypto.randomUUID()}`;
     const requestId = crypto.randomUUID();
     const now = new Date().toISOString();
-    const userMessage: Message = { id: optimisticUserId, threadId: thread.id, profileId: thread.profileId, role: "user", content, createdAt: now };
-    const assistantMessage: Message = { id: optimisticAssistantId, threadId: thread.id, profileId: thread.profileId, role: "assistant", content: "", createdAt: now, isComplete: false };
+    const userMessage: Message = { id: optimisticUserId, presentationId: optimisticUserId, threadId: thread.id, profileId: thread.profileId, role: "user", content, createdAt: now };
+    const assistantMessage: Message = { id: optimisticAssistantId, presentationId: optimisticAssistantId, threadId: thread.id, profileId: thread.profileId, role: "assistant", content: "", createdAt: now, isComplete: false };
     updateStreamState((current) => startOptimisticRun(current, { userMessage, assistantMessage }));
     const streamBuffer = createStreamEventBuffer((events) => {
       updateStreamState((current) => events.reduce(reduceAgentStream, current));
@@ -258,8 +284,8 @@ export function ChatScreen() {
   if (!thread) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
-    <div className="relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden">
-      <header className="absolute inset-x-0 top-0 z-20 h-28">
+    <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""}`}>
+      <header className="absolute inset-x-0 top-0 z-40 h-28">
         <ProceduralBlur edge="top" />
         <div className="relative flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
           <Link href="/history" className="soft-press flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-white/58 text-xl font-light text-slate-700 shadow-[inset_0_0_0_1px_rgba(255,255,255,.8)] backdrop-blur-xl" aria-label="Back to history">←</Link>
@@ -273,7 +299,7 @@ export function ChatScreen() {
       <div ref={scrollContainerRef} className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
-          {messages.map((message) => <MessageBubble key={message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
+          {messages.map((message) => <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
           <UnattachedToolActivities messages={messages} toolActivities={toolActivities} />
           <div ref={messagesEndRef} />
         </div>
@@ -296,8 +322,9 @@ export function ChatScreen() {
 function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void }>) {
   const isUser = message.role === "user";
   const phase = assistantStreamPhase(message, active);
+  const shouldAnimateEntry = Boolean(message.presentationId) && (isUser || Boolean(message.content));
   return (
-    <div className={`message-arrive flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
+    <div className={`${shouldAnimateEntry ? "message-arrive" : ""} flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
         {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} /> : null}
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
