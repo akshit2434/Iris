@@ -5,14 +5,17 @@ import { getDatabase } from "@/server/db/client";
 import type { Database, Json } from "@/server/db/types";
 import {
   type AppliedMemoryDocumentRevision,
+  type CanonicalDocumentSearchResult,
   type CanonicalMemoryDocument,
+  type MessageContextItem,
+  type MessageContextWindow,
   type MemoryProvenanceInput,
   type MessageEmbeddingMetadata,
   type MessageSearchResult,
   type MemoryStore,
   type MessageSemanticIndexStore,
 } from "@/server/memory/types";
-import { assertMemoryProfileId, validateApplyMemoryDocumentRevision, validateEmbedding, validateEmbeddingModel, validateLogicalKey } from "@/server/memory/validation";
+import { assertMemoryProfileId, normalizeMemoryLimit, normalizeMemoryQuery, validateApplyMemoryDocumentRevision, validateEmbedding, validateEmbeddingModel, validateLogicalKey, validateMemoryUuid } from "@/server/memory/validation";
 
 type MemoryDatabase = SupabaseClient<Database>;
 
@@ -41,6 +44,24 @@ function toSearchResult(row: Database["public"]["Functions"]["search_messages"][
     lexicalScore: row.lexical_score,
     semanticScore: row.semantic_score,
     combinedScore: row.combined_score,
+  };
+}
+
+function toMessageContextItem(row: {
+  id: string;
+  thread_id: string;
+  profile_id: "profile-a" | "profile-b";
+  role: "user" | "assistant" | "tool";
+  content: string;
+  created_at: string;
+}): MessageContextItem {
+  return {
+    messageId: row.id,
+    threadId: row.thread_id,
+    profileId: row.profile_id,
+    role: row.role,
+    content: row.content,
+    createdAt: row.created_at,
   };
 }
 
@@ -126,6 +147,100 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
       });
       if (error) throw error;
       return (data ?? []).map(toSearchResult);
+    },
+
+    async readMessageContext(profileId, messageId, windowSize = 3) {
+      assertMemoryProfileId(profileId);
+      validateMemoryUuid(messageId, "Message ID");
+      const boundedWindow = normalizeMemoryLimit(windowSize, 3);
+      const messageColumns = "id, thread_id, profile_id, role, content, created_at";
+      const { data: target, error: targetError } = await database
+        .from("messages")
+        .select(messageColumns)
+        .eq("id", messageId)
+        .eq("profile_id", profileId)
+        .maybeSingle();
+      if (targetError) throw targetError;
+      if (!target) return null;
+
+      const { data: thread, error: threadError } = await database
+        .from("threads")
+        .select("id, profile_id, title, created_at, updated_at")
+        .eq("id", target.thread_id)
+        .eq("profile_id", profileId)
+        .maybeSingle();
+      if (threadError) throw threadError;
+      if (!thread) return null;
+
+      const beforePromise = database
+        .from("messages")
+        .select(messageColumns)
+        .eq("thread_id", target.thread_id)
+        .eq("profile_id", profileId)
+        .or(`created_at.lt.${target.created_at},and(created_at.eq.${target.created_at},id.lt.${target.id})`)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(boundedWindow);
+      const afterPromise = database
+        .from("messages")
+        .select(messageColumns)
+        .eq("thread_id", target.thread_id)
+        .eq("profile_id", profileId)
+        .or(`created_at.gt.${target.created_at},and(created_at.eq.${target.created_at},id.gt.${target.id})`)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(boundedWindow);
+      const [{ data: before, error: beforeError }, { data: after, error: afterError }] = await Promise.all([beforePromise, afterPromise]);
+      if (beforeError) throw beforeError;
+      if (afterError) throw afterError;
+
+      return {
+        thread: {
+          id: thread.id,
+          profileId: thread.profile_id,
+          title: thread.title,
+          createdAt: thread.created_at,
+          updatedAt: thread.updated_at,
+        },
+        target: toMessageContextItem(target),
+        before: (before ?? []).reverse().map(toMessageContextItem),
+        after: (after ?? []).map(toMessageContextItem),
+      } satisfies MessageContextWindow;
+    },
+
+    async searchDocuments(profileId, rawQuery, rawLimit = 5) {
+      assertMemoryProfileId(profileId);
+      const query = normalizeMemoryQuery(rawQuery);
+      const limit = normalizeMemoryLimit(rawLimit);
+      const { data, error } = await database
+        .from("memory_documents")
+        .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
+        .eq("profile_id", profileId)
+        .is("archived_at", null)
+        .order("logical_key", { ascending: true });
+      if (error) throw error;
+      const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      return (data ?? [])
+        .map((document) => {
+          const haystack = `${document.logical_key} ${document.content_markdown}`.toLocaleLowerCase();
+          const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+          const compact = document.content_markdown.replace(/\s+/g, " ").trim();
+          const matchAt = compact.toLocaleLowerCase().indexOf(terms[0] ?? "");
+          const start = matchAt > 0 ? Math.max(0, matchAt - 70) : 0;
+          const excerpt = compact.length <= 280 ? compact : `${start > 0 ? "…" : ""}${compact.slice(start, start + 278).trimEnd()}…`;
+          return { document, score, excerpt };
+        })
+        .filter(({ score }) => score > 0)
+        .sort((left, right) => right.score - left.score || left.document.logical_key.localeCompare(right.document.logical_key))
+        .slice(0, limit)
+        .map(({ document, excerpt }) => ({
+          documentId: document.id,
+          profileId: document.profile_id,
+          logicalKey: document.logical_key,
+          excerpt,
+          documentRevision: document.document_revision,
+          updatedAt: document.updated_at,
+        } satisfies CanonicalDocumentSearchResult));
     },
 
     async getMessageEmbeddingMetadata(profileId, messageId) {

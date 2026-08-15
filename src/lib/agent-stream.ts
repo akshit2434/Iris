@@ -470,12 +470,24 @@ export function summarizeToolResult(activity: ToolActivity) {
     const count = typeof structuredOutput.messageCount === "number" ? `${structuredOutput.messageCount} messages` : "Saved thread";
     return `${title} · ${count}`;
   }
+  if (activity.toolName === "search_messages" && structuredOutput) {
+    const count = Array.isArray(structuredOutput.results) ? structuredOutput.results.length : 0;
+    return count === 0 ? "No matching messages" : `Found ${count} ${count === 1 ? "message" : "messages"}`;
+  }
+  if (activity.toolName === "read_messages" && structuredOutput) {
+    return structuredOutput.found === false ? "No matching message" : "Read historical source";
+  }
+  if ((activity.toolName === "memory_list" || activity.toolName === "memory_search" || activity.toolName === "memory_read") && structuredOutput) {
+    if (activity.toolName === "memory_read") return structuredOutput.found === false ? "Memory document not found" : "Read memory document";
+    const count = Array.isArray(structuredOutput.results) ? structuredOutput.results.length : 0;
+    return count === 0 ? "No memory documents found" : `Found ${count} ${count === 1 ? "memory document" : "memory documents"}`;
+  }
   if (typeof output === "string") return shortText(output) || "Done";
   return "Result ready";
 }
 
 export function toolDetail(activity: ToolActivity) {
-  if (activity.toolName === "current_time" || activity.toolName === "thread_overview") return null;
+  if (["current_time", "thread_overview", "search_messages", "read_messages", "memory_list", "memory_read", "memory_search"].includes(activity.toolName)) return null;
   const value: SafeJson | undefined = activity.output ?? activity.input;
   if (!value || typeof value !== "object") return null;
   return JSON.stringify(value, null, 2).slice(0, 1600);

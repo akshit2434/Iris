@@ -5,12 +5,15 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
 import type { Message, PersistedToolEvent, Thread, ToolActivity } from "@/lib/types";
+import type { ProfileId } from "@/lib/profiles";
 import { IrisMark } from "@/components/iris-mark";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
 import { useChatSurface } from "@/components/chat-surface-context";
+import { buildOpenMessageHref, canonicalMemoryRows, memorySourceRows } from "@/lib/memory-source";
+import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
 import {
   AgentStreamParser,
@@ -62,6 +65,7 @@ export function ChatScreen() {
   const scrollFrameRef = useRef<number | null>(null);
   const entryAnimationRef = useRef(false);
   const [animateEmptyEntry, setAnimateEmptyEntry] = useState(false);
+  const resolvedHashRef = useRef<string | null>(null);
 
   function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
     setStreamState((current) => {
@@ -149,6 +153,37 @@ export function ChatScreen() {
       }
     };
   }, [messages, toolActivities]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const resolveHash = () => {
+      const hash = window.location.hash;
+      const targetId = resolveMessageHashTarget(hash, messages.map((message) => message.id));
+      if (!targetId || resolvedHashRef.current === `${threadId}:${hash}`) return;
+      const target = document.getElementById(`message-${targetId}`);
+      if (!target) return;
+      resolvedHashRef.current = `${threadId}:${hash}`;
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const frame = window.requestAnimationFrame(() => {
+        if (!target.isConnected) return;
+        target.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+        target.classList.remove("message-source-highlight");
+        void target.offsetWidth;
+        target.classList.add("message-source-highlight");
+      });
+      return () => window.cancelAnimationFrame(frame);
+    };
+    const onHashChange = () => {
+      resolvedHashRef.current = null;
+      resolveHash();
+    };
+    window.addEventListener("hashchange", onHashChange);
+    const cancel = resolveHash();
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      cancel?.();
+    };
+  }, [messages, threadId]);
 
   useEffect(() => () => {
     streamBufferRef.current?.cancel();
@@ -300,7 +335,7 @@ export function ChatScreen() {
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
           {messages.map((message) => <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
-          <UnattachedToolActivities messages={messages} toolActivities={toolActivities} />
+          <UnattachedToolActivities messages={messages} toolActivities={toolActivities} profileId={profileId} />
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -326,7 +361,7 @@ function MessageBubble({ message, active, live, terminal, toolActivities, onReve
   return (
     <div className={`${shouldAnimateEntry ? "message-arrive" : ""} flex ${isUser ? "justify-end" : "justify-start"}`} id={`message-${message.id}`}>
       <div className={`max-w-[88%] sm:max-w-[76%] ${isUser ? "items-end" : "items-start"}`}>
-        {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} /> : null}
+        {!isUser && toolActivities.length > 0 ? <ToolActivityDisclosure activities={toolActivities} active={active} profileId={message.profileId} /> : null}
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
           {message.content ? <AssistantMarkdown content={message.content} live={live} terminal={terminal} onRevealComplete={onRevealComplete} /> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
         </div>
@@ -346,15 +381,15 @@ function ThinkingIndicator() {
   );
 }
 
-function UnattachedToolActivities({ messages, toolActivities }: Readonly<{ messages: Message[]; toolActivities: ToolActivity[] }>) {
+function UnattachedToolActivities({ messages, toolActivities, profileId }: Readonly<{ messages: Message[]; toolActivities: ToolActivity[]; profileId: ProfileId }>) {
   const attachedRuns = new Set(messages.filter((message) => message.role === "assistant" && message.agentRunId).map((message) => message.agentRunId));
   const unattached = toolActivities.filter((activity) => !attachedRuns.has(activity.runId));
   if (unattached.length === 0) return null;
   const runs = [...new Set(unattached.map((activity) => activity.runId))];
-  return <div className="message-arrive space-y-2 pl-1"><p className="text-[11px] font-medium text-slate-400">Saved run activity</p>{runs.map((runId) => <ToolActivityDisclosure key={runId} activities={unattached.filter((activity) => activity.runId === runId)} active={false} />)}</div>;
+  return <div className="message-arrive space-y-2 pl-1"><p className="text-[11px] font-medium text-slate-400">Saved run activity</p>{runs.map((runId) => <ToolActivityDisclosure key={runId} activities={unattached.filter((activity) => activity.runId === runId)} active={false} profileId={profileId} />)}</div>;
 }
 
-function ToolActivityDisclosure({ activities, active }: Readonly<{ activities: ToolActivity[]; active: boolean }>) {
+function ToolActivityDisclosure({ activities, active, profileId }: Readonly<{ activities: ToolActivity[]; active: boolean; profileId: ProfileId }>) {
   const [expanded, setExpanded] = useState(active);
   const wasActive = useRef(active);
   const detailsId = `tool-activity-${activities[0]?.runId ?? "run"}`;
@@ -371,7 +406,7 @@ function ToolActivityDisclosure({ activities, active }: Readonly<{ activities: T
       <svg viewBox="0 0 12 8" className={`h-2 w-3 shrink-0 text-slate-400 transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? "rotate-180" : ""}`} aria-hidden="true"><path d="m1 1 5 5 5-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" /></svg>
     </button>
     <div id={detailsId} className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${expanded ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`} aria-hidden={!expanded}>
-      <div className="min-h-0 overflow-hidden"><div className="space-y-1 pb-1 pt-1" aria-label="Tool activity details">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} />)}</div></div>
+      <div className="min-h-0 overflow-hidden"><div className="space-y-1 pb-1 pt-1" aria-label="Tool activity details">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} profileId={profileId} />)}</div></div>
     </div>
   </div>;
 }
@@ -383,8 +418,10 @@ function ToolActivityIcon({ toolName }: Readonly<{ toolName: string }>) {
   return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><path d="m7.5 5.5 2.5-2 2.5 2-1 1.6 1.6 1 1.9-.4 1 3-1.7 1-.1 2-1.8.8-1.4-1.3-1.8.7-1.7-1.4.6-1.9-1.3-1.3-1.8.2-1.2-2.8z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2" /><circle cx="10" cy="9.8" r="2" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>;
 }
 
-function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
+function ToolActivityRow({ activity, profileId }: Readonly<{ activity: ToolActivity; profileId: ProfileId }>) {
   const detail = toolDetail(activity);
+  const sourceRows = memorySourceRows(activity.toolName, activity.output, profileId);
+  const canonicalRows = canonicalMemoryRows(activity.toolName, activity.output);
   const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "failed" ? "text-red-500" : "text-slate-500";
   return (
     <div className="tool-activity-row px-1 text-xs text-slate-500" aria-label={`${toolLabel(activity.toolName)} ${activity.status}`} aria-live={activity.status === "running" ? "polite" : "off"}>
@@ -393,7 +430,12 @@ function ToolActivityRow({ activity }: Readonly<{ activity: ToolActivity }>) {
         <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{toolLabel(activity.toolName)}</span>
       </div>
       <p className={`mt-1 pl-6 text-[11px] leading-4 ${stateClass}`}>{summarizeToolResult(activity)}</p>
-      {detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
+      {sourceRows.length > 0 ? <div className="mt-2 space-y-1 pl-6">{sourceRows.map((row) => {
+        const href = buildOpenMessageHref(row.action);
+        return href ? <Link key={`${row.action.threadId}:${row.action.messageId}`} href={href} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-500 transition hover:bg-white/60 hover:text-slate-800"><span className="min-w-0 flex-1 truncate">{row.excerpt}</span><span className="shrink-0 font-semibold text-[#4978ed] opacity-80 group-hover:opacity-100">Open source</span></Link> : null;
+      })}</div> : null}
+      {canonicalRows.length > 0 ? <div className="mt-2 space-y-1 pl-6">{canonicalRows.map((row) => <div key={`${row.logicalKey}:${row.documentRevision}`} className="rounded-lg bg-white/35 px-2 py-1.5 text-[11px] text-slate-500"><span className="font-semibold text-slate-700">{row.logicalKey}</span><span className="ml-2 truncate">{row.excerpt}</span></div>)}</div> : null}
+      {sourceRows.length === 0 && canonicalRows.length === 0 && detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
     </div>
   );
 }

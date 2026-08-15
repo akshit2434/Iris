@@ -14,6 +14,7 @@ import {
   type AgentContext,
 } from "@/server/agent/context";
 import { createInternalTools, type ThreadOverviewReader } from "@/server/agent/tools";
+import type { MemoryRetrieval } from "@/server/memory/retrieval";
 import { sanitizeForEvent, sanitizeStatusMessage, type SafeJson } from "@/server/agent/protocol";
 
 export const DEFAULT_MODEL = "openai/gpt-5.6-luna";
@@ -58,6 +59,7 @@ export function createProductionChatModel(): AgentModel {
 export function createIrisAgent(input: {
   model: AgentModel;
   threadOverviewReader?: ThreadOverviewReader;
+  memoryRetrieval?: MemoryRetrieval;
 }): RuntimeAgent {
   const dynamicPrompt = dynamicSystemPromptMiddleware<AgentContext>((_state, runtime) =>
     buildDynamicSystemPrompt(runtime.context),
@@ -67,16 +69,18 @@ export function createIrisAgent(input: {
     model: input.model,
     contextSchema: agentContextSchema,
     middleware: [dynamicPrompt],
-    tools: [...createInternalTools(input.threadOverviewReader)],
+    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval)],
   });
 }
 
 export function createProductionAgent(input?: {
   threadOverviewReader?: ThreadOverviewReader;
+  memoryRetrieval?: MemoryRetrieval;
 }): RuntimeAgent {
   return createIrisAgent({
     model: createProductionChatModel(),
     threadOverviewReader: input?.threadOverviewReader,
+    memoryRetrieval: input?.memoryRetrieval,
   });
 }
 
@@ -106,6 +110,17 @@ function parseToolInput(value: unknown): SafeJson {
     return sanitizeForEvent(JSON.parse(value));
   } catch {
     return value.slice(0, 4000);
+  }
+}
+
+/** Preserve structured tool results while keeping legacy plain-string results intact. */
+export function parseToolOutput(value: unknown): SafeJson {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) return sanitizeForEvent(value);
+  const raw = typeof value === "string" ? value : getTextContent(value);
+  try {
+    return sanitizeForEvent(JSON.parse(raw));
+  } catch {
+    return raw.slice(0, 4000);
   }
 }
 
@@ -149,21 +164,15 @@ function getToolResult(message: Record<string, unknown>) {
   if (message.type !== "tool") return null;
   const toolCallId = typeof message.tool_call_id === "string" ? message.tool_call_id : "unknown";
   const toolName = typeof message.name === "string" ? message.name : "unknown_tool";
+  const output = parseToolOutput(message.content);
   let statusMessage: string | undefined;
-  if (typeof message.content === "string") {
-    try {
-      const parsed = JSON.parse(message.content) as unknown;
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        statusMessage = sanitizeStatusMessage((parsed as Record<string, unknown>).statusMessage);
-      }
-    } catch {
-      // Non-JSON tool output has no structured progress label.
-    }
+  if (typeof output === "object" && output !== null && !Array.isArray(output)) {
+    statusMessage = sanitizeStatusMessage((output as Record<string, unknown>).statusMessage);
   }
   return {
     toolCallId,
     toolName,
-    output: sanitizeForEvent(message.content),
+    output,
     ok: message.status !== "error",
     ...(statusMessage ? { statusMessage } : {}),
   };
@@ -193,10 +202,11 @@ export async function* streamAgentEvents(input: {
   messages: AgentMessage[];
   model?: AgentModel;
   threadOverviewReader?: ThreadOverviewReader;
+  memoryRetrieval?: MemoryRetrieval;
 }): AsyncGenerator<AgentRuntimeEvent> {
   const agent = input.model
-    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader })
-    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader });
+    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval })
+    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval });
   const stream = await agent.stream(
     { messages: input.messages },
     { context: input.context, streamMode: "messages" },
@@ -231,6 +241,7 @@ export async function* streamAssistantReply(input: {
   messages: AgentMessage[];
   model?: AgentModel;
   threadOverviewReader?: ThreadOverviewReader;
+  memoryRetrieval?: MemoryRetrieval;
 }) {
   void input.profileId;
   for await (const event of streamAgentEvents(input)) {

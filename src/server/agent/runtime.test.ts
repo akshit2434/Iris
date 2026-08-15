@@ -9,9 +9,11 @@ import {
   resolveBrowserTimezone,
 } from "@/server/agent/context";
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
-import { createIrisAgent, extractAgentMessageEvents, streamAgentEvents } from "@/server/agent";
+import { createIrisAgent, extractAgentMessageEvents, parseToolOutput, streamAgentEvents } from "@/server/agent";
 import { planAssistantPersistence } from "@/server/agent/persistence";
-import { createInternalTools, optionalToolProgressSchema, readCurrentThreadOverview, readCurrentTime } from "@/server/agent/tools";
+import { createInternalTools, optionalToolProgressSchema, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
+import type { MemoryRetrieval } from "@/server/memory/retrieval";
+import type { MessageContextWindow, MessageSearchResult } from "@/server/memory/types";
 import { AGENT_STREAM_PROTOCOL, sanitizeForEvent, sanitizeStatusMessage } from "@/server/agent/protocol";
 
 const context = createAgentContext({
@@ -51,6 +53,8 @@ describe("agent context", () => {
     expect(prompt).toContain("Do not end every answer with an offer or question");
     expect(prompt).toContain("Do not produce a long response unless the user explicitly requests or confirms one");
     expect(prompt).toContain("Be opinionated, candid, and direct");
+    expect(prompt).toContain("use the read-only search_messages or memory_search tools instead of guessing");
+    expect(prompt).toContain("Use read_messages when exact source wording or provenance matters");
   });
 
   it("formats local date/time across UTC boundaries and DST transitions", () => {
@@ -116,7 +120,14 @@ describe("internal tools", () => {
   });
 
   it("does not expose user-local time as a new agent tool", () => {
-    expect(createInternalTools().map((internalTool) => internalTool.name)).toEqual(["thread_overview"]);
+    expect(createInternalTools().map((internalTool) => internalTool.name)).toEqual([
+      "thread_overview",
+      "search_messages",
+      "read_messages",
+      "memory_list",
+      "memory_read",
+      "memory_search",
+    ]);
   });
 
   it("strictly scopes thread overview reads to the runtime profile and thread", async () => {
@@ -157,7 +168,7 @@ describe("runtime seams", () => {
         type: "tool_finished",
         toolCallId: "call-1",
         toolName: "current_time",
-        output: JSON.stringify({ kind: "current_time", timezone: "UTC" }),
+        output: { kind: "current_time", timezone: "UTC" },
         ok: true,
       },
     ]);
@@ -180,6 +191,41 @@ describe("runtime seams", () => {
       name: "future_tool",
       content: JSON.stringify({ statusMessage: "Still gathering details", value: 1 }),
     })).toEqual([expect.objectContaining({ type: "tool_finished", statusMessage: "Still gathering details" })]);
+  });
+
+  it("parses structured tool output while preserving bounded plain-string output", () => {
+    expect(parseToolOutput(JSON.stringify({ kind: "message_search", results: [] }))).toEqual({ kind: "message_search", results: [] });
+    expect(parseToolOutput("plain result")).toBe("plain result");
+    expect(parseToolOutput("x".repeat(5000))).toHaveLength(4000);
+  });
+
+  it("passes only the runtime profile into retrieval tools", async () => {
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async ({ profileId }): Promise<MessageSearchResult[]> => [{
+        messageId: "00000000-0000-4000-8000-000000000010",
+        threadId: context.threadId,
+        profileId,
+        role: "user" as const,
+        content: "A prior decision",
+        createdAt: "2026-08-14T12:00:00.000Z",
+        lexicalScore: 1,
+        semanticScore: null,
+        combinedScore: 1,
+      }]),
+      readMessages: vi.fn(async (profileId): Promise<MessageContextWindow> => ({
+        thread: { id: context.threadId, profileId, title: "Runtime test", createdAt: "2026-08-14T12:00:00.000Z", updatedAt: "2026-08-14T12:00:00.000Z" },
+        target: { messageId: "00000000-0000-4000-8000-000000000010", threadId: context.threadId, profileId, role: "user" as const, content: "A prior decision", createdAt: "2026-08-14T12:00:00.000Z" },
+        before: [], after: [],
+      })),
+      listMemory: vi.fn(async () => []),
+      readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => []),
+    };
+
+    await expect(searchMessages(context, { query: " prior  decision ", limit: 5 }, retrieval)).resolves.toMatchObject({ kind: "message_search" });
+    expect(retrieval.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", query: "prior decision" }));
+    await expect(readMessages(context, { messageId: "00000000-0000-4000-8000-000000000010", windowSize: 2 }, retrieval)).resolves.toMatchObject({ kind: "message_read", found: true });
+    expect(retrieval.readMessages).toHaveBeenCalledWith("profile-a", "00000000-0000-4000-8000-000000000010", 2);
   });
 
   it("constructs the agent with an injected deterministic model", () => {
@@ -242,6 +288,34 @@ describe("runtime seams", () => {
     }
     expect(events.some((event) => event.type === "tool_started")).toBe(true);
     expect(events.some((event) => event.type === "tool_finished")).toBe(true);
+  });
+
+  it("streams structured historical search results through the fake model seam", async () => {
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => []),
+      readMessages: vi.fn(async () => null),
+      listMemory: vi.fn(async () => []),
+      readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => []),
+    };
+    const events = [];
+    for await (const event of streamAgentEvents({
+      model: new FakeToolCallingModel({
+        toolCalls: [
+          [{ id: "call-search", name: "search_messages", args: { query: "earlier decision", limit: 3 } }],
+          [],
+        ],
+      }),
+      context,
+      memoryRetrieval: retrieval,
+      messages: [{ role: "user", content: "Where did we discuss the earlier decision?" }],
+    })) {
+      events.push(event);
+    }
+    expect(retrieval.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", query: "earlier decision", limit: 3 }));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool_finished", toolName: "search_messages", output: { kind: "message_search", query: "earlier decision", results: [] } }),
+    ]));
   });
 
   it("keeps a partial assistant response on failure", () => {

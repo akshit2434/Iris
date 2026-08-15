@@ -18,6 +18,15 @@ changing the chat UI or invoking a model.
   message sending yet.
 - `indexer.ts` hashes raw message content and idempotently refreshes only stale
   or model-changed derived vectors.
+- `retrieval.ts` is the read-only, injected query boundary for exact historical
+  message windows, bounded lexical message search, and active canonical-document
+  inspection. Its production semantic path is opt-in via
+  `MEMORY_SEMANTIC_SEARCH_ENABLED` and has no provider unless one is explicitly
+  injected, so ordinary chat requests do not spend embedding credits.
+- `src/server/agent/tools.ts` exposes only profile-scoped `search_messages`,
+  `read_messages`, `memory_list`, `memory_read`, and `memory_search` reads. Their
+  structured results can carry bounded internal source actions for the chat UI;
+  there is deliberately no memory write/consolidation tool.
 
 Raw messages remain immutable source history. Markdown is the canonical current
 representation; hashes, embeddings, rankings, timestamps, and provenance IDs
@@ -27,10 +36,10 @@ connection and explicitly scopes every query.
 
 ## Later slices
 
-- governed agent memory tools and human-visible proposals
+- governed memory writes, human-visible proposals, and consolidation
 - post-turn/idle consolidation and conflict handling
 - embedding backfill/queue policy and retention controls
-- exact-message retrieval/deep links and thread memory deltas
+- thread memory deltas and source-ranking improvements
 - stale-state reconciliation and long-chat compaction
 
 No production LLM memory-write tool or automatic embedding trigger belongs in

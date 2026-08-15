@@ -4,6 +4,7 @@ import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryDocumentRevisionInput, typ
 const LOGICAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const MAX_MARKDOWN_LENGTH = 500_000;
 const MAX_EXCERPT_LENGTH = 2_000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function assertMemoryProfileId(value: unknown): asserts value is ProfileId {
   if (!isProfileId(value)) throw new Error("A valid profile scope is required.");
@@ -66,4 +67,32 @@ export function validateEmbeddingModel(model: string) {
   const normalized = model.trim();
   if (!normalized || normalized.length > 200) throw new Error("A valid embedding model is required.");
   return normalized;
+}
+
+export function isMemoryUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+export function validateMemoryUuid(value: string, label = "ID") {
+  if (!isMemoryUuid(value)) throw new Error(`${label} must be a valid UUID.`);
+  return value;
+}
+
+export function normalizeMemoryQuery(value: string) {
+  const query = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!query || query.length > 500) throw new Error("Memory search queries must be between 1 and 500 characters.");
+  return query;
+}
+
+export function normalizeMemoryLimit(value: number | undefined, fallback = 5) {
+  const limit = value ?? fallback;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Memory search limits must be positive integers.");
+  return Math.min(limit, 10);
+}
+
+export function normalizeMemoryDate(value: string | null | undefined, label: string) {
+  if (value === null || value === undefined) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) throw new Error(`${label} must be a valid date.`);
+  return date.toISOString();
 }

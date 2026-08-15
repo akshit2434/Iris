@@ -33,6 +33,50 @@ function fakeDatabase() {
   return { database, calls };
 }
 
+function readFakeDatabase() {
+  const calls: Array<{ operation: string; table?: string; field?: string; value?: unknown }> = [];
+  const messages = [
+    { id: "00000000-0000-4000-8000-000000000009", thread_id: "00000000-0000-4000-8000-000000000011", profile_id: "profile-a", role: "user", content: "before", created_at: "2026-08-14T11:00:00.000Z" },
+    { id: "00000000-0000-4000-8000-000000000010", thread_id: "00000000-0000-4000-8000-000000000011", profile_id: "profile-a", role: "assistant", content: "target", created_at: "2026-08-14T12:00:00.000Z" },
+    { id: "00000000-0000-4000-8000-000000000012", thread_id: "00000000-0000-4000-8000-000000000011", profile_id: "profile-a", role: "user", content: "after", created_at: "2026-08-14T13:00:00.000Z" },
+  ];
+  const threads = [{ id: "00000000-0000-4000-8000-000000000011", profile_id: "profile-a", title: "History", created_at: "2026-08-14T10:00:00.000Z", updated_at: "2026-08-14T13:00:00.000Z" }];
+  const chain = (table: string) => {
+    const builder: Record<string, (...args: unknown[]) => unknown> = {};
+    let filtered: unknown[] = table === "messages" ? messages : threads;
+    builder.select = () => builder;
+    builder.eq = (field: unknown, value: unknown) => {
+      calls.push({ operation: "eq", table, field: String(field), value });
+      filtered = filtered.filter((row) => (row as Record<string, unknown>)[String(field)] === value);
+      return builder;
+    };
+    builder.or = (value: unknown) => {
+      calls.push({ operation: "or", table, value });
+      const match = String(value).match(/created_at\.(lt|gt)\.([^,]+)/);
+      if (match) {
+        const [, direction, timestamp] = match;
+        filtered = filtered.filter((row) => direction === "lt"
+          ? (row as { created_at: string }).created_at < timestamp
+          : (row as { created_at: string }).created_at > timestamp);
+      }
+      return builder;
+    };
+    builder.order = () => builder;
+    builder.limit = () => builder;
+    builder.maybeSingle = () => Promise.resolve({ data: filtered[0] ?? null, error: null });
+    builder.then = (...args: unknown[]) => {
+      const resolve = args[0] as ((value: unknown) => unknown) | undefined;
+      const promise = Promise.resolve({ data: filtered, error: null });
+      return resolve ? promise.then(resolve) : promise;
+    };
+    return builder;
+  };
+  return {
+    database: { from: (table: string) => { calls.push({ operation: "from", table }); return chain(table); } },
+    calls,
+  };
+}
+
 describe("profile-scoped memory repository", () => {
   it("always adds profile predicates and keeps profile in RPC requests", async () => {
     const { database, calls } = fakeDatabase();
@@ -66,5 +110,21 @@ describe("profile-scoped memory repository", () => {
     const before = calls.length;
     await expect(store.applyDocumentRevision({ profileId: "profile-a", logicalKey: "CURRENT.md", contentMarkdown: "", mutationKind: "update" })).rejects.toThrow("non-empty natural Markdown");
     expect(calls).toHaveLength(before);
+  });
+
+  it("reads an exact message window only inside the requested profile", async () => {
+    const { database, calls } = readFakeDatabase();
+    const store = createSupabaseMemoryStore(database as never);
+    await expect(store.readMessageContext("profile-a", "00000000-0000-4000-8000-000000000010", 1)).resolves.toMatchObject({
+      target: { content: "target" },
+      before: [{ content: "before" }],
+      after: [{ content: "after" }],
+      thread: { id: "00000000-0000-4000-8000-000000000011", profileId: "profile-a" },
+    });
+    expect(calls.filter((call) => call.operation === "eq" && call.field === "profile_id")).toHaveLength(4);
+
+    calls.length = 0;
+    await expect(store.readMessageContext("profile-b", "00000000-0000-4000-8000-000000000010", 1)).resolves.toBeNull();
+    await expect(store.readMessageContext("profile-a", "00000000-0000-4000-8000-000000000099", 1)).resolves.toBeNull();
   });
 });

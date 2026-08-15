@@ -79,6 +79,37 @@ export type MessageSearchResult = {
   combinedScore: number;
 };
 
+export type MessageContextItem = {
+  messageId: string;
+  threadId: string;
+  profileId: ProfileId;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  createdAt: string;
+};
+
+export type MessageContextWindow = {
+  thread: {
+    id: string;
+    profileId: ProfileId;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  target: MessageContextItem;
+  before: MessageContextItem[];
+  after: MessageContextItem[];
+};
+
+export type CanonicalDocumentSearchResult = {
+  documentId: string;
+  profileId: ProfileId;
+  logicalKey: string;
+  excerpt: string;
+  documentRevision: number;
+  updatedAt: string;
+};
+
 export type MessageEmbeddingMetadata = {
   messageId: string;
   profileId: ProfileId;
@@ -105,6 +136,8 @@ export type MemoryStore = {
   getCurrentRevision: (profileId: ProfileId) => Promise<number>;
   applyDocumentRevision: (input: ApplyMemoryDocumentRevisionInput) => Promise<AppliedMemoryDocumentRevision>;
   searchMessages: (input: MessageSearchInput) => Promise<MessageSearchResult[]>;
+  readMessageContext: (profileId: ProfileId, messageId: string, windowSize?: number) => Promise<MessageContextWindow | null>;
+  searchDocuments: (profileId: ProfileId, query: string, limit?: number) => Promise<CanonicalDocumentSearchResult[]>;
 };
 
 export type MessageSemanticIndexStore = {

@@ -23,6 +23,7 @@ import {
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
 import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
 import { resolveThreadTitle } from "@/server/agent/title";
+import { createProductionMemoryRetrievalService } from "@/server/memory/retrieval";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
   AGENT_STREAM_PROTOCOL,
@@ -155,6 +156,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
     });
+    const memoryRetrieval = createProductionMemoryRetrievalService();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -220,6 +222,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           for await (const event of streamAgentEvents({
             context: agentContext,
             messages: getModelMessages(threadContext),
+            memoryRetrieval,
           })) {
             if (event.type === "text_delta") {
               assistantContent += event.text;
