@@ -35,7 +35,7 @@ export function HistoryScreen() {
     <div className="ambient-orb -right-56 -top-40" />
     <div className="relative mx-auto max-w-3xl">
       <div data-reveal className="flex items-center justify-between"><h1 className="text-[clamp(2.8rem,10vw,5.4rem)] font-medium leading-none tracking-[-.06em]">History</h1>{loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#4978ed]" aria-label="Loading history" /> : null}</div>
-      <div data-reveal className="mt-10"><label htmlFor="history-search" className="sr-only">Search chat titles</label><input id="history-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" className="glass-surface h-14 w-full rounded-[22px] px-5 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:bg-white/78" /></div>
+      <div data-reveal className="mt-10"><label htmlFor="history-search" className="sr-only">Search chat titles</label><input id="history-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" className="glass-surface h-14 w-full rounded-[22px] px-5 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white/78" /></div>
       {error ? <p className="mt-4 rounded-2xl bg-red-50/80 px-4 py-3 text-sm font-medium text-red-600">{error}</p> : null}
       <div data-reveal className="mt-5"><ThreadList threads={filteredThreads} emptyMessage={query ? "No matches." : "No chats yet."} /></div>
     </div>
