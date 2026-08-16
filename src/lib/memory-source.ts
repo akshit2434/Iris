@@ -77,6 +77,16 @@ function getRows(value: SafeToolJson | undefined) {
   return Array.isArray(output.sources) ? output.sources : [];
 }
 
+function getNestedSourceRows(value: SafeToolJson | undefined) {
+  const output = objectOutput(value);
+  if (!output || !Array.isArray(output.results)) return [];
+  return output.results.flatMap((result) => {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+    const sources = (result as Record<string, SafeToolJson>).sources;
+    return Array.isArray(sources) ? sources : [];
+  });
+}
+
 function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceRow | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
@@ -96,10 +106,19 @@ function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceR
 
 export function memorySourceRows(toolName: string, output: SafeToolJson | undefined, expectedProfileId?: ProfileId): MemorySourceRow[] {
   if (toolName === "search_messages" || toolName === "history_preflight" || toolName === "memory_context") return getRows(output).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
+  if (toolName === "memory_search") return getNestedSourceRows(output).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
+  if (toolName === "memory_read") {
+    const object = objectOutput(output);
+    const item = object?.item;
+    const sources = item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, SafeToolJson>).sources : null;
+    return (Array.isArray(sources) ? sources : []).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
+  }
   if (toolName === "read_messages") {
     const object = objectOutput(output);
     const target = object?.target;
-    const row = sourceRow(target && typeof target === "object" ? { ...(target as Record<string, unknown>), excerpt: (target as Record<string, unknown>).excerpt ?? (target as Record<string, unknown>).content, action: object.action } : null, expectedProfileId);
+    const thread = object?.thread;
+    const threadTitle = thread && typeof thread === "object" && !Array.isArray(thread) ? (thread as Record<string, unknown>).title : undefined;
+    const row = sourceRow(target && typeof target === "object" ? { ...(target as Record<string, unknown>), excerpt: (target as Record<string, unknown>).excerpt ?? (target as Record<string, unknown>).content, action: object.action, threadTitle } : null, expectedProfileId);
     return row ? [row] : [];
   }
   return [];

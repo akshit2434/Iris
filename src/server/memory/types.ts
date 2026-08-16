@@ -331,6 +331,18 @@ export type MemoryItemSearchResult = {
   status: MemoryItemStatus;
 };
 
+/** Profile-validated raw message provenance for a canonical memory item. */
+export type MemoryMessageSourceReference = {
+  messageId: string;
+  threadId: string;
+  profileId: ProfileId;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  createdAt: string;
+  threadTitle: string;
+  relation: MemoryProvenanceRelation;
+};
+
 export type MessageEmbeddingMetadata = {
   messageId: string;
   profileId: ProfileId;

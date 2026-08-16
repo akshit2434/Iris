@@ -52,6 +52,9 @@ describe("deterministic historical preflight", () => {
     expect(detectHistoryPreflightIntent("Which old chat should I continue?", new Date("2026-08-16T00:00:00.000Z"))).toMatchObject({ kind: "continuation" });
     expect(detectHistoryPreflightIntent("where exactly in this conversation did I mention Ember?")).toMatchObject({ includeCurrentThread: true });
     expect(detectHistoryPreflightIntent("where exactly did I mention Ember?")).toMatchObject({ includeCurrentThread: false });
+    expect(detectHistoryPreflightIntent("Show me the chat where I told you my laptop model")).toMatchObject({ roles: ["user"], query: "laptop model" });
+    expect(detectHistoryPreflightIntent("Show me where you told me the deadline")).toMatchObject({ roles: ["assistant"], query: "deadline" });
+    expect(detectHistoryPreflightIntent("show me the chat where u told me the deadline")).toMatchObject({ roles: ["assistant"] });
     expect(detectHistoryPreflightIntent("Explain what a database index is.")).toBeNull();
   });
 
@@ -85,6 +88,32 @@ describe("deterministic historical preflight", () => {
     expect(output.prompt).toContain(ids.message);
     expect(output.prompt).toContain("validated open_message action");
     expect(output.prompt).toContain("never claim that navigation is unavailable");
+  });
+
+  it("selects the original speaker instead of a later conversational echo", async () => {
+    const userMessageId = "00000000-0000-4000-8000-000000000201";
+    const assistantMessageId = "00000000-0000-4000-8000-000000000202";
+    const threadId = "00000000-0000-4000-8000-000000000211";
+    const rows = [
+      result({ messageId: assistantMessageId, threadId, role: "assistant", content: "You told me your laptop is a LunarBook 14.", createdAt: "2026-08-15T12:01:00.000Z", combinedScore: 1 }),
+      result({ messageId: userMessageId, threadId, role: "user", content: "My laptop is a LunarBook 14.", createdAt: "2026-08-15T12:00:00.000Z", combinedScore: 0.8 }),
+    ];
+    const contexts = new Map([
+      [userMessageId, window({ thread: { id: threadId, profileId: "profile-a", title: "Laptop note", createdAt: "2026-08-15T11:00:00.000Z", updatedAt: "2026-08-15T12:01:00.000Z" }, target: { messageId: userMessageId, threadId, profileId: "profile-a", role: "user", content: "My laptop is a LunarBook 14.", createdAt: "2026-08-15T12:00:00.000Z" } })],
+      [assistantMessageId, window({ thread: { id: threadId, profileId: "profile-a", title: "Laptop note", createdAt: "2026-08-15T11:00:00.000Z", updatedAt: "2026-08-15T12:01:00.000Z" }, target: { messageId: assistantMessageId, threadId, profileId: "profile-a", role: "assistant", content: "You told me your laptop is a LunarBook 14.", createdAt: "2026-08-15T12:01:00.000Z" } })],
+    ]);
+    const store: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => rows),
+      readMessages: vi.fn(async (_profileId, messageId) => contexts.get(messageId) ?? null),
+      listMemory: vi.fn(async () => []), currentRevision: vi.fn(async () => 0), readMemory: vi.fn(async () => null), searchMemory: vi.fn(async () => []),
+    };
+    const toldByUser = await runHistoryPreflight({ profileId: "profile-a", query: "Show me the chat where I told you my LunarBook model", retrieval: store });
+    expect(store.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ roles: ["user"] }));
+    expect(toldByUser.sources).toEqual([expect.objectContaining({ messageId: userMessageId, role: "user" })]);
+
+    const toldByAssistant = await runHistoryPreflight({ profileId: "profile-a", query: "Show me where you told me my LunarBook model", retrieval: store });
+    expect(store.searchMessages).toHaveBeenLastCalledWith(expect.objectContaining({ roles: ["assistant"] }));
+    expect(toldByAssistant.sources).toEqual([expect.objectContaining({ messageId: assistantMessageId, role: "assistant" })]);
   });
 
   it("resolves explicit source requests from Dreaming claim provenance before raw search", async () => {

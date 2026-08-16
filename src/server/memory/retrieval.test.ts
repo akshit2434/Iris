@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryRetrievalService } from "@/server/memory/retrieval";
-import type { MemoryStore } from "@/server/memory/types";
+import type { MemoryItemAudit, MemoryStore, MessageContextWindow } from "@/server/memory/types";
 
 function store(): MemoryStore {
   return {
@@ -82,5 +82,25 @@ describe("profile-scoped memory retrieval", () => {
     const service = createMemoryRetrievalService({ store: memoryStore });
     await service.searchMemory("profile-b", "roadmap", 2);
     expect(memoryStore.searchItems).toHaveBeenCalledWith("profile-b", "roadmap", 2);
+  });
+
+  it("resolves canonical memory provenance to the original profile-owned user assertion", async () => {
+    const memoryStore = store();
+    const sourceMessageId = "00000000-0000-4000-8000-000000000031";
+    const threadId = "00000000-0000-4000-8000-000000000032";
+    memoryStore.getItemAudit = vi.fn(async () => ({
+      item: { id: "item", profileId: "profile-a", canonicalKey: "profile.machine", content: "The user owns a LunarBook 14.", itemRevision: 2, category: "personal_fact", valueScope: "single", origin: "inferred", confidence: 0.9, importance: 0.7, sensitivity: "normal", status: "active", validFrom: null, validUntil: null, lastConfirmedAt: null, supersededByItemId: null, createdAt: "2026-08-15T12:00:00.000Z", updatedAt: "2026-08-15T12:00:00.000Z", archivedAt: null, deletedAt: null },
+      revisions: [{ id: "revision", profileId: "profile-a", itemId: "item", itemRevision: 2, profileGlobalRevision: 2, canonicalKey: "profile.machine", content: "The user owns a LunarBook 14.", contentHash: "a".repeat(64), category: "personal_fact", valueScope: "single", origin: "inferred", confidence: 0.9, importance: 0.7, sensitivity: "normal", status: "active", validFrom: null, validUntil: null, lastConfirmedAt: null, supersededByItemId: null, mutationKind: "update", idempotencyKey: null, createdAt: "2026-08-15T12:00:00.000Z", sources: [{ id: "source", sourceKind: "message", sourceThreadId: threadId, sourceMessageId, sourceAgentEventId: null, sourceAgentRunId: null, sourceExcerpt: null, metadata: {}, relation: "supports", createdAt: "2026-08-15T12:00:00.000Z" }] }],
+    } satisfies MemoryItemAudit));
+    memoryStore.readMessageContext = vi.fn(async () => ({
+      thread: { id: threadId, profileId: "profile-a", title: "Machine note", createdAt: "2026-08-15T11:00:00.000Z", updatedAt: "2026-08-15T12:00:00.000Z" },
+      target: { messageId: sourceMessageId, threadId, profileId: "profile-a", role: "user", content: "My laptop is a LunarBook 14.", createdAt: "2026-08-15T12:00:00.000Z" },
+      before: [], after: [],
+    } satisfies MessageContextWindow));
+    const service = createMemoryRetrievalService({ store: memoryStore });
+    await expect(service.memorySources?.("profile-a", "profile.machine", 3)).resolves.toEqual([
+      expect.objectContaining({ messageId: sourceMessageId, role: "user", content: "My laptop is a LunarBook 14.", threadTitle: "Machine note" }),
+    ]);
+    expect(memoryStore.readMessageContext).toHaveBeenCalledWith("profile-a", sourceMessageId, 1);
   });
 });

@@ -173,6 +173,11 @@ button:disabled { cursor: default; }
 .tool-pulse { animation: tool-pulse 1.4s ease-in-out infinite; }
 .message-arrive { animation: message-arrive .42s cubic-bezier(.2,.8,.2,1) both; }
 .message-source-highlight { animation: message-source-highlight 1.35s cubic-bezier(.2,.8,.2,1) both; }
+.source-card { animation: source-card-enter .26s cubic-bezier(.2,.8,.2,1) both; }
+.source-preview-dialog[open] { animation: source-preview-enter .22s cubic-bezier(.2,.8,.2,1) both; }
+.source-preview-dialog[open]::backdrop { background: rgba(35, 47, 75, .2); backdrop-filter: blur(8px); animation: source-preview-backdrop-enter .2s ease-out both; }
+.source-preview-dialog--closing[open] { animation: source-preview-exit .16s ease-in both; }
+.source-preview-dialog--closing[open]::backdrop { animation: source-preview-backdrop-exit .16s ease-in both; }
 .chat-route-exit { animation: chat-route-exit .15s cubic-bezier(.22,.8,.24,1) both; pointer-events: none; transform-origin: 50% 42%; }
 .chat-empty-entry { animation: chat-empty-entry .28s cubic-bezier(.2,.8,.2,1) both; transform-origin: 50% 44%; }
 
@@ -183,6 +188,11 @@ button:disabled { cursor: default; }
 @keyframes page-loader-glow { 0%,100% { transform: scale(.94); opacity: .72; } 50% { transform: scale(1); opacity: 1; } }
 @keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
 @keyframes message-source-highlight { from { background: rgba(231, 237, 255, .82); box-shadow: 0 0 0 5px rgba(73, 120, 237, .12); } to { background: transparent; box-shadow: 0 0 0 0 transparent; } }
+@keyframes source-card-enter { from { opacity: 0; filter: blur(4px); transform: translateY(4px); } to { opacity: 1; filter: blur(0); transform: none; } }
+@keyframes source-preview-enter { from { opacity: 0; filter: blur(7px); transform: translateY(8px) scale(.985); } to { opacity: 1; filter: blur(0); transform: none; } }
+@keyframes source-preview-exit { from { opacity: 1; filter: blur(0); transform: none; } to { opacity: 0; filter: blur(5px); transform: translateY(4px) scale(.99); } }
+@keyframes source-preview-backdrop-enter { from { opacity: 0; } to { opacity: 1; } }
+@keyframes source-preview-backdrop-exit { from { opacity: 1; } to { opacity: 0; } }
 @keyframes chat-route-exit { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: .04; transform: translate3d(-6px, 0, 0) scale(.996); } }
 @keyframes chat-empty-entry { from { opacity: 0; transform: translate3d(0, 7px, 0) scale(.997); } to { opacity: 1; transform: none; } }
 

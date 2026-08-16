@@ -11,7 +11,7 @@ import {
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
 import { createIrisAgent, createProductionChatModel, extractAgentMessageEvents, extractAgentUsage, parseToolOutput, streamAgentEvents } from "@/server/agent";
 import { planAssistantPersistence } from "@/server/agent/persistence";
-import { createInternalTools, getInternalToolSchemaDescriptors, optionalToolProgressSchema, patchMemory, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
+import { createInternalTools, getInternalToolSchemaDescriptors, optionalToolProgressSchema, patchMemory, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages, searchMemory } from "@/server/agent/tools";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
 import type { MemoryMutationService } from "@/server/memory/mutation";
 import type { MessageContextWindow, MessageSearchResult } from "@/server/memory/types";
@@ -398,6 +398,19 @@ describe("runtime seams", () => {
     expect(createInternalTools().map((internalTool) => internalTool.name)).not.toEqual(expect.arrayContaining(["memory_delete", "memory_file_write"]));
   });
 
+  it("degrades truthfully when a saved memory's exact source is missing", async () => {
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => []), readMessages: vi.fn(async () => null), listMemory: vi.fn(async () => []), currentRevision: vi.fn(async () => 1), readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => [{ itemId: "item", profileId: "profile-a" as const, canonicalKey: "profile.machine", excerpt: "The user owns a LunarBook 14.", itemRevision: 1, updatedAt: "2026-08-15T12:00:00.000Z", category: "personal_fact" as const, status: "active" as const }]),
+      memorySources: vi.fn(async () => []),
+    };
+    await expect(searchMemory(context, { query: "machine", limit: 3 }, retrieval)).resolves.toMatchObject({
+      kind: "memory_search",
+      results: [{ canonicalKey: "profile.machine", sourceStatus: "unavailable", sources: [] }],
+    });
+    expect(retrieval.searchMemory).toHaveBeenCalledWith("profile-a", "machine", 3);
+  });
+
   it("constructs the agent with an injected deterministic model", () => {
     const model = new FakeToolCallingModel();
     const agent = createIrisAgent({ model });
@@ -592,7 +605,11 @@ describe("runtime seams", () => {
         semanticScore: null,
         combinedScore: 1,
       }]),
-      readMessages: vi.fn(async () => null),
+      readMessages: vi.fn(async () => ({
+        thread: { id: "00000000-0000-4000-8000-000000000011", profileId: "profile-a" as const, title: "Historical decision", createdAt: "2026-08-14T11:00:00.000Z", updatedAt: "2026-08-14T12:00:00.000Z" },
+        target: { messageId: "00000000-0000-4000-8000-000000000010", threadId: "00000000-0000-4000-8000-000000000011", profileId: "profile-a" as const, role: "user" as const, content: "A synthetic historical decision.", createdAt: "2026-08-14T12:00:00.000Z" },
+        before: [], after: [],
+      })),
       listMemory: vi.fn(async () => []),
       readMemory: vi.fn(async () => null),
       searchMemory: vi.fn(async () => []),
@@ -612,7 +629,8 @@ describe("runtime seams", () => {
         toolName: "search_messages",
         output: expect.objectContaining({
           results: [expect.objectContaining({
-            action: { type: "open_message", threadId: "00000000-0000-4000-8000-000000000011", messageId: "00000000-0000-4000-8000-000000000010", label: "Open source" },
+            threadTitle: "Historical decision",
+            action: { type: "open_message", threadId: "00000000-0000-4000-8000-000000000011", messageId: "00000000-0000-4000-8000-000000000010", label: "Open message" },
           })],
         }),
       }),

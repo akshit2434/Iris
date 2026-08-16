@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
@@ -40,6 +40,12 @@ type ThreadResponse = { thread: Thread; messages: Message[]; toolActivities?: Pe
 
 function formatMessageTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatSourceDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "Date unavailable";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 export function ChatScreen() {
@@ -517,7 +523,7 @@ function MemoryUsageDisclosure({ activities, profileId }: Readonly<{ activities:
     <div id={detailsId} className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${expanded ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`} aria-hidden={!expanded}>
       <div className="min-h-0 overflow-hidden"><div className="space-y-1 pb-1 pl-6 pt-1 text-[11px] text-slate-500">
         {items.map((item) => <Link key={`${item.canonicalKey}:${item.itemRevision}`} href={`/memory?item=${encodeURIComponent(item.canonicalKey)}`} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-white/60 hover:text-slate-800"><span className="min-w-0 flex-1 truncate">{item.excerpt}</span><span className="shrink-0 font-semibold text-[#4978ed] opacity-80 group-hover:opacity-100">Open memory</span></Link>)}
-        {sources.map((row) => { const href = buildOpenMessageHref(row.action); return href ? <Link key={`${row.action.threadId}:${row.action.messageId}`} href={href} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-white/60 hover:text-slate-800"><span className="min-w-0 flex-1 truncate">{row.excerpt}</span><span className="shrink-0 font-semibold text-[#4978ed] opacity-80 group-hover:opacity-100">Open source</span></Link> : null; })}
+        {sources.map((row) => <SourceCard key={`${row.action.threadId}:${row.action.messageId}`} row={row} compact />)}
         {items.length === 0 && sources.length === 0 && referenceRevision !== null ? <p className="px-2 py-1.5">Reference history revision {referenceRevision}</p> : null}
       </div></div>
     </div>
@@ -528,6 +534,8 @@ function ToolActivityDisclosure({ activities, active, profileId }: Readonly<{ ac
   const [expanded, setExpanded] = useState(active);
   const wasActive = useRef(active);
   const detailsId = `tool-activity-${activities[0]?.runId ?? "run"}`;
+  const sourceRows = [...new Map(activities.flatMap((activity) => memorySourceRows(activity.toolName, activity.output, profileId))
+    .map((row) => [`${row.action.threadId}:${row.action.messageId}`, row] as const)).values()];
 
   useEffect(() => {
     if (!active && wasActive.current) setExpanded(false);
@@ -543,6 +551,7 @@ function ToolActivityDisclosure({ activities, active, profileId }: Readonly<{ ac
     <div id={detailsId} className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${expanded ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`} aria-hidden={!expanded}>
       <div className="min-h-0 overflow-hidden"><div className="space-y-1 pb-1 pt-1" aria-label="Tool activity details">{activities.map((activity) => <ToolActivityRow key={`${activity.runId}:${activity.toolCallId}`} activity={activity} profileId={profileId} />)}</div></div>
     </div>
+    {sourceRows.length > 0 ? <div className="mt-2 space-y-2">{sourceRows.map((row) => <SourceCard key={`${row.action.threadId}:${row.action.messageId}`} row={row} />)}</div> : null}
   </div>;
 }
 
@@ -567,12 +576,121 @@ function ToolActivityRow({ activity, profileId }: Readonly<{ activity: ToolActiv
         <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{toolLabel(activity.toolName)}</span>
       </div>
       <p className={`mt-1 pl-6 text-[11px] leading-4 ${stateClass}`}>{summarizeToolResult(activity)}</p>
-      {sourceRows.length > 0 ? <div className="mt-2 space-y-1 pl-6">{sourceRows.map((row) => {
-        const href = buildOpenMessageHref(row.action);
-        return href ? <Link key={`${row.action.threadId}:${row.action.messageId}`} href={href} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-500 transition hover:bg-white/60 hover:text-slate-800"><span className="min-w-0 flex-1 truncate">{row.excerpt}</span><span className="shrink-0 font-semibold text-[#4978ed] opacity-80 group-hover:opacity-100">Open source</span></Link> : null;
-      })}</div> : null}
       {memoryRows.length > 0 ? <div className="mt-2 space-y-1 pl-6">{memoryRows.map((row) => <div key={`${row.canonicalKey}:${row.itemRevision}`} className="rounded-lg bg-white/35 px-2 py-1.5 text-[11px] text-slate-500"><span className="font-semibold text-slate-700">{row.canonicalKey}</span><span className="ml-2 truncate">{row.excerpt}</span></div>)}</div> : null}
       {sourceRows.length === 0 && memoryRows.length === 0 && detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
     </div>
+  );
+}
+
+type SourcePreviewMessage = {
+  messageId: string;
+  threadId: string;
+  profileId: ProfileId;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  createdAt: string;
+};
+
+type SourcePreviewPayload = {
+  thread: { id: string; profileId: ProfileId; title: string; createdAt: string; updatedAt: string };
+  target: SourcePreviewMessage;
+  before: SourcePreviewMessage[];
+  after: SourcePreviewMessage[];
+};
+
+function SourceCard({ row, compact = false }: Readonly<{ row: ReturnType<typeof memorySourceRows>[number]; compact?: boolean }>) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const href = buildOpenMessageHref(row.action);
+  if (!href) return null;
+  const roleLabel = row.role === "user" ? "You" : row.role === "assistant" ? "Iris" : row.role === "tool" ? "Tool" : "Source";
+  return (
+    <article className={`source-card rounded-[16px] border border-white/70 bg-white/48 shadow-[0_9px_24px_rgba(80,102,145,.08)] backdrop-blur-xl ${compact ? "p-2.5" : "p-3"}`}>
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-[#edf2ff] text-[#5577d8]" aria-hidden="true">
+          <svg viewBox="0 0 20 20" className="h-3.5 w-3.5"><path d="M4 4.5h12v8H9l-3.5 3v-3H4z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4" /></svg>
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[11px] font-semibold text-slate-700">{row.threadTitle ?? "Historical chat"}</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{roleLabel} · {formatSourceDate(row.createdAt)}</p>
+        </div>
+      </div>
+      <p className={`mt-2 text-slate-600 ${compact ? "line-clamp-2 text-[10px] leading-4" : "line-clamp-3 text-[11px] leading-[1.55]"}`}>{row.excerpt}</p>
+      <div className="mt-2.5 flex items-center gap-3">
+        <button type="button" onClick={() => setPreviewOpen(true)} className="soft-press rounded-lg bg-white/65 px-2.5 py-1.5 text-[10px] font-semibold text-slate-600 transition hover:bg-white/90 hover:text-slate-800">Preview</button>
+        <Link href={href} scroll={false} className="soft-press inline-flex items-center gap-1.5 rounded-lg px-1 py-1.5 text-[10px] font-semibold text-[#4978ed] transition hover:text-[#315fcf]">
+          Open message
+          <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.3" /></svg>
+        </Link>
+      </div>
+      {previewOpen ? <SourcePreviewDialog row={row} href={href} onDismiss={() => setPreviewOpen(false)} /> : null}
+    </article>
+  );
+}
+
+function SourcePreviewDialog({ row, href, onDismiss }: Readonly<{ row: ReturnType<typeof memorySourceRows>[number]; href: string; onDismiss: () => void }>) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const [closing, setClosing] = useState(false);
+  const [state, setState] = useState<{ status: "loading" | "ready" | "error"; source?: SourcePreviewPayload; error?: string }>({ status: "loading" });
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`/api/threads/${row.action.threadId}/messages/${row.action.messageId}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json() as { source?: SourcePreviewPayload; error?: string };
+        if (!response.ok || !body.source) throw new Error(body.error ?? "This source is no longer available.");
+        setState({ status: "ready", source: body.source });
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setState({ status: "error", error: error instanceof Error ? error.message : "This source is no longer available." });
+      });
+    return () => controller.abort();
+  }, [row.action.messageId, row.action.threadId]);
+
+  function requestClose() {
+    if (closing) return;
+    setClosing(true);
+    window.setTimeout(() => {
+      dialogRef.current?.close();
+      onDismiss();
+    }, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160);
+  }
+
+  const messages = state.source ? [...state.source.before, state.source.target, ...state.source.after] : [];
+  return (
+    <dialog ref={dialogRef} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); requestClose(); }} onClick={(event) => { if (event.target === dialogRef.current) requestClose(); }} className={`source-preview-dialog m-auto w-[min(92vw,38rem)] max-h-[min(78dvh,44rem)] overflow-hidden rounded-[26px] border border-white/80 bg-[#f7f9ff]/95 p-0 text-left text-slate-700 shadow-[0_30px_90px_rgba(50,70,112,.28)] backdrop-blur-2xl ${closing ? "source-preview-dialog--closing" : ""}`}>
+      <div className="flex max-h-[min(78dvh,44rem)] flex-col">
+        <header className="flex items-start gap-3 border-b border-white/75 px-5 py-4 sm:px-6">
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[.14em] text-[#6683ce]">Source preview</p>
+            <h2 id={titleId} className="mt-1 truncate text-base font-semibold tracking-tight text-slate-900">{state.source?.thread.title ?? row.threadTitle ?? "Historical chat"}</h2>
+            <p className="mt-1 text-[11px] text-slate-400">{formatSourceDate(state.source?.target.createdAt ?? row.createdAt)}</p>
+          </div>
+          <button type="button" onClick={requestClose} className="soft-press flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/65 text-slate-500" aria-label="Close source preview">
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" /></svg>
+          </button>
+        </header>
+        <div className="iris-scrollbar min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
+          {state.status === "loading" ? <div className="flex min-h-36 items-center justify-center gap-2 text-xs text-slate-400"><span className="h-2 w-2 animate-pulse rounded-full bg-[#7090e7]" />Loading context</div> : null}
+          {state.status === "error" ? <div className="flex min-h-36 flex-col items-center justify-center text-center"><p className="text-sm font-semibold text-slate-700">Source unavailable</p><p className="mt-1 max-w-xs text-xs leading-5 text-slate-400">{state.error}</p></div> : null}
+          {state.status === "ready" ? <div className="space-y-3">{messages.map((message) => {
+            const target = message.messageId === state.source?.target.messageId;
+            return <div key={message.messageId} className={`rounded-[18px] px-3.5 py-3 transition ${target ? "bg-[#e9efff] shadow-[inset_0_0_0_1px_rgba(87,120,210,.12)]" : "bg-white/48"}`}>
+              <div className="flex items-center justify-between gap-3 text-[10px]"><span className={`font-semibold ${target ? "text-[#4d6fc9]" : "text-slate-500"}`}>{message.role === "user" ? "You" : message.role === "assistant" ? "Iris" : "Tool"}{target ? " · exact source" : ""}</span><time className="shrink-0 text-slate-400">{formatMessageTime(message.createdAt)}</time></div>
+              <p className="mt-1.5 whitespace-pre-wrap text-[12px] leading-5 text-slate-600">{message.content}</p>
+            </div>;
+          })}</div> : null}
+        </div>
+        <footer className="flex items-center justify-end gap-2 border-t border-white/75 px-5 py-3.5 sm:px-6">
+          <button type="button" onClick={requestClose} className="rounded-xl px-3 py-2 text-[11px] font-semibold text-slate-500">Close</button>
+          {state.status === "ready" ? <Link href={href} scroll={false} className="soft-press rounded-xl bg-[#111827] px-3.5 py-2 text-[11px] font-semibold text-white shadow-[0_8px_18px_rgba(17,24,39,.14)]">Open message</Link> : null}
+        </footer>
+      </div>
+    </dialog>
   );
 }

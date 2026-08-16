@@ -2,7 +2,7 @@ import "server-only";
 
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createOpenRouterEmbeddingClient, type EmbeddingProvider } from "@/server/memory/embeddings";
-import type { MemoryItemSearchResult, MessageContextWindow, MessageMatchType, MessageSearchResult, MessageSearchRole, MemoryStore } from "@/server/memory/types";
+import type { MemoryItemSearchResult, MemoryMessageSourceReference, MessageContextWindow, MessageMatchType, MessageSearchResult, MessageSearchRole, MemoryStore } from "@/server/memory/types";
 import { normalizeMemoryDate, normalizeMemoryExactPhrase, normalizeMemoryLimit, normalizeMemoryMatchType, normalizeMemoryQuery, normalizeMemoryRoles, validateEmbedding, validateMemoryUuid } from "@/server/memory/validation";
 import type { ProfileId } from "@/lib/profiles";
 
@@ -13,6 +13,7 @@ export type MemoryRetrieval = {
   currentRevision: (profileId: ProfileId) => Promise<number>;
   readMemory: (profileId: ProfileId, canonicalKey: string) => Promise<Awaited<ReturnType<MemoryStore["getItem"]>>>;
   searchMemory: (profileId: ProfileId, query: string, limit?: number) => Promise<MemoryItemSearchResult[]>;
+  memorySources?: (profileId: ProfileId, canonicalKey: string, limit?: number) => Promise<MemoryMessageSourceReference[]>;
 };
 
 type MemoryRetrievalOptions = { store: MemoryStore; semanticSearchEnabled?: boolean; semanticQueryProvider?: EmbeddingProvider };
@@ -60,6 +61,36 @@ export function createMemoryRetrievalService(options: MemoryRetrievalOptions): M
     async readMemory(profileId, canonicalKey) { return options.store.getItem(profileId, canonicalKey); },
     async searchMemory(profileId, rawQuery, rawLimit = 5) {
       return options.store.searchItems(profileId, normalizeMemoryQuery(rawQuery), normalizeMemoryLimit(rawLimit));
+    },
+    async memorySources(profileId, canonicalKey, rawLimit = 3) {
+      const audit = options.store.getItemAudit ? await options.store.getItemAudit(profileId, canonicalKey) : null;
+      if (!audit) return [];
+      const currentRevision = audit.revisions.find((revision) => revision.itemRevision === audit.item.itemRevision);
+      if (!currentRevision) return [];
+      const limit = normalizeMemoryLimit(rawLimit, 3);
+      const resolved = await Promise.all(currentRevision.sources.map(async (source) => {
+        if (source.sourceKind !== "message" || !source.sourceMessageId) return null;
+        const window = await options.store.readMessageContext(profileId, source.sourceMessageId, 1).catch(() => null);
+        if (!window || window.target.profileId !== profileId || window.thread.profileId !== profileId) return null;
+        return {
+          messageId: window.target.messageId,
+          threadId: window.target.threadId,
+          profileId,
+          role: window.target.role,
+          content: window.target.content,
+          createdAt: window.target.createdAt,
+          threadTitle: window.thread.title,
+          relation: source.relation,
+        } satisfies MemoryMessageSourceReference;
+      }));
+      const relationRank = { supports: 0, corrects: 0, supersedes: 1, contradicts: 2, derived: 3 } as const;
+      return resolved
+        .filter((source): source is MemoryMessageSourceReference => source !== null)
+        .sort((left, right) => relationRank[left.relation] - relationRank[right.relation]
+          || (left.role === "user" ? 0 : 1) - (right.role === "user" ? 0 : 1)
+          || left.createdAt.localeCompare(right.createdAt)
+          || left.messageId.localeCompare(right.messageId))
+        .slice(0, limit);
     },
   };
 }

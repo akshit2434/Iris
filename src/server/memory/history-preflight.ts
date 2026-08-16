@@ -23,7 +23,7 @@ const QUERY_STOP_WORDS = new Set([
   "what", "where", "when", "which", "who", "why", "how", "did", "does", "do", "can", "could", "would", "should",
   "that", "this", "those", "these", "with", "about", "from", "into", "have", "has", "had", "were", "was", "are", "is",
   "the", "our", "my", "your", "and", "for", "again", "me", "we", "i", "you", "said", "say", "talk", "talked", "talking",
-  "mentioned", "mention", "decided", "decide", "discussed", "discuss", "open", "opened", "find", "found", "show", "please",
+  "mentioned", "mention", "told", "tell", "decided", "decide", "discussed", "discuss", "open", "opened", "find", "found", "show", "please",
   "chat", "conversation", "thread", "discussion", "message", "source", "history", "exact", "exactly", "one", "it", "in", "on", "of",
   "old", "previous", "earlier", "last", "should", "continue", "resume", "pick", "back", "go",
   "to", "a", "an", "the", "idea", "ideas",
@@ -102,12 +102,12 @@ function queryRemainder(value: string, exactPhrase: string | null) {
   if (exactPhrase) return exactPhrase;
   const withoutQuotes = value.replace(/(?:"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)/g, " ");
   const remainder = withoutQuotes
-    .replace(/^\s*(?:where|when|what)\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:did\s+(?:i|we)|have\s+i|was\s+it)\s+(?:say|said|mention|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\s*/i, "")
+    .replace(/^\s*(?:where|when|what)\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:(?:did\s+)?(?:i|we|you)|have\s+i|was\s+it)\s+(?:say|said|tell|told|mention|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\s*/i, "")
     .replace(/^\s*(?:show|find|open|locate|search|look\s+up)\s+(?:me\s+)?(?:the\s+)?(?:exact\s+)?(?:source|message|chat|conversation|thread|discussion)?\s*(?:where|about|for|on|with)?\s*/i, "")
     .replace(/^\s*(?:continue|resume|pick\s+up|go\s+back\s+to)\s+(?:the\s+)?(?:old|previous|earlier|last|that|our)?\s*(?:chat|conversation|thread|discussion)?\s*/i, "")
     .replace(/^\s*(?:where|what)\s+(?:was|is)\s+(?:that|the)?\s*/i, "")
     .replace(/\b(?:chat|conversation|thread|discussion|message|source)\b/gi, " ")
-    .replace(/\b(?:which|we|i|you|did|do|was|were|is|are|talked?|mentioned?|said|say|decided?|discussed?|about|again|that|the|our|my|exactly|precisely|specifically)\b/gi, " ")
+    .replace(/\b(?:which|we|i|you|me|did|do|was|were|is|are|talked?|mentioned?|told|tell|said|say|decided?|discussed?|about|again|that|the|our|my|exactly|precisely|specifically)\b/gi, " ")
     .replace(/[-–—]/g, " ")
     .replace(/\b(?:last|this)\s+(?:month|week)\b/gi, " ")
     .replace(/\b(?:between|from|through|until|on)\s+20\d{2}-\d{2}-\d{2}\b/gi, " ")
@@ -252,8 +252,10 @@ function dateRangeForText(value: string, now: Date) {
 }
 
 function roleFilter(value: string): MessageSearchRole[] | null {
-  if (/\bdid\s+(?:i|we)\s+(?:say|decide|mention|write|choose|agree|commit)/i.test(value)) return ["user"];
-  if (/\bdid\s+you\s+(?:say|tell|mention|write)/i.test(value)) return ["assistant"];
+  if (/\b(?:did\s+(?:i|we)\s+(?:say|tell|mention|write|decide|choose|agree|commit)|(?:i|we)\s+(?:said|told|mentioned|wrote|decided|chose|agreed|committed))\b/i.test(value)
+    || /\bwhere\s+(?:i|we)\s+(?:told|said|mentioned|wrote)\b/i.test(value)) return ["user"];
+  if (/\b(?:did\s+(?:you|u)\s+(?:say|tell|mention|write)|(?:you|u)\s+(?:said|told|mentioned|wrote))\b/i.test(value)
+    || /\bwhere\s+(?:you|u)\s+(?:told|said|mentioned|wrote)\b/i.test(value)) return ["assistant"];
   return null;
 }
 
@@ -275,9 +277,9 @@ export function detectHistoryPreflightIntent(value: string, now = new Date()): H
   const intentText = text.replace(/[,:;!?]+/g, " ").replace(/\s+/g, " ").trim();
 
   const exact = /\b(?:exact\s+source|exact\s+message|verbatim|word[- ]for[- ]word)\b/i.test(intentText);
-  const evidence = /\b(?:where|when)\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:did\s+(?:i|we|you)|have\s+i)\s+(?:say|said|mention|mentioned|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\b/i.test(intentText)
+  const evidence = /\b(?:where|when)\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:(?:did\s+)?(?:i|we|you)|have\s+i)\s+(?:say|said|tell|told|mention|mentioned|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\b/i.test(intentText)
     || /\b(?:where|when)(?:'d)?\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:did\s+)?(?:i|we|you)\s+(?:talk|talked|discuss|discussed|mention|mentioned|say|said)\b/i.test(intentText)
-    || /\bwhere\b[\s\S]{0,120}\b(?:did|have)\s+(?:i|we|you)\s+(?:say|said|mention|mentioned|decide|decided|discuss|discussed|talk|talked)\b/i.test(intentText)
+    || /\bwhere\b[\s\S]{0,120}\b(?:(?:did|have)\s+)?(?:i|we|you)\s+(?:say|said|tell|told|mention|mentioned|decide|decided|discuss|discussed|talk|talked)\b/i.test(intentText)
     || /\b(?:what|which)\s+(?:did\s+(?:i|we)|have\s+i)\s+(?:decide|decided|say|said|agree|agreed|choose|chose)\b/i.test(intentText)
     || /\b(?:search|find|look\s+up)\s+(?:my|our|the)?\s*(?:old|past|prior|previous|historical)?\s*(?:chat|conversation|thread|message|source|history)\b/i.test(intentText)
     || /\b(?:show|find|locate|open)\b[\s\S]{0,100}\b(?:source|message|chat|conversation|thread)\b/i.test(intentText)
@@ -307,6 +309,10 @@ function validResult(result: MessageSearchResult, profileId: ProfileId) {
     return false;
   }
   return true;
+}
+
+function matchesRequestedRole(role: MessageSearchRole, roles: readonly MessageSearchRole[] | null) {
+  return !roles || roles.length === 0 || roles.includes(role);
 }
 
 function surrounding(window: MessageContextWindow) {
@@ -420,6 +426,7 @@ export async function runHistoryPreflight(input: {
         if (!sourceWindow
           || sourceWindow.target.profileId !== input.profileId
           || sourceWindow.target.messageId !== messageId
+          || !matchesRequestedRole(sourceWindow.target.role, intent.roles)
           || sourceWindow.target.threadId === excludedThreadId
           || sourceWindow.thread.id === excludedThreadId) continue;
         prepared.push({
@@ -481,6 +488,7 @@ export async function runHistoryPreflight(input: {
       // clickable source action.
       if (preparedMessageIds.has(result.messageId)
         || result.threadId === excludedThreadId
+        || !matchesRequestedRole(result.role, intent.roles)
         || !validResult(result, input.profileId)) continue;
       let sourceWindow: MessageContextWindow | null;
       try {
@@ -494,6 +502,7 @@ export async function runHistoryPreflight(input: {
         || sourceWindow.target.profileId !== input.profileId
         || sourceWindow.target.threadId !== result.threadId
         || sourceWindow.target.messageId !== result.messageId
+        || !matchesRequestedRole(sourceWindow.target.role, intent.roles)
         || sourceWindow.target.threadId === excludedThreadId
         || sourceWindow.thread.id === excludedThreadId) continue;
       prepared.push({ result, window: sourceWindow });

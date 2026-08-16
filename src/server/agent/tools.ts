@@ -124,24 +124,33 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
     query,
     limit,
   });
+  const validatedResults = await Promise.all(results.map(async (result) => {
+    if (result.profileId !== context.profileId) return null;
+    const window = await retrieval.readMessages(context.profileId, result.messageId, 1).catch(() => null);
+    if (!window
+      || window.target.profileId !== context.profileId
+      || window.target.messageId !== result.messageId
+      || window.target.threadId !== result.threadId
+      || window.target.role !== result.role
+      || window.thread.profileId !== context.profileId) return null;
+    const action = buildOpenMessageAction(result.threadId, result.messageId, "Open message");
+    return action ? {
+      messageId: result.messageId,
+      threadId: result.threadId,
+      profileId: result.profileId,
+      role: result.role,
+      createdAt: result.createdAt,
+      threadTitle: window.thread.title,
+      excerpt: boundedExcerpt(result.content),
+      matchType: result.matchType ?? input.matchType ?? "hybrid",
+      scores: { lexical: result.lexicalScore, semantic: result.semanticScore, combined: result.combinedScore },
+      action,
+    } : null;
+  }));
   return {
     kind: "message_search" as const,
     query,
-    results: results.flatMap((result) => {
-      if (result.profileId !== context.profileId) return [];
-      const action = buildOpenMessageAction(result.threadId, result.messageId);
-      return action ? [{
-        messageId: result.messageId,
-        threadId: result.threadId,
-        profileId: result.profileId,
-        role: result.role,
-        createdAt: result.createdAt,
-        excerpt: boundedExcerpt(result.content),
-        matchType: result.matchType ?? input.matchType ?? "hybrid",
-        scores: { lexical: result.lexicalScore, semantic: result.semanticScore, combined: result.combinedScore },
-        action,
-      }] : [];
-    }),
+    results: validatedResults.filter((result): result is NonNullable<typeof result> => result !== null),
   };
 }
 
@@ -155,7 +164,7 @@ export async function readMessages(context: AgentContext, input: z.infer<typeof 
     target: result.target,
     before: result.before,
     after: result.after,
-    action: buildOpenMessageAction(result.target.threadId, result.target.messageId),
+    action: buildOpenMessageAction(result.target.threadId, result.target.messageId, "Open message"),
   };
 }
 
@@ -176,6 +185,9 @@ export async function listMemory(context: AgentContext, retrieval: MemoryRetriev
 export async function readMemory(context: AgentContext, input: z.infer<typeof memoryReadInput>, retrieval: MemoryRetrieval) {
   const item = await retrieval.readMemory(context.profileId, input.canonicalKey);
   if (!item) return { kind: "memory_read" as const, found: false as const, item: null };
+  const sources = retrieval.memorySources
+    ? await retrieval.memorySources(context.profileId, item.canonicalKey, 3).catch(() => [])
+    : [];
   return {
     kind: "memory_read" as const,
     found: true as const,
@@ -185,6 +197,18 @@ export async function readMemory(context: AgentContext, input: z.infer<typeof me
       updatedAt: item.updatedAt,
       category: item.category,
       content: item.content.slice(0, 12_000),
+      sourceStatus: sources.length > 0 ? "available" as const : "unavailable" as const,
+      sources: sources.map((source) => ({
+        messageId: source.messageId,
+        threadId: source.threadId,
+        profileId: source.profileId,
+        role: source.role,
+        createdAt: source.createdAt,
+        threadTitle: source.threadTitle,
+        relation: source.relation,
+        excerpt: boundedExcerpt(source.content),
+        action: buildOpenMessageAction(source.threadId, source.messageId, "Open message"),
+      })),
     },
   };
 }
@@ -193,15 +217,33 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
   const query = normalizeMemoryQuery(input.query);
   const limit = normalizeMemoryLimit(input.limit);
   const results = await retrieval.searchMemory(context.profileId, query, limit);
-  return {
-    kind: "memory_search" as const,
-    query,
-    results: results.map((result) => ({
+  const enriched = await Promise.all(results.map(async (result) => {
+    const sources = retrieval.memorySources
+      ? await retrieval.memorySources(context.profileId, result.canonicalKey, 3).catch(() => [])
+      : [];
+    return {
       canonicalKey: result.canonicalKey,
       itemRevision: result.itemRevision,
       updatedAt: result.updatedAt,
       excerpt: boundedExcerpt(result.excerpt),
-    })),
+      sourceStatus: sources.length > 0 ? "available" as const : "unavailable" as const,
+      sources: sources.map((source) => ({
+        messageId: source.messageId,
+        threadId: source.threadId,
+        profileId: source.profileId,
+        role: source.role,
+        createdAt: source.createdAt,
+        threadTitle: source.threadTitle,
+        relation: source.relation,
+        excerpt: boundedExcerpt(source.content),
+        action: buildOpenMessageAction(source.threadId, source.messageId, "Open message"),
+      })),
+    };
+  }));
+  return {
+    kind: "memory_search" as const,
+    query,
+    results: enriched,
   };
 }
 
@@ -296,7 +338,7 @@ export function createInternalTools(
     async (input: z.infer<typeof searchMessagesInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMessages(runtime.context, input, getMemoryRetrieval()),
     {
       name: "search_messages",
-      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. A concrete non-empty query is required; never call this with an empty object. Omit threadId to search all chats; provide it only to restrict the search to one known UUID. Use exact_phrase for quoted wording, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise hits with source IDs; do not use for self-contained requests.",
+      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. A concrete non-empty query is required; never call this with an empty object. Omit threadId to search all chats; provide it only to restrict the search to one known UUID. Set roles=['user'] for where-I-told-you requests, roles=['assistant'] for where-you-told-me requests, and omit roles for neutral requests. Use exact_phrase for quoted wording, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise profile-validated hits with source actions; do not use for self-contained requests.",
       schema: searchMessagesInput,
       returnDirect: isReturnDirect("search_messages"),
     },
@@ -332,7 +374,7 @@ export function createInternalTools(
     async (input: z.infer<typeof memorySearchInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMemory(runtime.context, input, getMemoryRetrieval()),
     {
       name: "memory_search",
-      description: "Search current structured saved memory items lexically when relevant context is missing. Keep ordinary self-contained requests tool-free.",
+      description: "Search current structured saved memory items when relevant personal context or its canonical provenance is needed. Results include validated original-message sources when available. Keep ordinary self-contained requests tool-free.",
       schema: memorySearchInput,
       returnDirect: isReturnDirect("memory_search"),
     },

@@ -50,6 +50,31 @@ describe("memory source actions", () => {
     }, "profile-a")).toEqual([{ action, profileId: "profile-a", excerpt: "A retained source", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Decision" }]);
   });
 
+  it("projects every canonical-memory provenance candidate as a separate source card", () => {
+    const secondAction = { ...action, messageId: "00000000-0000-4000-8000-000000000012" };
+    expect(memorySourceRows("memory_search", {
+      kind: "memory_search",
+      results: [{
+        canonicalKey: "profile.machine",
+        excerpt: "Current machine",
+        sources: [
+          { action, profileId: "profile-a", excerpt: "My machine is a LunarBook 14.", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Machine note" },
+          { action: secondAction, profileId: "profile-a", excerpt: "I use it for work.", createdAt: "2026-08-15T12:00:00.000Z", role: "user", threadTitle: "Work setup" },
+        ],
+      }],
+    }, "profile-a")).toEqual([
+      { action, profileId: "profile-a", excerpt: "My machine is a LunarBook 14.", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Machine note" },
+      { action: secondAction, profileId: "profile-a", excerpt: "I use it for work.", createdAt: "2026-08-15T12:00:00.000Z", role: "user", threadTitle: "Work setup" },
+    ]);
+  });
+
+  it("projects provenance nested under an exact memory read", () => {
+    expect(memorySourceRows("memory_read", {
+      kind: "memory_read",
+      item: { canonicalKey: "profile.machine", sources: [{ action, profileId: "profile-a", excerpt: "My machine is a LunarBook 14.", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Machine note" }] },
+    }, "profile-a")).toEqual([{ action, profileId: "profile-a", excerpt: "My machine is a LunarBook 14.", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Machine note" }]);
+  });
+
   it("renders structured memory item tool results without document-era fields", () => {
     expect(memoryItemRows("memory_read", {
       kind: "memory_read",
