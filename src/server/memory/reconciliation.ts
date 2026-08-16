@@ -1,8 +1,9 @@
 import type { ProfileId } from "@/lib/profiles";
 import type { MemoryRevisionDelta, MemoryStore } from "@/server/memory/types";
+import { createTokenEstimator } from "@/server/agent/token-budget";
 
 export const MEMORY_CHANGE_HINT_MAX_ITEMS = 8;
-export const MEMORY_CHANGE_HINT_MAX_CHARACTERS = 2_400;
+export const MEMORY_CHANGE_HINT_MAX_TOKENS = 2_400;
 
 export type MemoryChangeHint = {
   afterRevision: number;
@@ -39,12 +40,20 @@ export function collapseMemoryChanges(
 
 export function formatMemoryChangeHint(hint: MemoryChangeHint) {
   if (hint.changes.length === 0) return "";
-  let used = 0;
+  const estimator = createTokenEstimator({ provider: "openrouter", model: "unknown" });
+  let usedTokens = estimator.estimateText(`<memory-changes since="${hint.afterRevision}" through="${hint.throughRevision}">\n</memory-changes>`);
   const body = hint.changes.flatMap((change) => {
-    if (used >= MEMORY_CHANGE_HINT_MAX_CHARACTERS) return [];
-    const excerpt = escapeRuntimeText(change.excerpt).slice(0, MEMORY_CHANGE_HINT_MAX_CHARACTERS - used);
-    used += excerpt.length;
-    return `<memory-change key="${escapeRuntimeText(change.canonicalKey)}" mutation="${change.mutationKind}" revision="${change.itemRevision}" global-revision="${change.profileGlobalRevision}" status="${change.status}">${excerpt}</memory-change>`;
+    if (usedTokens >= MEMORY_CHANGE_HINT_MAX_TOKENS) return [];
+    const prefix = `<memory-change key="${escapeRuntimeText(change.canonicalKey)}" mutation="${change.mutationKind}" revision="${change.itemRevision}" global-revision="${change.profileGlobalRevision}" status="${change.status}">`;
+    const suffix = "</memory-change>";
+    const remaining = MEMORY_CHANGE_HINT_MAX_TOKENS - usedTokens;
+    const excerptBudget = Math.max(0, remaining - estimator.estimateText(`${prefix}${suffix}`));
+    const excerpt = estimator.truncateText(escapeRuntimeText(change.excerpt), excerptBudget).text;
+    const entry = `${prefix}${excerpt}${suffix}`;
+    const entryTokens = estimator.estimateText(entry);
+    if (!excerpt || entryTokens > remaining) return [];
+    usedTokens += entryTokens;
+    return entry;
   }).join("\n");
   return `<memory-changes since="${hint.afterRevision}" through="${hint.throughRevision}">
 ${body}

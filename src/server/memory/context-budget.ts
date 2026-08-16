@@ -1,8 +1,9 @@
 import type { ProfileId } from "@/lib/profiles";
 import type { MemoryItem } from "@/server/memory/types";
+import { createTokenEstimator } from "@/server/agent/token-budget";
 
 export const CANONICAL_MEMORY_MAX_ITEMS = 24;
-export const CANONICAL_MEMORY_MAX_CHARACTERS = 6_000;
+export const CANONICAL_MEMORY_MAX_TOKENS = 6_000;
 
 export type CanonicalMemoryContext = {
   globalRevision: number;
@@ -10,7 +11,7 @@ export type CanonicalMemoryContext = {
 };
 
 type BudgetItem = MemoryItem & { itemRevision?: number };
-type BudgetOptions = { maxItems?: number; maxCharacters?: number; profileId?: ProfileId };
+type BudgetOptions = { maxItems?: number; maxTokens?: number; profileId?: ProfileId; provider?: string; model?: string };
 
 function priority(item: MemoryItem) {
   if (item.category === "instruction") return 0;
@@ -22,19 +23,30 @@ function priority(item: MemoryItem) {
 /** Select a deterministic, bounded snapshot for a fresh agent context. */
 export function budgetCanonicalMemory(items: readonly BudgetItem[], globalRevision: number, options: BudgetOptions = {}): CanonicalMemoryContext {
   const maxItems = Math.max(0, Math.min(options.maxItems ?? CANONICAL_MEMORY_MAX_ITEMS, CANONICAL_MEMORY_MAX_ITEMS));
-  const maxCharacters = Math.max(0, Math.min(options.maxCharacters ?? CANONICAL_MEMORY_MAX_CHARACTERS, CANONICAL_MEMORY_MAX_CHARACTERS));
+  const maxTokens = Math.max(0, Math.min(options.maxTokens ?? CANONICAL_MEMORY_MAX_TOKENS, CANONICAL_MEMORY_MAX_TOKENS));
+  const estimator = createTokenEstimator({ provider: options.provider ?? "openrouter", model: options.model ?? "unknown" });
   const selected: CanonicalMemoryContext["items"] = [];
-  let usedCharacters = 0;
+  let usedTokens = 0;
   const ordered = [...items]
     .filter((item) => item.status === "active" && (!options.profileId || item.profileId === options.profileId))
     .sort((left, right) => priority(left) - priority(right) || right.importance - left.importance || right.updatedAt.localeCompare(left.updatedAt) || left.canonicalKey.localeCompare(right.canonicalKey));
   for (const item of ordered) {
-    if (selected.length >= maxItems || usedCharacters >= maxCharacters) break;
-    const remaining = maxCharacters - usedCharacters;
-    const content = item.content.slice(0, remaining);
+    if (selected.length >= maxItems || usedTokens >= maxTokens) break;
+    const remaining = maxTokens - usedTokens;
+    const fullEntry = `### ${item.canonicalKey}\n_${item.category}_\n\n${item.content}`;
+    const fullTokens = estimator.estimateText(fullEntry);
+    let content = item.content;
+    if (fullTokens > remaining) {
+      const prefix = `### ${item.canonicalKey}\n_${item.category}_\n\n`;
+      const prefixTokens = estimator.estimateText(prefix);
+      const fitted = estimator.truncateText(item.content, Math.max(0, remaining - prefixTokens));
+      content = fitted.text;
+    }
     if (!content) continue;
+    const entryTokens = estimator.estimateText(`### ${item.canonicalKey}\n_${item.category}_\n\n${content}`);
+    if (entryTokens > remaining) continue;
     selected.push({ canonicalKey: item.canonicalKey, content, category: item.category, itemRevision: item.itemRevision ?? 0, updatedAt: item.updatedAt });
-    usedCharacters += content.length;
+    usedTokens += entryTokens;
   }
   return { globalRevision: Number.isSafeInteger(globalRevision) && globalRevision >= 0 ? globalRevision : 0, items: selected };
 }

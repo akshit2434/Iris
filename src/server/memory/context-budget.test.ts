@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
+import { createTokenEstimator } from "@/server/agent/token-budget";
 import type { MemoryItem } from "@/server/memory/types";
 
 function item(canonicalKey: string, content: string, updatedAt: string, profileId: "profile-a" | "profile-b" = "profile-a", status: MemoryItem["status"] = "active"): MemoryItem {
@@ -13,9 +14,10 @@ describe("structured memory context budget", () => {
       item("profile.preference", "profile", "2026-08-15T00:00:00.000Z"),
       item("focus.active", "focus", "2026-08-14T00:00:00.000Z"),
       item("instruction.style", "style", "2026-08-13T00:00:00.000Z"),
-    ], 7, { maxItems: 3, maxCharacters: 15 });
+    ], 7, { maxItems: 3, maxTokens: 80 });
     expect(memory.items.map((entry) => entry.canonicalKey)).toEqual(["instruction.style", "profile.preference", "z.preference"]);
-    expect(memory.items.map((entry) => entry.content).join("")).toHaveLength(15);
+    const estimator = createTokenEstimator({ provider: "test", model: "test" });
+    expect(estimator.estimateText(formatCanonicalMemoryPrompt(memory))).toBeLessThanOrEqual(80);
     expect(formatCanonicalMemoryPrompt(memory)).toContain("<saved-memory global-revision=\"7\">");
   });
 

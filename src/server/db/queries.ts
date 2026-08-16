@@ -6,6 +6,7 @@ import { getDatabase } from "@/server/db/client";
 import type { Json } from "@/server/db/types";
 import { sanitizeForEvent, sanitizeStatusMessage } from "@/server/agent/protocol";
 import { deriveThreadTitle } from "@/lib/thread-title";
+import type { TokenizerMetadata } from "@/server/agent/token-budget";
 
 export type ProfileSummary = {
   id: ProfileId;
@@ -35,6 +36,12 @@ export type AgentRun = {
   errorCode: string | null;
   errorMessage: string | null;
   errorMetadata: Record<string, unknown>;
+  estimatedInputTokens: number | null;
+  actualInputTokens: number | null;
+  actualOutputTokens: number | null;
+  actualTotalTokens: number | null;
+  contextTokenLedger: Record<string, unknown>;
+  usageMetadata: Record<string, unknown>;
   createdAt: string;
 };
 
@@ -128,6 +135,12 @@ function toAgentRun(row: {
   error_code: string | null;
   error_message: string | null;
   error_metadata: unknown;
+  estimated_input_tokens: number | null;
+  actual_input_tokens: number | null;
+  actual_output_tokens: number | null;
+  actual_total_tokens: number | null;
+  context_token_ledger: unknown;
+  usage_metadata: unknown;
   created_at: string;
 }): AgentRun {
   return {
@@ -147,6 +160,18 @@ function toAgentRun(row: {
     errorMetadata:
       typeof row.error_metadata === "object" && row.error_metadata !== null
         ? (row.error_metadata as Record<string, unknown>)
+        : {},
+    estimatedInputTokens: row.estimated_input_tokens,
+    actualInputTokens: row.actual_input_tokens,
+    actualOutputTokens: row.actual_output_tokens,
+    actualTotalTokens: row.actual_total_tokens,
+    contextTokenLedger:
+      typeof row.context_token_ledger === "object" && row.context_token_ledger !== null
+        ? (row.context_token_ledger as Record<string, unknown>)
+        : {},
+    usageMetadata:
+      typeof row.usage_metadata === "object" && row.usage_metadata !== null
+        ? (row.usage_metadata as Record<string, unknown>)
         : {},
     createdAt: row.created_at,
   };
@@ -200,7 +225,7 @@ function toPersistedToolEvent(row: {
 }
 
 const AGENT_RUN_COLUMNS =
-  "id, profile_id, thread_id, request_id, user_message_id, assistant_message_id, model, status, started_at, completed_at, failed_at, error_code, error_message, error_metadata, created_at";
+  "id, profile_id, thread_id, request_id, user_message_id, assistant_message_id, model, status, started_at, completed_at, failed_at, error_code, error_message, error_metadata, estimated_input_tokens, actual_input_tokens, actual_output_tokens, actual_total_tokens, context_token_ledger, usage_metadata, created_at";
 
 export async function listThreads(profileId: ProfileId) {
   const { data, error } = await getDatabase()
@@ -285,7 +310,7 @@ export async function getThread(profileId: ProfileId, threadId: string) {
 export async function getThreadMessages(profileId: ProfileId, threadId: string) {
   const { data, error } = await getDatabase()
     .from("messages")
-    .select("id, thread_id, profile_id, role, content, agent_run_id, is_complete, created_at")
+    .select("id, thread_id, profile_id, role, content, agent_run_id, is_complete, estimated_tokens, tokenizer_provider, tokenizer_model, tokenizer_version, created_at")
     .eq("thread_id", threadId)
     .eq("profile_id", profileId)
     .order("created_at", { ascending: true });
@@ -396,6 +421,8 @@ export async function createMessage(input: {
   content: string;
   agentRunId?: string | null;
   isComplete?: boolean;
+  estimatedTokens?: number | null;
+  tokenizer?: TokenizerMetadata | null;
 }) {
   const { data, error } = await getDatabase()
     .from("messages")
@@ -407,8 +434,12 @@ export async function createMessage(input: {
       content: input.content,
       agent_run_id: input.agentRunId ?? null,
       is_complete: input.isComplete ?? true,
+      estimated_tokens: input.estimatedTokens ?? null,
+      tokenizer_provider: input.tokenizer?.provider ?? null,
+      tokenizer_model: input.tokenizer?.model ?? null,
+      tokenizer_version: input.tokenizer?.version ?? null,
     })
-    .select("id, thread_id, profile_id, role, content, agent_run_id, is_complete, created_at")
+    .select("id, thread_id, profile_id, role, content, agent_run_id, is_complete, estimated_tokens, tokenizer_provider, tokenizer_model, tokenizer_version, created_at")
     .single();
 
   if (error) {
@@ -465,6 +496,46 @@ export async function createAgentRun(input: {
   }
 
   return toAgentRun(data);
+}
+
+export async function updateMessageTokenLedger(input: {
+  profileId: ProfileId;
+  threadId: string;
+  messageId: string;
+  estimatedTokens: number;
+  tokenizer: TokenizerMetadata;
+}) {
+  const { error } = await getDatabase()
+    .from("messages")
+    .update({
+      estimated_tokens: input.estimatedTokens,
+      tokenizer_provider: input.tokenizer.provider,
+      tokenizer_model: input.tokenizer.model,
+      tokenizer_version: input.tokenizer.version,
+    })
+    .eq("id", input.messageId)
+    .eq("profile_id", input.profileId)
+    .eq("thread_id", input.threadId);
+  if (error) throw error;
+}
+
+export async function updateAgentRunTokenLedger(input: {
+  profileId: ProfileId;
+  threadId: string;
+  runId: string;
+  estimatedInputTokens: number;
+  contextTokenLedger: Record<string, unknown>;
+}) {
+  const { error } = await getDatabase()
+    .from("agent_runs")
+    .update({
+      estimated_input_tokens: input.estimatedInputTokens,
+      context_token_ledger: input.contextTokenLedger as Json,
+    })
+    .eq("id", input.runId)
+    .eq("profile_id", input.profileId)
+    .eq("thread_id", input.threadId);
+  if (error) throw error;
 }
 
 export async function linkAgentRunMessages(
@@ -536,6 +607,14 @@ export async function updateAgentRunStatus(input: {
   errorCode?: string | null;
   errorMessage?: string | null;
   errorMetadata?: Record<string, unknown>;
+  contextTokenLedger?: Record<string, unknown>;
+  actualUsage?: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    cachedInputTokens?: number | null;
+    reasoningOutputTokens?: number | null;
+  };
 }) {
   const { data, error } = await getDatabase()
     .from("agent_runs")
@@ -546,6 +625,13 @@ export async function updateAgentRunStatus(input: {
       error_code: input.errorCode,
       error_message: input.errorMessage,
       error_metadata: (input.errorMetadata ?? {}) as Json,
+      ...(input.contextTokenLedger ? { context_token_ledger: input.contextTokenLedger as Json } : {}),
+      ...(input.actualUsage ? {
+        actual_input_tokens: input.actualUsage.inputTokens,
+        actual_output_tokens: input.actualUsage.outputTokens,
+        actual_total_tokens: input.actualUsage.totalTokens,
+        usage_metadata: input.actualUsage as unknown as Json,
+      } : {}),
     })
     .eq("id", input.runId)
     .eq("profile_id", input.profileId)

@@ -9,9 +9,9 @@ import {
   resolveBrowserTimezone,
 } from "@/server/agent/context";
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
-import { createIrisAgent, createProductionChatModel, extractAgentMessageEvents, parseToolOutput, streamAgentEvents } from "@/server/agent";
+import { createIrisAgent, createProductionChatModel, extractAgentMessageEvents, extractAgentUsage, parseToolOutput, streamAgentEvents } from "@/server/agent";
 import { planAssistantPersistence } from "@/server/agent/persistence";
-import { createInternalTools, optionalToolProgressSchema, patchMemory, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
+import { createInternalTools, getInternalToolSchemaDescriptors, optionalToolProgressSchema, patchMemory, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
 import type { MemoryMutationService } from "@/server/memory/mutation";
 import type { MessageContextWindow, MessageSearchResult } from "@/server/memory/types";
@@ -150,6 +150,34 @@ describe("context builder", () => {
     expect(prompt).toContain("Do not claim a durable write unless memory_patch or memory_archive returned an applied result.");
   });
 
+  it("renders only the assembled prompt slots when a token budget is attached", () => {
+    const budgeted = createAgentContext({
+      ...context,
+      canonicalMemory: {
+        globalRevision: 4,
+        items: [{ canonicalKey: "profile.communication", content: "full memory", category: "preference", itemRevision: 2, updatedAt: "now" }],
+      },
+      memoryChangeHint: {
+        afterRevision: 1,
+        throughRevision: 4,
+        changes: [{ canonicalKey: "profile.communication", mutationKind: "update", itemRevision: 2, profileGlobalRevision: 4, createdAt: "now", status: "active", content: "full change", excerpt: "full change" }],
+      },
+      budgetedContext: {
+        threadSummary: "selected continuity",
+        pinnedNotes: ["selected note"],
+        savedMemoryPrompt: "selected memory",
+        referenceHistoryPrompt: "selected history",
+        targetedRetrievalPrompt: "selected retrieval",
+      },
+    });
+    const prompt = buildDynamicSystemPrompt(budgeted);
+    expect(prompt).toContain("selected memory");
+    expect(prompt).toContain("selected history");
+    expect(prompt).toContain("selected retrieval");
+    expect(prompt).toContain("selected continuity");
+    expect(prompt).not.toContain("full change");
+  });
+
   it("sends only messages after a durable compaction checkpoint while keeping raw history", () => {
     const built = buildThreadAgentContext({
       messages: [
@@ -187,6 +215,15 @@ describe("internal tools", () => {
     ]);
   });
 
+  it("serializes tool schemas for token accounting without invoking a tool", () => {
+    const schemas = getInternalToolSchemaDescriptors();
+    expect(schemas).toHaveLength(8);
+    expect(schemas.find((schema) => schema.name === "search_messages")).toMatchObject({
+      name: "search_messages",
+      parameters: { type: "object" },
+    });
+  });
+
   it("strictly scopes thread overview reads to the runtime profile and thread", async () => {
     const reader = vi.fn(async (profileId: "profile-a" | "profile-b", threadId: string) => ({
       title: "Runtime test",
@@ -207,6 +244,30 @@ describe("internal tools", () => {
 });
 
 describe("runtime seams", () => {
+  it("normalizes provider usage metadata without retaining prompt content", () => {
+    expect(extractAgentUsage({
+      usage_metadata: {
+        input_tokens: 120,
+        output_tokens: 30,
+        total_tokens: 150,
+        input_token_details: { cache_read: 20 },
+        output_token_details: { reasoning: 5 },
+      },
+      content: "private prompt must not enter telemetry",
+    })).toEqual({
+      inputTokens: 120,
+      outputTokens: 30,
+      totalTokens: 150,
+      cachedInputTokens: 20,
+      reasoningOutputTokens: 5,
+    });
+    expect(extractAgentUsage({ response_metadata: { usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } } })).toEqual({
+      inputTokens: 2,
+      outputTokens: 3,
+      totalTokens: 5,
+    });
+  });
+
   it("detects installed LangChain AIMessageChunk tool calls and keeps ToolMessage output out of text", () => {
     const chunk = new AIMessageChunk({
       content: "",

@@ -31,6 +31,12 @@ export type InternalToolOptions = {
   returnDirectTools?: readonly string[];
 };
 
+export type InternalToolSchemaDescriptor = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
 const emptyInput = z.object({});
 export const optionalToolProgressSchema = z.object({
   statusMessage: z.string().trim().min(1).max(120).optional(),
@@ -331,4 +337,26 @@ export function createInternalTools(
   );
 
   return [threadOverview, searchMessagesTool, readMessagesTool, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool] as const;
+}
+
+/**
+ * Return the serialized tool definitions used for token accounting. This is
+ * intentionally separate from model invocation; it performs no I/O and keeps
+ * raw tool schemas out of telemetry while still counting their JSON overhead.
+ */
+export function getInternalToolSchemaDescriptors(): InternalToolSchemaDescriptor[] {
+  return createInternalTools().map((internalTool) => {
+    let parameters: Record<string, unknown> = { type: "object" };
+    try {
+      parameters = z.toJSONSchema(internalTool.schema) as Record<string, unknown>;
+    } catch {
+      // A schema conversion failure should not make the chat unavailable. The
+      // fallback still accounts for the tool name and description.
+    }
+    return {
+      name: internalTool.name,
+      description: internalTool.description ?? "",
+      parameters,
+    };
+  });
 }

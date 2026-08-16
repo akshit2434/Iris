@@ -4,6 +4,8 @@ import { getSelectedProfile } from "@/server/auth/profile";
 import {
   createAgentRun,
   createMessage,
+  updateMessageTokenLedger,
+  updateAgentRunTokenLedger,
   applyAutomaticThreadTitle,
   claimAutomaticThreadTitle,
   createThreadWithFirstMessage,
@@ -19,21 +21,22 @@ import {
 } from "@/server/db/queries";
 import {
   createAgentContext,
+  buildDynamicSystemPrompt,
   resolveBrowserTimezone,
 } from "@/server/agent/context";
-import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
+import { assembleTokenBudgetedContext, attachActualUsage, ContextBudgetError } from "@/server/agent/context-assembler";
 import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
+import { getInternalToolSchemaDescriptors } from "@/server/agent/tools";
+import { createTokenEstimator } from "@/server/agent/token-budget";
 import { resolveThreadTitle } from "@/server/agent/title";
 import { createProductionMemoryRetrievalService } from "@/server/memory/retrieval";
 import { createMemoryMutationService } from "@/server/memory/mutation";
 import { createMemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
-import { budgetCanonicalMemory } from "@/server/memory/context-budget";
+import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
 import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
-import { readMemoryChangeHint } from "@/server/memory/reconciliation";
-import { createSupabaseThreadCompactionStore } from "@/server/memory/compaction-repository";
-import { getThreadCompactionConfig } from "@/server/memory/compaction";
+import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/reconciliation";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
   AGENT_STREAM_PROTOCOL,
@@ -89,7 +92,10 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       return NextResponse.json({ error: "Enter a message first." }, { status: 400 });
     }
 
-    const content = body.content.trim().slice(0, 12000);
+    const content = body.content.trim();
+    if (content.length > 500_000) {
+      return NextResponse.json({ error: "That message is too large to process." }, { status: 413 });
+    }
     const requestId = isRequestId(body.requestId) ? body.requestId.trim() : crypto.randomUUID();
     const profile = await getProfile(profileId);
     if (!profile) {
@@ -192,6 +198,65 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         throughRevision: memoryRevisionSnapshot,
       }).catch(() => ({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] })),
     ]);
+    const baseAgentContext = createAgentContext({
+      profileId,
+      profileLabel: profile.displayName,
+      threadId,
+      threadTitle: thread.thread.title,
+      browserTimezone: resolveBrowserTimezone(body.timezone),
+      continuitySummary: threadContextRow.continuitySummary,
+      pinnedNotes: threadContextRow.pinnedNotes,
+      compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
+      compactedThroughCreatedAt: threadContextRow.compactedThroughCreatedAt,
+      continuityRevision: threadContextRow.continuityRevision,
+      currentUserMessageId: userMessageId,
+      agentRunId: run.id,
+      canonicalMemory,
+      memoryChangeHint,
+      // State slots are supplied by the token assembler below. Keeping them
+      // empty here ensures the ledger measures each component exactly once.
+      budgetedContext: {
+        threadSummary: null,
+        pinnedNotes: [],
+        savedMemoryPrompt: "",
+        referenceHistoryPrompt: "",
+        targetedRetrievalPrompt: "",
+      },
+    });
+    const currentUserMessage = history.find((message) => message.id === userMessageId) ?? {
+      id: userMessageId,
+      role: "user" as const,
+      content,
+      isComplete: true,
+    };
+    const estimator = createTokenEstimator({ provider: "openrouter", model });
+    const savedMemoryPrompt = [
+      formatCanonicalMemoryPrompt(canonicalMemory),
+      formatMemoryChangeHint(memoryChangeHint),
+    ].filter(Boolean).join("\n");
+    let contextAssembly;
+    try {
+      contextAssembly = assembleTokenBudgetedContext({
+        provider: "openrouter",
+        model,
+        systemPrompt: buildDynamicSystemPrompt(baseAgentContext),
+        toolSchemas: getInternalToolSchemaDescriptors(),
+        currentUser: currentUserMessage,
+        messages: history,
+        compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
+        threadSummary: threadContextRow.continuitySummary,
+        pinnedNotes: threadContextRow.pinnedNotes,
+        savedMemoryPrompt,
+        referenceHistoryPrompt: "",
+        targetedRetrievalPrompt: "",
+        estimator,
+      });
+    } catch (error) {
+      if (error instanceof ContextBudgetError) {
+        return NextResponse.json({ error: error.message, code: error.code }, { status: 413 });
+      }
+      throw error;
+    }
     const agentContext = createAgentContext({
       profileId,
       profileLabel: profile.displayName,
@@ -207,20 +272,30 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       agentRunId: run.id,
       canonicalMemory,
       memoryChangeHint,
+      budgetedContext: contextAssembly.prompt,
     });
-    const threadContext = buildThreadAgentContext({
-      messages: history,
-      continuitySummary: threadContextRow.continuitySummary,
-      pinnedNotes: threadContextRow.pinnedNotes,
-      compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
-      compactedThroughCreatedAt: threadContextRow.compactedThroughCreatedAt,
-      continuityRevision: threadContextRow.continuityRevision,
-      canonicalMemory,
-    });
+    const userMessageTokenEstimate = estimator.estimateMessage({ role: "user", content });
+    try {
+      await updateMessageTokenLedger({
+        profileId,
+        threadId,
+        messageId: userMessageId,
+        estimatedTokens: userMessageTokenEstimate,
+        tokenizer: estimator.metadata,
+      });
+      await updateAgentRunTokenLedger({
+        profileId,
+        threadId,
+        runId: run.id,
+        estimatedInputTokens: contextAssembly.ledger.estimatedInputTokens,
+        contextTokenLedger: contextAssembly.ledger,
+      });
+    } catch {
+      // Telemetry must not make a valid model run fail.
+    }
     const memoryMutation = createMemoryMutationService(memoryStore);
     const memoryArchive = createMemoryArchiveService(memoryStore);
     const memoryGovernance = createSupabaseMemoryGovernanceStore();
-    const compactionStore = createSupabaseThreadCompactionStore();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -232,6 +307,16 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         let persistedSequence = 0;
         let assistantContent = "";
         let assistantPersisted = false;
+        let actualUsage: {
+          inputTokens: number | null;
+          outputTokens: number | null;
+          totalTokens: number | null;
+          cachedInputTokens?: number | null;
+          reasoningOutputTokens?: number | null;
+        } | undefined;
+        const telemetryLedger = () => actualUsage
+          ? attachActualUsage(contextAssembly.ledger, actualUsage)
+          : contextAssembly.ledger;
         let closed = false;
         // Start the tiny title request before the agent iterator. It has its
         // own timeout/fallback and is never allowed to delay first-token work.
@@ -287,11 +372,15 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
 
           for await (const event of streamAgentEvents({
             context: agentContext,
-            messages: getModelMessages(threadContext),
+            messages: contextAssembly.messages,
             memoryRetrieval,
             memoryMutation,
             memoryArchive,
           })) {
+            if (event.type === "usage_observed") {
+              actualUsage = event.usage;
+              continue;
+            }
             if (event.type === "text_delta") {
               assistantContent += event.text;
               send({ type: "text_delta", runId: run.id, text: event.text });
@@ -355,6 +444,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             content: completedAssistant.content,
             agentRunId: run.id,
             isComplete: completedAssistant.isComplete,
+            estimatedTokens: estimator.estimateMessage({ role: "assistant", content: completedAssistant.content }),
+            tokenizer: estimator.metadata,
           });
           assistantPersisted = true;
           await linkAgentRunMessages(profileId, threadId, run.id, { assistantMessageId });
@@ -369,6 +460,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             errorCode: null,
             errorMessage: null,
             errorMetadata: {},
+            contextTokenLedger: telemetryLedger(),
+            actualUsage,
           });
           await appendAgentEvent({
             profileId,
@@ -393,12 +486,6 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               // Memory queue availability must not turn a completed chat run into a failure.
             }
           }
-          try {
-            const compactionConfig = getThreadCompactionConfig();
-            await compactionStore.enqueueCompactionJob(profileId, threadId, run.id, compactionConfig.minMessages, compactionConfig.recentTailMessages);
-          } catch {
-            // Compaction is a durable, opt-in follow-up and never blocks chat completion.
-          }
           send({
             type: "completed",
             runId: run.id,
@@ -421,6 +508,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
                 content: partialAssistant.content,
                 agentRunId: run.id,
                 isComplete: partialAssistant.isComplete,
+                estimatedTokens: estimator.estimateMessage({ role: "assistant", content: partialAssistant.content }),
+                tokenizer: estimator.metadata,
               });
               assistantPersisted = true;
               await linkAgentRunMessages(profileId, threadId, run.id, { assistantMessageId });
@@ -441,6 +530,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               errorCode: failure.code,
               errorMessage: failure.message,
               errorMetadata: { partial: assistantContent.length > 0 },
+              contextTokenLedger: telemetryLedger(),
+              actualUsage,
             });
             await appendAgentEvent({
               profileId,

@@ -71,6 +71,10 @@ export type Database = {
           content: string;
           agent_run_id: string | null;
           is_complete: boolean;
+          estimated_tokens: number | null;
+          tokenizer_provider: string | null;
+          tokenizer_model: string | null;
+          tokenizer_version: string | null;
           created_at: string;
           search_vector: string | null;
         };
@@ -82,6 +86,10 @@ export type Database = {
           content: string;
           agent_run_id?: string | null;
           is_complete?: boolean;
+          estimated_tokens?: number | null;
+          tokenizer_provider?: string | null;
+          tokenizer_model?: string | null;
+          tokenizer_version?: string | null;
           created_at?: string;
         };
         Update: Partial<{
@@ -92,6 +100,10 @@ export type Database = {
           content: string;
           agent_run_id: string | null;
           is_complete: boolean;
+          estimated_tokens: number | null;
+          tokenizer_provider: string | null;
+          tokenizer_model: string | null;
+          tokenizer_version: string | null;
           created_at: string;
         }>;
         Relationships: [];
@@ -112,6 +124,12 @@ export type Database = {
           error_code: string | null;
           error_message: string | null;
           error_metadata: Json;
+          estimated_input_tokens: number | null;
+          actual_input_tokens: number | null;
+          actual_output_tokens: number | null;
+          actual_total_tokens: number | null;
+          context_token_ledger: Json;
+          usage_metadata: Json;
           created_at: string;
         };
         Insert: {
@@ -129,6 +147,12 @@ export type Database = {
           error_code?: string | null;
           error_message?: string | null;
           error_metadata?: Json;
+          estimated_input_tokens?: number | null;
+          actual_input_tokens?: number | null;
+          actual_output_tokens?: number | null;
+          actual_total_tokens?: number | null;
+          context_token_ledger?: Json;
+          usage_metadata?: Json;
           created_at?: string;
         };
         Update: Partial<{
@@ -146,6 +170,12 @@ export type Database = {
           error_code: string | null;
           error_message: string | null;
           error_metadata: Json;
+          estimated_input_tokens: number | null;
+          actual_input_tokens: number | null;
+          actual_output_tokens: number | null;
+          actual_total_tokens: number | null;
+          context_token_ledger: Json;
+          usage_metadata: Json;
           created_at: string;
         }>;
         Relationships: [];
