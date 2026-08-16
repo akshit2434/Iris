@@ -22,6 +22,8 @@ describe("durable structured memory consolidation", () => {
     expect(isMeaningfulMemoryCandidate("Hey")).toBe(false);
     expect(isMeaningfulMemoryCandidate("thanks, that was helpful")).toBe(false);
     expect(isMeaningfulMemoryCandidate("What food should I order tonight?")).toBe(false);
+    expect(isMeaningfulMemoryCandidate("What devices do i have")).toBe(false);
+    expect(isMeaningfulMemoryCandidate("Can u tell me a must have app for my devices")).toBe(false);
   });
   it("enqueues only after a successful run with a persisted assistant", () => {
     expect(shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted: true })).toBe(true);

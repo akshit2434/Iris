@@ -28,12 +28,32 @@ export type MemoryMutationService = { apply: (input: GovernedMemoryPatchInput) =
 
 function safeCandidates(items: readonly { canonicalKey: string }[]) { return items.slice(0, 5).map((item) => item.canonicalKey); }
 
+const GENERIC_MEMORY_TERMS = new Set([
+  "user", "profile", "memory", "current", "information", "personal", "fact", "facts",
+  "their", "they", "them", "with", "have", "having", "uses", "prefers",
+]);
+
+function significantTerms(value: string) {
+  return new Set(value.toLocaleLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((term) => term.length >= 4 && !GENERIC_MEMORY_TERMS.has(term)));
+}
+
+function overlapCount(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  let count = 0;
+  for (const term of left) if (right.has(term)) count += 1;
+  return count;
+}
+
 function relatedItems(items: Awaited<ReturnType<MemoryStore["listItems"]>>, canonicalKey: string, content: string) {
-  const terms = new Set(`${canonicalKey} ${content}`.toLocaleLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length >= 4));
+  const keyTerms = significantTerms(canonicalKey);
+  const contentTerms = significantTerms(content);
   return items.filter((item) => {
     if (item.canonicalKey === canonicalKey) return true;
-    const candidateTerms = `${item.canonicalKey} ${item.content}`.toLocaleLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length >= 4);
-    return candidateTerms.some((term) => terms.has(term));
+    const candidateKeyTerms = significantTerms(item.canonicalKey);
+    const candidateContentTerms = significantTerms(item.content);
+    return overlapCount(keyTerms, candidateKeyTerms) >= 1
+      || overlapCount(contentTerms, candidateContentTerms) >= 2;
   });
 }
 

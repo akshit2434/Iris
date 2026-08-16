@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const migration = readFileSync(new URL("../../../supabase/migrations/20260828000000_reference_history_observability.sql", import.meta.url), "utf8").toLowerCase();
+const migration = readFileSync(new URL("../../../supabase/migrations/20260828050000_reference_history_observability.sql", import.meta.url), "utf8").toLowerCase();
 
 describe("reference-history observability migration contract", () => {
   it("scopes background telemetry to profile and job with optional validated links", () => {

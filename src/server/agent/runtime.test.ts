@@ -57,6 +57,7 @@ describe("agent context", () => {
     expect(prompt).toContain("Memory lookup order:");
     expect(prompt).toContain("search saved memory with memory_search");
     expect(prompt).toContain("search retained chats with search_messages");
+    expect(prompt).toContain("never call a search tool with an empty object");
     expect(prompt).toContain("Stop as soon as evidence is sufficient");
     expect(prompt).toContain("clear stable personal fact with future value");
   });
@@ -381,7 +382,9 @@ describe("runtime seams", () => {
     };
 
     await expect(searchMessages(context, { query: " prior  decision ", limit: 5 }, retrieval)).resolves.toMatchObject({ kind: "message_search" });
-    expect(retrieval.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", query: "prior decision" }));
+    expect(retrieval.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", query: "prior decision", excludeThreadId: context.threadId }));
+    await expect(searchMessages(context, { query: "prior decision", threadId: "all", limit: 5 } as never, retrieval)).resolves.toMatchObject({ kind: "message_search" });
+    expect(retrieval.searchMessages).toHaveBeenLastCalledWith(expect.objectContaining({ profileId: "profile-a", query: "prior decision", threadId: undefined, excludeThreadId: context.threadId }));
     await expect(readMessages(context, { messageId: "00000000-0000-4000-8000-000000000010", windowSize: 2 }, retrieval)).resolves.toMatchObject({ kind: "message_read", found: true });
     expect(retrieval.readMessages).toHaveBeenCalledWith("profile-a", "00000000-0000-4000-8000-000000000010", 2);
   });

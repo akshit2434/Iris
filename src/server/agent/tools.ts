@@ -4,7 +4,7 @@ import type { ProfileId } from "@/lib/profiles";
 import { getThreadOverview } from "@/server/db/queries";
 import type { AgentContext } from "@/server/agent/context";
 import { createProductionMemoryRetrievalService, type MemoryRetrieval } from "@/server/memory/retrieval";
-import { normalizeMemoryLimit, normalizeMemoryQuery } from "@/server/memory/validation";
+import { isMemoryUuid, normalizeMemoryLimit, normalizeMemoryQuery } from "@/server/memory/validation";
 import { createMemoryMutationService, type MemoryMutationService } from "@/server/memory/mutation";
 import { createMemoryArchiveService, type MemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
@@ -112,7 +112,18 @@ function boundedExcerpt(value: string, max = 280) {
 export async function searchMessages(context: AgentContext, input: z.infer<typeof searchMessagesInput>, retrieval: MemoryRetrieval) {
   const query = normalizeMemoryQuery(input.query);
   const limit = normalizeMemoryLimit(input.limit);
-  const results = await retrieval.searchMessages({ profileId: context.profileId, ...input, query, limit });
+  // `threadId` is only an optional narrowing filter. Some providers may emit
+  // natural-language sentinels such as "all" despite the JSON schema. A bad
+  // optional filter must not break a safe profile-scoped history search.
+  const threadId = isMemoryUuid(input.threadId) ? input.threadId : undefined;
+  const results = await retrieval.searchMessages({
+    profileId: context.profileId,
+    ...input,
+    threadId,
+    excludeThreadId: threadId ? undefined : context.threadId,
+    query,
+    limit,
+  });
   return {
     kind: "message_search" as const,
     query,
@@ -285,7 +296,7 @@ export function createInternalTools(
     async (input: z.infer<typeof searchMessagesInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMessages(runtime.context, input, getMemoryRetrieval()),
     {
       name: "search_messages",
-      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. Use exact_phrase for quoted wording, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise hits with source IDs; do not use for self-contained requests.",
+      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. A concrete non-empty query is required; never call this with an empty object. Omit threadId to search all chats; provide it only to restrict the search to one known UUID. Use exact_phrase for quoted wording, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise hits with source IDs; do not use for self-contained requests.",
       schema: searchMessagesInput,
       returnDirect: isReturnDirect("search_messages"),
     },

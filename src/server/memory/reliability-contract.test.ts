@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const route = readFileSync(new URL("../../../app/api/threads/[threadId]/messages/route.ts", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../../supabase/migrations/20260828000000_atomic_existing_thread_turn.sql", import.meta.url), "utf8");
 const rangeMigration = readFileSync(new URL("../../../supabase/migrations/20260828100000_memory_consolidation_ranges.sql", import.meta.url), "utf8");
+const atomicTurnFixMigration = readFileSync(new URL("../../../supabase/migrations/20260828200000_fix_atomic_existing_thread_turn.sql", import.meta.url), "utf8");
 const repository = readFileSync(new URL("./governance-repository.ts", import.meta.url), "utf8");
 const consolidation = readFileSync(new URL("./consolidation.ts", import.meta.url), "utf8");
 
@@ -22,6 +23,11 @@ describe("memory reliability integration contract", () => {
     expect(migration).toContain("insert into public.messages");
     expect(migration).toContain("insert into public.agent_runs");
     expect(migration).toContain("update public.messages set agent_run_id");
+  });
+
+  it("qualifies returned-column names inside the existing-thread RPC", () => {
+    expect(atomicTurnFixMigration).toContain("update public.messages m set agent_run_id = p_run_id");
+    expect(atomicTurnFixMigration).toContain("where m.id = p_user_message_id and m.profile_id = p_profile_id and m.thread_id = p_thread_id");
   });
 
   it("lets a pending consolidation job see later committed thread messages", () => {

@@ -34,6 +34,40 @@ describe("governed structured memory mutation", () => {
     await expect(createMemoryMutationService(store()).apply({ ...base, content: "x".repeat(20_001) })).resolves.toMatchObject({ status: "conflict" });
   });
 
+  it("does not confuse unrelated memory domains through generic user wording", async () => {
+    const devices = {
+      ...makeItem(),
+      canonicalKey: "user.devices",
+      content: "The user has a MacBook Air and a realme phone.",
+      category: "personal_fact" as const,
+    };
+    const memoryStore = store([devices]);
+    const result = await createMemoryMutationService(memoryStore).apply({
+      ...base,
+      canonicalKey: "user.dietary_preferences",
+      content: "The user prefers vegetarian food and does not eat eggs.",
+      category: "preference",
+    });
+    expect(result).toMatchObject({ status: "applied", canonicalKey: "user.dietary_preferences" });
+  });
+
+  it("still catches likely duplicates across different keys", async () => {
+    const devices = {
+      ...makeItem(),
+      canonicalKey: "user.devices",
+      content: "The user has a MacBook Air M4 and a realme GT 7 phone.",
+      category: "personal_fact" as const,
+    };
+    const memoryStore = store([devices]);
+    const result = await createMemoryMutationService(memoryStore).apply({
+      ...base,
+      canonicalKey: "profile.computers_and_phones",
+      content: "MacBook Air M4 and realme GT 7 are the user's devices.",
+      category: "personal_fact",
+    });
+    expect(result).toMatchObject({ status: "conflict", candidates: ["user.devices"] });
+  });
+
   it("rejects malformed or foreign provenance", async () => {
     const memoryStore = store();
     vi.mocked(memoryStore.readMessageContext!).mockResolvedValue(null);

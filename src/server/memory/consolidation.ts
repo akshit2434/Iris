@@ -24,6 +24,7 @@ export function isMeaningfulMemoryCandidate(content: string) {
   const text = content.replace(/\s+/g, " ").trim();
   if (text.length < 18) return false;
   if (text.includes("?")) return false;
+  if (/^(?:who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may)\b/i.test(text)) return false;
   if (/\b(?:remember|don't forget|do not forget)\b/i.test(text)) return true;
   return /\b(?:i|i'm|i've|i'd|my|we|we're|we've|our)\b/i.test(text);
 }
