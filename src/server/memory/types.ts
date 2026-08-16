@@ -256,20 +256,124 @@ export type MessageSemanticIndexStore = {
   upsertMessageEmbedding: (input: DerivedMessageEmbedding) => Promise<void>;
 };
 
-export type ThreadCompactionJobStatus = "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
-export type ThreadCompactionJob = {
-  id: string; profileId: ProfileId; threadId: string; sourceRunId: string; status: ThreadCompactionJobStatus; attempts: number;
-  idempotencyKey: string; expectedCompactedThroughMessageId: string | null; expectedContinuityRevision: number;
-  checkpointMessageId: string; checkpointCreatedAt: string; recentTailMessages: number; availableAt: string;
-  leaseExpiresAt: string | null; lockedAt: string | null; lockedBy: string | null; lastErrorCode: string | null;
-  lastErrorMessage: string | null; createdAt: string; updatedAt: string; completedAt: string | null;
+export type ContinuityCheckpointDocument = {
+  version: "iris-continuity-document-v1";
+  threadGoal: string | null;
+  currentState: string | null;
+  decisions: string[];
+  constraints: string[];
+  commitments: string[];
+  openQuestions: string[];
+  uncertainties: string[];
+  corrections: string[];
+  importantToolResults: Array<{
+    label: string;
+    result: string;
+    sourceMessageIds: string[];
+  }>;
+  source: {
+    startOrdinal: number;
+    endOrdinal: number;
+    startMessageId: string;
+    endMessageId: string;
+    messageIds: string[];
+    estimatedTokens: number;
+  };
+  renderedText: string;
 };
-export type ThreadCompactionStore = {
-  enqueueCompactionJob: (profileId: ProfileId, threadId: string, sourceRunId: string, minMessages?: number, recentTailMessages?: number) => Promise<ThreadCompactionJob | null>;
-  claimCompactionJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<ThreadCompactionJob[]>;
-  listCompactionMessages: (profileId: ProfileId, threadId: string, checkpointMessageId: string, limit?: number) => Promise<ThreadCompactionMessage[]>;
-  readCompactionContext?: (profileId: ProfileId, threadId: string) => Promise<{ continuitySummary: string | null; pinnedNotes: string[] }>;
-  applyCompactionCheckpoint: (input: { profileId: ProfileId; jobId: string; workerId: string; summary: string; pinnedNotes: string[]; checkpointMessageId: string; checkpointCreatedAt: string }) => Promise<"applied" | "conflict">;
-  finishCompactionJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Exclude<ThreadCompactionJobStatus, "pending" | "running">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<ThreadCompactionJob>;
+
+export type ThreadContinuityCheckpoint = {
+  id: string;
+  profileId: ProfileId;
+  threadId: string;
+  revision: number;
+  document: ContinuityCheckpointDocument;
+  renderedText: string;
+  coveredThroughOrdinal: number;
+  coveredThroughMessageId: string;
+  coveredThroughCreatedAt: string;
+  sourceStartMessageId: string;
+  sourceEndMessageId: string;
+  sourceMessageIds: string[];
+  sourceEstimatedTokens: number;
+  renderedTokens: number;
+  model: string;
+  tokenizerProvider: string;
+  tokenizerVersion: string;
+  summarizerVersion: string;
+  previousCheckpointId: string | null;
+  inputHash: string;
+  createdAt: string;
 };
-export type ThreadCompactionMessage = { messageId: string; profileId: ProfileId; threadId: string; role: "user" | "assistant" | "tool"; content: string; createdAt: string };
+
+export type ThreadContinuityJobStatus = "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+export type ThreadContinuityJob = {
+  id: string;
+  profileId: ProfileId;
+  threadId: string;
+  sourceRunId: string;
+  status: ThreadContinuityJobStatus;
+  attempts: number;
+  idempotencyKey: string;
+  expectedCheckpointId: string | null;
+  expectedContinuityRevision: number;
+  sourceStartMessageId: string;
+  sourceEndMessageId: string;
+  sourceStartOrdinal: number;
+  sourceEndOrdinal: number;
+  sourceEstimatedTokens: number;
+  projectedInputTokens: number;
+  safeInputBudgetTokens: number;
+  inputHash: string;
+  model: string;
+  tokenizerProvider: string;
+  tokenizerVersion: string;
+  rebuildFromRaw: boolean;
+  availableAt: string;
+  leaseExpiresAt: string | null;
+  lockedAt: string | null;
+  lockedBy: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type ThreadContinuityMessage = {
+  messageId: string;
+  profileId: ProfileId;
+  threadId: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  createdAt: string;
+  ordinal: number;
+  estimatedTokens: number;
+  isComplete: boolean;
+};
+
+export type ThreadContinuityStore = {
+  enqueueContinuityJob: (input: {
+    profileId: ProfileId;
+    threadId: string;
+    sourceRunId: string;
+    sourceStartMessageId: string;
+    sourceEndMessageId: string;
+    sourceStartOrdinal: number;
+    sourceEndOrdinal: number;
+    sourceEstimatedTokens: number;
+    projectedInputTokens: number;
+    safeInputBudgetTokens: number;
+    inputHash: string;
+    model: string;
+    tokenizerProvider: string;
+    tokenizerVersion: string;
+    rebuildFromRaw?: boolean;
+  }) => Promise<ThreadContinuityJob | null>;
+  claimContinuityJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<ThreadContinuityJob[]>;
+  listContinuityMessages: (input: { profileId: ProfileId; threadId: string; startMessageId: string; endMessageId: string; rebuildFromRaw?: boolean }) => Promise<ThreadContinuityMessage[]>;
+  readLatestContinuityCheckpoint: (profileId: ProfileId, threadId: string) => Promise<ThreadContinuityCheckpoint | null>;
+  applyContinuityCheckpoint: (input: { profileId: ProfileId; jobId: string; workerId: string; checkpoint: Omit<ThreadContinuityCheckpoint, "id" | "createdAt" | "revision">; expectedCheckpointId: string | null; expectedContinuityRevision: number }) => Promise<"applied" | "conflict" | "invalidated">;
+  invalidateContinuityCheckpoint?: (profileId: ProfileId, threadId: string, reason: string) => Promise<void>;
+  finishContinuityJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Exclude<ThreadContinuityJobStatus, "pending" | "running">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<ThreadContinuityJob>;
+};

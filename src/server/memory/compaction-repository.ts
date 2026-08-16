@@ -2,13 +2,19 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getDatabase } from "@/server/db/client";
-import type { Database } from "@/server/db/types";
-import type { ThreadCompactionJob, ThreadCompactionMessage, ThreadCompactionStore } from "@/server/memory/types";
+import type { Database, Json } from "@/server/db/types";
+import type {
+  ContinuityCheckpointDocument,
+  ThreadContinuityCheckpoint,
+  ThreadContinuityJob,
+  ThreadContinuityMessage,
+  ThreadContinuityStore,
+} from "@/server/memory/types";
 import { assertMemoryProfileId, normalizeMemoryLimit, validateMemoryUuid } from "@/server/memory/validation";
 
 type MemoryDatabase = SupabaseClient<Database>;
 
-function toJob(row: Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]): ThreadCompactionJob {
+function toJob(row: Database["public"]["Tables"]["thread_continuity_jobs"]["Row"]): ThreadContinuityJob {
   return {
     id: row.id,
     profileId: row.profile_id,
@@ -17,11 +23,20 @@ function toJob(row: Database["public"]["Tables"]["thread_compaction_jobs"]["Row"
     status: row.status,
     attempts: row.attempts,
     idempotencyKey: row.idempotency_key,
-    expectedCompactedThroughMessageId: row.expected_compacted_through_message_id,
+    expectedCheckpointId: row.expected_checkpoint_id,
     expectedContinuityRevision: row.expected_continuity_revision,
-    checkpointMessageId: row.checkpoint_message_id,
-    checkpointCreatedAt: row.checkpoint_created_at,
-    recentTailMessages: row.recent_tail_messages,
+    sourceStartMessageId: row.source_start_message_id,
+    sourceEndMessageId: row.source_end_message_id,
+    sourceStartOrdinal: row.source_start_ordinal,
+    sourceEndOrdinal: row.source_end_ordinal,
+    sourceEstimatedTokens: row.source_estimated_tokens,
+    projectedInputTokens: row.projected_input_tokens,
+    safeInputBudgetTokens: row.safe_input_budget_tokens,
+    inputHash: row.input_hash,
+    model: row.model,
+    tokenizerProvider: row.tokenizer_provider,
+    tokenizerVersion: row.tokenizer_version,
+    rebuildFromRaw: row.rebuild_from_raw,
     availableAt: row.available_at,
     leaseExpiresAt: row.lease_expires_at,
     lockedAt: row.locked_at,
@@ -33,27 +48,64 @@ function toJob(row: Database["public"]["Tables"]["thread_compaction_jobs"]["Row"
     completedAt: row.completed_at,
   };
 }
-
-export function createSupabaseThreadCompactionStore(database: MemoryDatabase = getDatabase()): ThreadCompactionStore {
+function toCheckpoint(row: Database["public"]["Tables"]["thread_continuity_checkpoints"]["Row"]): ThreadContinuityCheckpoint {
   return {
-    async enqueueCompactionJob(profileId, threadId, sourceRunId, minMessages = 80, recentTailMessages = 24) {
-      assertMemoryProfileId(profileId);
-      validateMemoryUuid(threadId, "Thread ID");
-      validateMemoryUuid(sourceRunId, "Run ID");
-      const { data, error } = await database.rpc("enqueue_thread_compaction_job", {
-        p_profile_id: profileId,
-        p_thread_id: threadId,
-        p_source_run_id: sourceRunId,
-        p_min_messages: minMessages,
-        p_recent_tail_messages: recentTailMessages,
+    id: row.id,
+    profileId: row.profile_id,
+    threadId: row.thread_id,
+    revision: row.revision,
+    document: row.document as unknown as ContinuityCheckpointDocument,
+    renderedText: row.rendered_text,
+    coveredThroughOrdinal: row.covered_through_ordinal,
+    coveredThroughMessageId: row.covered_through_message_id,
+    coveredThroughCreatedAt: row.covered_through_created_at,
+    sourceStartMessageId: row.source_start_message_id,
+    sourceEndMessageId: row.source_end_message_id,
+    sourceMessageIds: row.source_message_ids,
+    sourceEstimatedTokens: row.source_estimated_tokens,
+    renderedTokens: row.rendered_tokens,
+    model: row.model,
+    tokenizerProvider: row.tokenizer_provider,
+    tokenizerVersion: row.tokenizer_version,
+    summarizerVersion: row.summarizer_version,
+    previousCheckpointId: row.previous_checkpoint_id,
+    inputHash: row.input_hash,
+    createdAt: row.created_at,
+  };
+}
+
+export function createSupabaseThreadContinuityStore(database: MemoryDatabase = getDatabase()): ThreadContinuityStore {
+  return {
+    async enqueueContinuityJob(input) {
+      assertMemoryProfileId(input.profileId);
+      validateMemoryUuid(input.threadId, "Thread ID");
+      validateMemoryUuid(input.sourceRunId, "Run ID");
+      validateMemoryUuid(input.sourceStartMessageId, "Continuity source start message ID");
+      validateMemoryUuid(input.sourceEndMessageId, "Continuity source end message ID");
+      const { data, error } = await database.rpc("enqueue_thread_continuity_job", {
+        p_profile_id: input.profileId,
+        p_thread_id: input.threadId,
+        p_source_run_id: input.sourceRunId,
+        p_source_start_message_id: input.sourceStartMessageId,
+        p_source_end_message_id: input.sourceEndMessageId,
+        p_source_start_ordinal: input.sourceStartOrdinal,
+        p_source_end_ordinal: input.sourceEndOrdinal,
+        p_source_estimated_tokens: input.sourceEstimatedTokens,
+        p_projected_input_tokens: input.projectedInputTokens,
+        p_safe_input_budget_tokens: input.safeInputBudgetTokens,
+        p_input_hash: input.inputHash,
+        p_model: input.model,
+        p_tokenizer_provider: input.tokenizerProvider,
+        p_tokenizer_version: input.tokenizerVersion,
+        p_rebuild_from_raw: input.rebuildFromRaw ?? false,
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       return row ? toJob(row) : null;
     },
 
-    async claimCompactionJobs(workerId, limit = 1, leaseSeconds = 120) {
-      const { data, error } = await database.rpc("claim_thread_compaction_jobs", {
+    async claimContinuityJobs(workerId, limit = 1, leaseSeconds = 120) {
+      const { data, error } = await database.rpc("claim_thread_continuity_jobs", {
         p_worker_id: workerId,
         p_limit: normalizeMemoryLimit(limit, 1),
         p_lease_seconds: leaseSeconds,
@@ -62,73 +114,99 @@ export function createSupabaseThreadCompactionStore(database: MemoryDatabase = g
       return (data ?? []).map(toJob);
     },
 
-    async listCompactionMessages(profileId, threadId, checkpointMessageId, limit = 160) {
-      assertMemoryProfileId(profileId);
-      validateMemoryUuid(threadId, "Thread ID");
-      validateMemoryUuid(checkpointMessageId, "Checkpoint message ID");
-      const { data: checkpoint, error: checkpointError } = await database
-        .from("messages")
-        .select("created_at, id")
-        .eq("id", checkpointMessageId)
-        .eq("profile_id", profileId)
-        .eq("thread_id", threadId)
-        .maybeSingle();
-      if (checkpointError) throw checkpointError;
-      if (!checkpoint) return [];
+    async listContinuityMessages(input) {
+      assertMemoryProfileId(input.profileId);
+      validateMemoryUuid(input.threadId, "Thread ID");
+      validateMemoryUuid(input.startMessageId, "Continuity source start message ID");
+      validateMemoryUuid(input.endMessageId, "Continuity source end message ID");
       const { data, error } = await database
         .from("messages")
-        .select("id, profile_id, thread_id, role, content, created_at")
-        .eq("profile_id", profileId)
-        .eq("thread_id", threadId)
-        .or(`created_at.lt.${checkpoint.created_at},and(created_at.eq.${checkpoint.created_at},id.lte.${checkpoint.id})`)
+        .select("id, profile_id, thread_id, role, content, created_at, estimated_tokens, is_complete")
+        .eq("profile_id", input.profileId)
+        .eq("thread_id", input.threadId)
         .order("created_at", { ascending: true })
         .order("id", { ascending: true })
-        .limit(Math.min(normalizeMemoryLimit(limit, 160), 240));
+        .limit(20_000);
       if (error) throw error;
-      return (data ?? []).map((row) => ({
+      const rows = data ?? [];
+      const start = input.rebuildFromRaw ? 0 : rows.findIndex((row) => row.id === input.startMessageId);
+      const end = rows.findIndex((row) => row.id === input.endMessageId);
+      if (start < 0 || end < start) return [];
+      return rows.slice(start, end + 1).map((row, index) => ({
         messageId: row.id,
         profileId: row.profile_id,
         threadId: row.thread_id,
         role: row.role,
         content: row.content,
         createdAt: row.created_at,
-      } satisfies ThreadCompactionMessage));
+        ordinal: start + index,
+        estimatedTokens: row.estimated_tokens ?? 0,
+        isComplete: row.is_complete,
+      } satisfies ThreadContinuityMessage));
     },
 
-    async readCompactionContext(profileId, threadId) {
+    async readLatestContinuityCheckpoint(profileId, threadId) {
       assertMemoryProfileId(profileId);
       validateMemoryUuid(threadId, "Thread ID");
       const { data, error } = await database
-        .from("thread_context")
-        .select("continuity_summary, pinned_notes")
+        .from("thread_continuity_checkpoints")
+        .select("*")
         .eq("profile_id", profileId)
         .eq("thread_id", threadId)
+        .order("revision", { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (error) throw error;
-      return { continuitySummary: data?.continuity_summary ?? null, pinnedNotes: data?.pinned_notes ?? [] };
+      return data ? toCheckpoint(data) : null;
     },
 
-    async applyCompactionCheckpoint(input) {
+    async applyContinuityCheckpoint(input) {
       assertMemoryProfileId(input.profileId);
-      validateMemoryUuid(input.jobId, "Compaction job ID");
-      validateMemoryUuid(input.checkpointMessageId, "Checkpoint message ID");
-      const { data, error } = await database.rpc("apply_thread_compaction_checkpoint", {
+      validateMemoryUuid(input.jobId, "Continuity job ID");
+      validateMemoryUuid(input.checkpoint.coveredThroughMessageId, "Continuity checkpoint message ID");
+      const { data, error } = await database.rpc("apply_thread_continuity_checkpoint", {
         p_profile_id: input.profileId,
         p_job_id: input.jobId,
         p_worker_id: input.workerId,
-        p_continuity_summary: input.summary,
-        p_pinned_notes: input.pinnedNotes,
-        p_checkpoint_message_id: input.checkpointMessageId,
-        p_checkpoint_created_at: input.checkpointCreatedAt,
+        p_expected_checkpoint_id: input.expectedCheckpointId,
+        p_expected_continuity_revision: input.expectedContinuityRevision,
+        p_document: input.checkpoint.document as unknown as Json,
+        p_rendered_text: input.checkpoint.renderedText,
+        p_covered_through_ordinal: input.checkpoint.coveredThroughOrdinal,
+        p_covered_through_message_id: input.checkpoint.coveredThroughMessageId,
+        p_covered_through_created_at: input.checkpoint.coveredThroughCreatedAt,
+        p_source_start_message_id: input.checkpoint.sourceStartMessageId,
+        p_source_end_message_id: input.checkpoint.sourceEndMessageId,
+        p_source_message_ids: input.checkpoint.sourceMessageIds,
+        p_source_estimated_tokens: input.checkpoint.sourceEstimatedTokens,
+        p_rendered_tokens: input.checkpoint.renderedTokens,
+        p_model: input.checkpoint.model,
+        p_tokenizer_provider: input.checkpoint.tokenizerProvider,
+        p_tokenizer_version: input.checkpoint.tokenizerVersion,
+        p_summarizer_version: input.checkpoint.summarizerVersion,
+        p_previous_checkpoint_id: input.checkpoint.previousCheckpointId,
+        p_input_hash: input.checkpoint.inputHash,
       });
       if (error) throw error;
-      return data === "applied" ? "applied" : "conflict";
+      if (data === "applied" || data === "conflict" || data === "invalidated") return data;
+      throw new Error("Continuity checkpoint returned an invalid status.");
     },
 
-    async finishCompactionJob(input) {
+    async invalidateContinuityCheckpoint(profileId, threadId, reason) {
+      assertMemoryProfileId(profileId);
+      validateMemoryUuid(threadId, "Thread ID");
+      const { error } = await database.rpc("invalidate_thread_continuity_checkpoint", {
+        p_profile_id: profileId,
+        p_thread_id: threadId,
+        p_reason: reason.slice(0, 500),
+      });
+      if (error) throw error;
+    },
+
+    async finishContinuityJob(input) {
       assertMemoryProfileId(input.profileId);
-      validateMemoryUuid(input.jobId, "Compaction job ID");
-      const { data, error } = await database.rpc("finish_thread_compaction_job", {
+      validateMemoryUuid(input.jobId, "Continuity job ID");
+      const { data, error } = await database.rpc("finish_thread_continuity_job", {
         p_profile_id: input.profileId,
         p_job_id: input.jobId,
         p_worker_id: input.workerId,
@@ -140,7 +218,7 @@ export function createSupabaseThreadCompactionStore(database: MemoryDatabase = g
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
-      if (!row) throw new Error("Compaction finish returned no job.");
+      if (!row) throw new Error("Continuity job finish returned no row.");
       return toJob(row);
     },
   };

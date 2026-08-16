@@ -49,10 +49,11 @@ raw history and revisions. Archive also creates a suppression record.
   synthesizer; proposal payloads are structured, suppression-checked, and
   source-validated.
 
-No token compaction, Dreaming synthesis, deterministic historical preflight,
-temporary chat, or memory settings are implemented in this slice. The old
-message-count compaction enqueue is paused until the token-based checkpoint
-worker is implemented.
+Continuity checkpoints are token-triggered and worker-driven. Dreaming
+synthesis, deterministic historical preflight, temporary chat, and memory
+settings remain later slices. The worker is opt-in through
+`MEMORY_CONTINUITY_ENABLED`; tests inject a summarizer and never call the
+provider.
 
 ## Migration/reset
 

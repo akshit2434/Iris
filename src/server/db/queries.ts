@@ -352,7 +352,7 @@ export async function getThreadToolEvents(profileId: ProfileId, threadId: string
 export async function getThreadContext(profileId: ProfileId, threadId: string) {
   const { data, error } = await getDatabase()
     .from("thread_context")
-    .select("continuity_summary, pinned_notes, memory_revision_seen, compacted_through_message_id, compacted_through_created_at, continuity_revision")
+    .select("active_continuity_checkpoint_id, memory_revision_seen, continuity_revision")
     .eq("profile_id", profileId)
     .eq("thread_id", threadId)
     .maybeSingle();
@@ -361,23 +361,41 @@ export async function getThreadContext(profileId: ProfileId, threadId: string) {
     throw error;
   }
 
-  return data
-    ? {
-      continuitySummary: data.continuity_summary,
-      pinnedNotes: data.pinned_notes,
-      memoryRevisionSeen: data.memory_revision_seen,
-      compactedThroughMessageId: data.compacted_through_message_id,
-      compactedThroughCreatedAt: data.compacted_through_created_at,
-      continuityRevision: data.continuity_revision,
-      }
-    : {
-        continuitySummary: null,
-        pinnedNotes: [],
-        memoryRevisionSeen: 0,
-        compactedThroughMessageId: null,
-        compactedThroughCreatedAt: null,
-        continuityRevision: 0,
-      };
+  if (!data) {
+    return {
+      continuitySummary: null,
+      pinnedNotes: [],
+      memoryRevisionSeen: 0,
+      continuityThroughMessageId: null,
+      continuityThroughCreatedAt: null,
+      continuityRevision: 0,
+    };
+  }
+
+  let continuitySummary: string | null = null;
+  let continuityThroughMessageId: string | null = null;
+  let continuityThroughCreatedAt: string | null = null;
+  if (data.active_continuity_checkpoint_id) {
+    const { data: checkpoint, error: checkpointError } = await getDatabase()
+      .from("thread_continuity_checkpoints")
+      .select("rendered_text, covered_through_message_id, covered_through_created_at")
+      .eq("id", data.active_continuity_checkpoint_id)
+      .eq("profile_id", profileId)
+      .eq("thread_id", threadId)
+      .maybeSingle();
+    if (checkpointError) throw checkpointError;
+    continuitySummary = checkpoint?.rendered_text ?? null;
+    continuityThroughMessageId = checkpoint?.covered_through_message_id ?? null;
+    continuityThroughCreatedAt = checkpoint?.covered_through_created_at ?? null;
+  }
+  return {
+    continuitySummary,
+    pinnedNotes: [],
+    memoryRevisionSeen: data.memory_revision_seen,
+    continuityThroughMessageId,
+    continuityThroughCreatedAt,
+    continuityRevision: data.continuity_revision,
+  };
 }
 
 export async function getThreadOverview(profileId: ProfileId, threadId: string) {

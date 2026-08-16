@@ -17,6 +17,7 @@ export type AssemblerMessage = {
   role: MessageRole;
   content: string;
   isComplete?: boolean;
+  createdAt?: string;
   /** Optional provider-specific correlation metadata for tool units. */
   unitId?: string;
   toolCallId?: string;
@@ -72,6 +73,8 @@ export type ContextTokenLedger = {
   uncertaintyRate: number;
   uncertaintyReserveTokens: number;
   inputBudgetTokens: number;
+  /** Estimated serialized input before older raw units are trimmed. */
+  projectedInputTokens: number;
   estimatedInputTokens: number;
   estimatedTotalWithUncertaintyTokens: number;
   burstUsed: boolean;
@@ -108,7 +111,7 @@ export type ContextAssemblyInput = {
   toolSchemas?: readonly unknown[];
   currentUser: AssemblerMessage;
   messages: readonly AssemblerMessage[];
-  compactedThroughMessageId?: string | null;
+  continuityThroughMessageId?: string | null;
   threadSummary?: string | null;
   pinnedNotes?: readonly string[];
   savedMemoryPrompt?: string;
@@ -126,6 +129,18 @@ type ConversationUnit = {
   index: number;
   messages: AssemblerMessage[];
   tokens: number;
+  complete: boolean;
+};
+
+export type ContinuitySourceSpan = {
+  messages: AssemblerMessage[];
+  messageIds: string[];
+  startMessageId: string | null;
+  endMessageId: string | null;
+  startOrdinal: number | null;
+  endOrdinal: number | null;
+  estimatedTokens: number;
+  recentTailTokens: number;
 };
 
 export class ContextBudgetError extends Error {
@@ -184,16 +199,16 @@ function groupConversationUnits(messages: readonly AssemblerMessage[], estimator
   const units: ConversationUnit[] = [];
   let current: ConversationUnit | null = null;
   for (const message of messages) {
-    if (message.role === "assistant" && message.isComplete === false) continue;
     const startsUnit = message.role === "user" || current === null;
     if (startsUnit) {
-      current = { index: units.length, messages: [], tokens: 0 };
+      current = { index: units.length, messages: [], tokens: 0, complete: true };
       units.push(current);
     }
     const unit = current;
     if (!unit) continue;
     unit.messages.push(message);
     unit.tokens += messageEstimate(estimator, message);
+    if (message.isComplete === false) unit.complete = false;
   }
   return units;
 }
@@ -203,11 +218,83 @@ function selectRecentUnits(units: readonly ConversationUnit[], budget: number) {
   let used = 0;
   for (let index = units.length - 1; index >= 0; index -= 1) {
     const unit = units[index];
-    if (!unit || unit.tokens > budget - used) continue;
+    if (!unit || !unit.complete) break;
+    // A tail is a contiguous suffix. Skipping a large recent unit and then
+    // selecting an older unit would silently make the model forget the newer
+    // conversation while retaining stale history.
+    if (unit.tokens > budget - used) break;
     selected.add(unit.index);
     used += unit.tokens;
   }
   return { selected, used };
+}
+
+/**
+ * Choose the oldest complete conversation units that can be summarized while
+ * retaining a token-budgeted recent tail. A unit starts with a user message
+ * and includes every following assistant/tool message until the next user
+ * message. Incomplete units are never handed to a summarizer.
+ */
+export function selectContinuitySourceSpan(input: {
+  messages: readonly AssemblerMessage[];
+  continuityThroughMessageId?: string | null;
+  currentUserMessageId?: string | null;
+  estimator: TokenEstimator;
+  recentTailTokens: number;
+}): ContinuitySourceSpan | null {
+  const checkpointIndex = input.continuityThroughMessageId
+    ? input.messages.findIndex((message) => message.id === input.continuityThroughMessageId)
+    : -1;
+  const startIndex = checkpointIndex >= 0 ? checkpointIndex + 1 : 0;
+  const sourceWithOrdinals = input.messages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message, index }) => index >= startIndex && message.id !== input.currentUserMessageId);
+  const source = sourceWithOrdinals.map(({ message }) => message);
+  const ordinalByMessage = new Map(sourceWithOrdinals.map(({ message, index }) => [message, index] as const));
+  const units = groupConversationUnits(source, input.estimator);
+  if (units.length < 2) return null;
+
+  const tailBudget = Math.max(0, Math.floor(input.recentTailTokens));
+  let tailStart = units.length;
+  let tailTokens = 0;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index];
+    if (!unit?.complete) break;
+    if (tailTokens > 0 && unit.tokens > tailBudget - tailTokens) break;
+    if (tailTokens === 0 && unit.tokens > tailBudget) {
+      // The most recent complete unit is retained as a whole even when it is
+      // larger than the nominal tail. It must never be split.
+      tailStart = index;
+      tailTokens = unit.tokens;
+      break;
+    }
+    tailStart = index;
+    tailTokens += unit.tokens;
+  }
+  if (tailStart <= 0 || tailStart > units.length) return null;
+
+  const eligibleUnits = units.slice(0, tailStart);
+  if (eligibleUnits.some((unit) => !unit.complete)) {
+    // Only summarize the complete prefix before the first incomplete unit.
+    const firstIncomplete = eligibleUnits.findIndex((unit) => !unit.complete);
+    if (firstIncomplete === 0) return null;
+    eligibleUnits.splice(firstIncomplete);
+  }
+  const selectedMessages = eligibleUnits.flatMap((unit) => unit.messages);
+  if (selectedMessages.length === 0) return null;
+  const startMessage = selectedMessages[0];
+  const endMessage = selectedMessages.at(-1);
+  const messageIds = selectedMessages.flatMap((message) => message.id ? [message.id] : []);
+  return {
+    messages: selectedMessages,
+    messageIds,
+    startMessageId: startMessage?.id ?? null,
+    endMessageId: endMessage?.id ?? null,
+    startOrdinal: startMessage ? ordinalByMessage.get(startMessage) ?? null : null,
+    endOrdinal: endMessage ? ordinalByMessage.get(endMessage) ?? null : null,
+    estimatedTokens: eligibleUnits.reduce((sum, unit) => sum + unit.tokens, 0),
+    recentTailTokens: tailTokens,
+  };
 }
 
 function fitText(estimator: TokenEstimator, value: string, component: ContextComponentName, budget: number) {
@@ -372,8 +459,8 @@ export function assembleTokenBudgetedContext(input: ContextAssemblyInput): Conte
   });
 
   const currentId = input.currentUser.id;
-  const checkpointIndex = input.compactedThroughMessageId
-    ? input.messages.findIndex((message) => message.id === input.compactedThroughMessageId)
+  const checkpointIndex = input.continuityThroughMessageId
+    ? input.messages.findIndex((message) => message.id === input.continuityThroughMessageId)
     : -1;
   const sourceMessages = checkpointIndex >= 0 ? input.messages.slice(checkpointIndex + 1) : input.messages;
   const previousMessages = sourceMessages.filter((message) => currentId ? message.id !== currentId : message !== input.currentUser);
@@ -427,6 +514,9 @@ export function assembleTokenBudgetedContext(input: ContextAssemblyInput): Conte
   });
 
   const selectedInputTokens = mandatoryTokens + selectedStateTokens(components);
+  const projectedInputTokens = mandatoryTokens + components
+    .filter((component) => component.name !== "system_time" && component.name !== "tool_schemas" && component.name !== "current_user")
+    .reduce((sum, component) => sum + component.estimatedTokens, 0);
   const uncertaintyReserve = estimateUncertainty(selectedInputTokens, uncertaintyRate);
   const ledger: ContextTokenLedger = {
     version: "iris-context-ledger-v1",
@@ -441,6 +531,7 @@ export function assembleTokenBudgetedContext(input: ContextAssemblyInput): Conte
     uncertaintyRate,
     uncertaintyReserveTokens: uncertaintyReserve,
     inputBudgetTokens: inputBudget,
+    projectedInputTokens,
     estimatedInputTokens: selectedInputTokens,
     estimatedTotalWithUncertaintyTokens: selectedInputTokens + uncertaintyReserve + outputReserve + safetyReserve,
     burstUsed,

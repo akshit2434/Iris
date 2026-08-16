@@ -18,8 +18,8 @@ export const agentContextSchema = z.object({
   utcOffset: z.string().regex(/^(?:UTC|UTC[+-]\d{2}:\d{2})$/),
   continuitySummary: z.string().nullable(),
   pinnedNotes: z.array(z.string()),
-  compactedThroughMessageId: z.string().uuid().nullable(),
-  compactedThroughCreatedAt: z.string().datetime({ offset: true }).nullable(),
+  continuityThroughMessageId: z.string().uuid().nullable(),
+  continuityThroughCreatedAt: z.string().datetime({ offset: true }).nullable(),
   continuityRevision: z.number().int().nonnegative(),
   currentUserMessageId: z.string().uuid().nullable(),
   agentRunId: z.string().uuid().nullable(),
@@ -120,8 +120,8 @@ export function createAgentContext(input: {
   browserTimezone?: unknown;
   continuitySummary?: string | null;
   pinnedNotes?: string[];
-  compactedThroughMessageId?: string | null;
-  compactedThroughCreatedAt?: string | null;
+  continuityThroughMessageId?: string | null;
+  continuityThroughCreatedAt?: string | null;
   continuityRevision?: number;
   currentUserMessageId?: string | null;
   agentRunId?: string | null;
@@ -143,8 +143,8 @@ export function createAgentContext(input: {
     ...localTemporal,
     continuitySummary: input.continuitySummary ?? null,
     pinnedNotes: [...(input.pinnedNotes ?? [])],
-    compactedThroughMessageId: input.compactedThroughMessageId ?? null,
-    compactedThroughCreatedAt: input.compactedThroughCreatedAt ?? null,
+    continuityThroughMessageId: input.continuityThroughMessageId ?? null,
+    continuityThroughCreatedAt: input.continuityThroughCreatedAt ?? null,
     continuityRevision: input.continuityRevision ?? 0,
     currentUserMessageId: input.currentUserMessageId ?? null,
     agentRunId: input.agentRunId ?? null,

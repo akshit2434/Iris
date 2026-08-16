@@ -24,7 +24,7 @@ import {
   buildDynamicSystemPrompt,
   resolveBrowserTimezone,
 } from "@/server/agent/context";
-import { assembleTokenBudgetedContext, attachActualUsage, ContextBudgetError } from "@/server/agent/context-assembler";
+import { assembleTokenBudgetedContext, attachActualUsage, ContextBudgetError, selectContinuitySourceSpan } from "@/server/agent/context-assembler";
 import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
 import { getInternalToolSchemaDescriptors } from "@/server/agent/tools";
 import { createTokenEstimator } from "@/server/agent/token-budget";
@@ -36,6 +36,8 @@ import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
 import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
 import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
+import { DEFAULT_CONTINUITY_TAIL_TOKENS, hashContinuityInput, shouldQueueContinuity } from "@/server/memory/compaction";
+import { createSupabaseThreadContinuityStore } from "@/server/memory/compaction-repository";
 import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/reconciliation";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
@@ -206,8 +208,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       browserTimezone: resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
-      compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
-      compactedThroughCreatedAt: threadContextRow.compactedThroughCreatedAt,
+      continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
+      continuityThroughCreatedAt: threadContextRow.continuityThroughCreatedAt,
       continuityRevision: threadContextRow.continuityRevision,
       currentUserMessageId: userMessageId,
       agentRunId: run.id,
@@ -243,7 +245,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         toolSchemas: getInternalToolSchemaDescriptors(),
         currentUser: currentUserMessage,
         messages: history,
-        compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
+        continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
         threadSummary: threadContextRow.continuitySummary,
         pinnedNotes: threadContextRow.pinnedNotes,
         savedMemoryPrompt,
@@ -257,6 +259,13 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       }
       throw error;
     }
+    const continuitySourceSpan = selectContinuitySourceSpan({
+      messages: history,
+      continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
+      currentUserMessageId: userMessageId,
+      estimator,
+      recentTailTokens: Math.min(DEFAULT_CONTINUITY_TAIL_TOKENS, Math.floor(contextAssembly.ledger.inputBudgetTokens * 0.5)),
+    });
     const agentContext = createAgentContext({
       profileId,
       profileLabel: profile.displayName,
@@ -265,8 +274,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       browserTimezone: resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
-      compactedThroughMessageId: threadContextRow.compactedThroughMessageId,
-      compactedThroughCreatedAt: threadContextRow.compactedThroughCreatedAt,
+      continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
+      continuityThroughCreatedAt: threadContextRow.continuityThroughCreatedAt,
       continuityRevision: threadContextRow.continuityRevision,
       currentUserMessageId: userMessageId,
       agentRunId: run.id,
@@ -296,6 +305,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const memoryMutation = createMemoryMutationService(memoryStore);
     const memoryArchive = createMemoryArchiveService(memoryStore);
     const memoryGovernance = createSupabaseMemoryGovernanceStore();
+    const continuityStore = process.env.MEMORY_CONTINUITY_ENABLED === "true"
+      ? createSupabaseThreadContinuityStore()
+      : null;
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -484,6 +496,47 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id);
             } catch {
               // Memory queue availability must not turn a completed chat run into a failure.
+            }
+          }
+          if (continuityStore && continuitySourceSpan && shouldQueueContinuity({
+            projectedInputTokens: contextAssembly.ledger.projectedInputTokens,
+            safeInputBudgetTokens: contextAssembly.ledger.inputBudgetTokens,
+            eligibleSourceTokens: continuitySourceSpan.estimatedTokens,
+            sourceEndMessageId: continuitySourceSpan.endMessageId,
+          })) {
+            try {
+              const inputHash = hashContinuityInput({
+                threadId,
+                sourceStartMessageId: continuitySourceSpan.startMessageId ?? "",
+                sourceEndMessageId: continuitySourceSpan.endMessageId ?? "",
+                sourceMessageIds: continuitySourceSpan.messageIds,
+                sourceEstimatedTokens: continuitySourceSpan.estimatedTokens,
+                projectedInputTokens: contextAssembly.ledger.projectedInputTokens,
+                safeInputBudgetTokens: contextAssembly.ledger.inputBudgetTokens,
+                model,
+                tokenizerProvider: estimator.metadata.provider,
+                tokenizerVersion: estimator.metadata.version,
+              });
+              if (continuitySourceSpan.startMessageId && continuitySourceSpan.endMessageId && continuitySourceSpan.startOrdinal !== null && continuitySourceSpan.endOrdinal !== null) {
+                await continuityStore.enqueueContinuityJob({
+                  profileId,
+                  threadId,
+                  sourceRunId: run.id,
+                  sourceStartMessageId: continuitySourceSpan.startMessageId,
+                  sourceEndMessageId: continuitySourceSpan.endMessageId,
+                  sourceStartOrdinal: continuitySourceSpan.startOrdinal,
+                  sourceEndOrdinal: continuitySourceSpan.endOrdinal,
+                  sourceEstimatedTokens: continuitySourceSpan.estimatedTokens,
+                  projectedInputTokens: contextAssembly.ledger.projectedInputTokens,
+                  safeInputBudgetTokens: contextAssembly.ledger.inputBudgetTokens,
+                  inputHash,
+                  model,
+                  tokenizerProvider: estimator.metadata.provider,
+                  tokenizerVersion: estimator.metadata.version,
+                });
+              }
+            } catch {
+              // Continuity queue availability must not fail a completed run.
             }
           }
           send({

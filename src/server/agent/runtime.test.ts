@@ -130,8 +130,8 @@ describe("context builder", () => {
     expect(built.continuity).toEqual({
       summary: "Derived continuity",
       pinnedNotes: ["A small pinned constraint"],
-      compactedThroughMessageId: null,
-      compactedThroughCreatedAt: null,
+      continuityThroughMessageId: null,
+      continuityThroughCreatedAt: null,
       continuityRevision: 0,
     });
   });
@@ -186,7 +186,7 @@ describe("context builder", () => {
         { id: "new", role: "user", content: "new" },
       ],
       continuitySummary: "The old continuity",
-      compactedThroughMessageId: "checkpoint",
+      continuityThroughMessageId: "checkpoint",
     });
     expect(built.rawHistory.messages).toHaveLength(3);
     expect(getModelMessages(built)).toEqual([{ role: "user", content: "new" }]);

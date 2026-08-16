@@ -4,6 +4,7 @@ import {
   attachActualUsage,
   ContextBudgetError,
   NORMAL_CONTEXT_ENVELOPE,
+  selectContinuitySourceSpan,
 } from "@/server/agent/context-assembler";
 import { createTokenEstimator } from "@/server/agent/token-budget";
 
@@ -89,7 +90,7 @@ describe("token-budgeted context assembly", () => {
         message("after", "user", "new detail"),
         message("current", "user", "new"),
       ],
-      compactedThroughMessageId: "checkpoint",
+      continuityThroughMessageId: "checkpoint",
       threadSummary: "summary of old",
       estimator,
     });
@@ -139,5 +140,42 @@ describe("token-budgeted context assembly", () => {
     });
     expect(calibrated.calibration).toMatchObject({ actualInputTokens: 40, deltaTokens: expect.any(Number), ratio: expect.any(Number) });
     expect(JSON.stringify(calibrated)).not.toContain("hello");
+  });
+
+  it("selects the oldest complete units by token tail and never splits tool units", () => {
+    const span = selectContinuitySourceSpan({
+      messages: [
+        message("u1", "user", "old decision"),
+        message("a1", "assistant", "old reply"),
+        message("u2", "user", "second decision"),
+        message("a2", "assistant", "second reply"),
+        message("t2", "tool", "tool result"),
+        message("u3", "user", "latest"),
+        message("a3", "assistant", "latest reply"),
+      ],
+      estimator,
+      recentTailTokens: 12,
+    });
+    expect(span?.messageIds).toEqual(["u1", "a1", "u2", "a2", "t2"]);
+    expect(span?.startMessageId).toBe("u1");
+    expect(span?.endMessageId).toBe("t2");
+    expect(span?.startOrdinal).toBe(0);
+    expect(span?.endOrdinal).toBe(4);
+    expect(span?.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  it("does not summarize a unit containing an incomplete assistant result", () => {
+    const span = selectContinuitySourceSpan({
+      messages: [
+        message("u1", "user", "old"),
+        message("a1", "assistant", "partial"),
+        { ...message("a1-partial", "assistant", "still streaming"), isComplete: false },
+        message("u2", "user", "latest"),
+        message("a2", "assistant", "reply"),
+      ],
+      estimator,
+      recentTailTokens: 12,
+    });
+    expect(span).toBeNull();
   });
 });

@@ -11,8 +11,8 @@ export type ThreadAgentContext = {
   continuity: {
     summary: string | null;
     pinnedNotes: string[];
-    compactedThroughMessageId: string | null;
-    compactedThroughCreatedAt: string | null;
+    continuityThroughMessageId: string | null;
+    continuityThroughCreatedAt: string | null;
     continuityRevision: number;
   };
   futureMemory: {
@@ -26,8 +26,8 @@ export function buildThreadAgentContext(input: {
   messages: AgentContextMessage[];
   continuitySummary?: string | null;
   pinnedNotes?: string[];
-  compactedThroughMessageId?: string | null;
-  compactedThroughCreatedAt?: string | null;
+  continuityThroughMessageId?: string | null;
+  continuityThroughCreatedAt?: string | null;
   continuityRevision?: number;
   canonicalMemory?: CanonicalMemoryContext;
 }): ThreadAgentContext {
@@ -45,8 +45,8 @@ export function buildThreadAgentContext(input: {
     continuity: {
       summary: input.continuitySummary ?? null,
       pinnedNotes: [...(input.pinnedNotes ?? [])],
-      compactedThroughMessageId: input.compactedThroughMessageId ?? null,
-      compactedThroughCreatedAt: input.compactedThroughCreatedAt ?? null,
+      continuityThroughMessageId: input.continuityThroughMessageId ?? null,
+      continuityThroughCreatedAt: input.continuityThroughCreatedAt ?? null,
       continuityRevision: input.continuityRevision ?? 0,
     },
     futureMemory: {
@@ -61,8 +61,8 @@ export function getModelMessages(context: ThreadAgentContext): Array<{
   role: "user" | "assistant";
   content: string;
 }> {
-  const checkpointIndex = context.continuity.compactedThroughMessageId
-    ? context.rawHistory.messages.findIndex((message) => message.id === context.continuity.compactedThroughMessageId)
+  const checkpointIndex = context.continuity.continuityThroughMessageId
+    ? context.rawHistory.messages.findIndex((message) => message.id === context.continuity.continuityThroughMessageId)
     : -1;
   const sourceMessages = checkpointIndex >= 0 ? context.rawHistory.messages.slice(checkpointIndex + 1) : context.rawHistory.messages;
   return sourceMessages

@@ -217,31 +217,25 @@ export type Database = {
         Row: {
           thread_id: string;
           profile_id: "profile-a" | "profile-b";
-          continuity_summary: string | null;
-          pinned_notes: string[];
           memory_revision_seen: number;
-          compacted_through_message_id: string | null;
-          compacted_through_created_at: string | null;
+          active_continuity_checkpoint_id: string | null;
           continuity_revision: number;
           updated_at: string;
         };
         Insert: {
           thread_id: string;
           profile_id: "profile-a" | "profile-b";
-          continuity_summary?: string | null;
-          pinned_notes?: string[];
           memory_revision_seen?: number;
-          compacted_through_message_id?: string | null;
-          compacted_through_created_at?: string | null;
+          active_continuity_checkpoint_id?: string | null;
           continuity_revision?: number;
           updated_at?: string;
         };
         Update: Partial<{
           thread_id: string;
           profile_id: "profile-a" | "profile-b";
-          continuity_summary: string | null;
-          pinned_notes: string[];
           memory_revision_seen: number;
+          active_continuity_checkpoint_id: string | null;
+          continuity_revision: number;
           updated_at: string;
         }>;
         Relationships: [];
@@ -591,7 +585,56 @@ export type Database = {
         }>;
         Relationships: [];
       };
-      thread_compaction_jobs: {
+      thread_continuity_checkpoints: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          revision: number;
+          document: Json;
+          rendered_text: string;
+          covered_through_ordinal: number;
+          covered_through_message_id: string;
+          covered_through_created_at: string;
+          source_start_message_id: string;
+          source_end_message_id: string;
+          source_message_ids: string[];
+          source_estimated_tokens: number;
+          rendered_tokens: number;
+          model: string;
+          tokenizer_provider: string;
+          tokenizer_version: string;
+          summarizer_version: string;
+          previous_checkpoint_id: string | null;
+          input_hash: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          revision: number;
+          document: Json;
+          rendered_text: string;
+          covered_through_ordinal: number;
+          covered_through_message_id: string;
+          covered_through_created_at: string;
+          source_start_message_id: string;
+          source_end_message_id: string;
+          source_message_ids: string[];
+          source_estimated_tokens: number;
+          rendered_tokens: number;
+          model: string;
+          tokenizer_provider: string;
+          tokenizer_version: string;
+          summarizer_version: string;
+          previous_checkpoint_id?: string | null;
+          input_hash: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["thread_continuity_checkpoints"]["Insert"]>;
+        Relationships: [];
+      };
+      thread_continuity_jobs: {
         Row: {
           id: string;
           profile_id: "profile-a" | "profile-b";
@@ -600,11 +643,20 @@ export type Database = {
           status: "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
           attempts: number;
           idempotency_key: string;
-          expected_compacted_through_message_id: string | null;
+          expected_checkpoint_id: string | null;
           expected_continuity_revision: number;
-          checkpoint_message_id: string;
-          checkpoint_created_at: string;
-          recent_tail_messages: number;
+          source_start_message_id: string;
+          source_end_message_id: string;
+          source_start_ordinal: number;
+          source_end_ordinal: number;
+          source_estimated_tokens: number;
+          projected_input_tokens: number;
+          safe_input_budget_tokens: number;
+          input_hash: string;
+          model: string;
+          tokenizer_provider: string;
+          tokenizer_version: string;
+          rebuild_from_raw: boolean;
           available_at: string;
           lease_expires_at: string | null;
           locked_at: string | null;
@@ -623,11 +675,20 @@ export type Database = {
           status?: "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
           attempts?: number;
           idempotency_key: string;
-          expected_compacted_through_message_id?: string | null;
+          expected_checkpoint_id?: string | null;
           expected_continuity_revision?: number;
-          checkpoint_message_id: string;
-          checkpoint_created_at: string;
-          recent_tail_messages?: number;
+          source_start_message_id: string;
+          source_end_message_id: string;
+          source_start_ordinal: number;
+          source_end_ordinal: number;
+          source_estimated_tokens: number;
+          projected_input_tokens: number;
+          safe_input_budget_tokens: number;
+          input_hash: string;
+          model: string;
+          tokenizer_provider: string;
+          tokenizer_version: string;
+          rebuild_from_raw?: boolean;
           available_at?: string;
           lease_expires_at?: string | null;
           locked_at?: string | null;
@@ -638,7 +699,7 @@ export type Database = {
           updated_at?: string;
           completed_at?: string | null;
         };
-        Update: Partial<Database["public"]["Tables"]["thread_compaction_jobs"]["Insert"]>;
+        Update: Partial<Database["public"]["Tables"]["thread_continuity_jobs"]["Insert"]>;
         Relationships: [];
       };
     };
@@ -766,21 +827,63 @@ export type Database = {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_snapshot_revision: number };
         Returns: number;
       };
-      enqueue_thread_compaction_job: {
-        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string; p_min_messages?: number; p_recent_tail_messages?: number };
-        Returns: Array<Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]>;
+      enqueue_thread_continuity_job: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_thread_id: string;
+          p_source_run_id: string;
+          p_source_start_message_id: string;
+          p_source_end_message_id: string;
+          p_source_start_ordinal: number;
+          p_source_end_ordinal: number;
+          p_source_estimated_tokens: number;
+          p_projected_input_tokens: number;
+          p_safe_input_budget_tokens: number;
+          p_input_hash: string;
+          p_model: string;
+          p_tokenizer_provider: string;
+          p_tokenizer_version: string;
+          p_rebuild_from_raw?: boolean;
+        };
+        Returns: Array<Database["public"]["Tables"]["thread_continuity_jobs"]["Row"]>;
       };
-      claim_thread_compaction_jobs: {
+      claim_thread_continuity_jobs: {
         Args: { p_worker_id: string; p_limit?: number; p_lease_seconds?: number };
-        Returns: Array<Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]>;
+        Returns: Array<Database["public"]["Tables"]["thread_continuity_jobs"]["Row"]>;
       };
-      apply_thread_compaction_checkpoint: {
-        Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_continuity_summary: string; p_pinned_notes: string[]; p_checkpoint_message_id: string; p_checkpoint_created_at: string };
+      apply_thread_continuity_checkpoint: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_job_id: string;
+          p_worker_id: string;
+          p_expected_checkpoint_id: string | null;
+          p_expected_continuity_revision: number;
+          p_document: Json;
+          p_rendered_text: string;
+          p_covered_through_ordinal: number;
+          p_covered_through_message_id: string;
+          p_covered_through_created_at: string;
+          p_source_start_message_id: string;
+          p_source_end_message_id: string;
+          p_source_message_ids: string[];
+          p_source_estimated_tokens: number;
+          p_rendered_tokens: number;
+          p_model: string;
+          p_tokenizer_provider: string;
+          p_tokenizer_version: string;
+          p_summarizer_version: string;
+          p_previous_checkpoint_id: string | null;
+          p_input_hash: string;
+        };
         Returns: string;
       };
-      finish_thread_compaction_job: {
+      invalidate_thread_continuity_checkpoint: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_reason: string };
+        Returns: undefined;
+      };
+      finish_thread_continuity_job: {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_status: "completed" | "failed" | "conflict" | "skipped"; p_error_code?: string | null; p_error_message?: string | null; p_retry?: boolean; p_available_at?: string | null };
-        Returns: Array<Database["public"]["Tables"]["thread_compaction_jobs"]["Row"]>;
+        Returns: Array<Database["public"]["Tables"]["thread_continuity_jobs"]["Row"]>;
       };
     };
     Enums: Record<string, never>;
