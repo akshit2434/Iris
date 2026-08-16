@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { detectHistoryPreflightIntent, formatHistoryPreflightPrompt, runHistoryPreflight } from "@/server/memory/history-preflight";
+import { detectHistoryPreflightIntent, formatAmbiguousHistoryChoice, formatHistoryPreflightPrompt, isSafeAmbiguousHistoryResponse, runHistoryPreflight } from "@/server/memory/history-preflight";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
 import type { MessageContextWindow, MessageSearchResult, ReferenceHistorySnapshot } from "@/server/memory/types";
 
@@ -50,6 +50,8 @@ describe("deterministic historical preflight", () => {
     expect(detectHistoryPreflightIntent('Show the exact message where I said "ship Ember"')).toMatchObject({ kind: "exact_source", exactPhrase: "ship Ember", matchType: "exact_phrase" });
     expect(detectHistoryPreflightIntent("What did I decide last month?", new Date("2026-08-16T00:00:00.000Z"))).toMatchObject({ from: "2026-07-01T00:00:00.000Z", to: "2026-08-01T00:00:00.000Z" });
     expect(detectHistoryPreflightIntent("Which old chat should I continue?", new Date("2026-08-16T00:00:00.000Z"))).toMatchObject({ kind: "continuation" });
+    expect(detectHistoryPreflightIntent("where exactly in this conversation did I mention Ember?")).toMatchObject({ includeCurrentThread: true });
+    expect(detectHistoryPreflightIntent("where exactly did I mention Ember?")).toMatchObject({ includeCurrentThread: false });
     expect(detectHistoryPreflightIntent("Explain what a database index is.")).toBeNull();
   });
 
@@ -111,7 +113,7 @@ describe("deterministic historical preflight", () => {
     const output = await runHistoryPreflight({ profileId: "profile-a", query: "where did we talk about the blue-awning bookshop?", retrieval: store, referenceHistorySnapshot: snapshot });
     expect(output.status).toBe("found");
     expect(output.sources[0]?.action).toEqual({ type: "open_message", threadId: ids.thread, messageId: ids.message, label: "Open source" });
-    expect(store.searchMessages).not.toHaveBeenCalled();
+    expect(store.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ query: "blue awning bookshop", limit: 24 }));
   });
 
   it("ranks claim provenance by the re-read message instead of treating every source equally", async () => {
@@ -285,6 +287,17 @@ describe("deterministic historical preflight", () => {
     expect(read).not.toHaveBeenCalledWith("profile-a", currentMessage, 2);
   });
 
+  it("allows the active thread only when the user explicitly says this conversation", async () => {
+    const currentThread = "00000000-0000-4000-8000-000000000099";
+    const currentMessage = "00000000-0000-4000-8000-000000000098";
+    const store = retrieval([result({ threadId: currentThread, messageId: currentMessage, content: "I decided to ship Project Ember on September 30." })]);
+    const read = store.readMessages as ReturnType<typeof vi.fn>;
+    read.mockImplementation(async (_profile: string, messageId: string) => window({ thread: { ...window().thread, id: currentThread }, target: { ...window().target, messageId, threadId: currentThread } }));
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "where exactly in this conversation did I decide Project Ember?", retrieval: store, excludeThreadId: currentThread });
+    expect(output.status).toBe("found");
+    expect(output.sources[0]?.threadId).toBe(currentThread);
+  });
+
   it("honestly distinguishes no match from unavailable search", async () => {
     const noMatch = await runHistoryPreflight({ profileId: "profile-a", query: "Find the exact source of a missing decision.", retrieval: retrieval([], null) });
     expect(noMatch.status).toBe("no_match");
@@ -300,7 +313,7 @@ describe("deterministic historical preflight", () => {
     const secondMessage = "00000000-0000-4000-8000-000000000020";
     const store = retrieval([
       result(),
-      result({ threadId: secondThread, messageId: secondMessage, content: "A second plausible continuation." }),
+      result({ threadId: secondThread, messageId: secondMessage, content: "A second plausible bookshop continuation." }),
     ]);
     const read = store.readMessages as ReturnType<typeof vi.fn>;
     read.mockImplementation(async (_profile: string, messageId: string) => window({
@@ -311,6 +324,60 @@ describe("deterministic historical preflight", () => {
     expect(output.status).toBe("ambiguous");
     expect(output.sources).toHaveLength(2);
     expect(output.prompt).toContain("Several plausible continuation sources matched");
+    expect(output.prompt).toContain("STRICT RESPONSE DIRECTIVE");
+  });
+
+  it("unions provenance with raw search and chooses the exact descriptor", async () => {
+    const marketMessage = "00000000-0000-4000-8000-000000000401";
+    const stationMessage = "00000000-0000-4000-8000-000000000402";
+    const marketThread = "00000000-0000-4000-8000-000000000403";
+    const stationThread = "00000000-0000-4000-8000-000000000404";
+    const rows = new Map([
+      [marketMessage, { messageId: marketMessage, threadId: marketThread, title: "The bookshop by the market", content: "There is a little bookshop by the market with a blue awning." }],
+      [stationMessage, { messageId: stationMessage, threadId: stationThread, title: "A quieter station bookshop", content: "The station bookshop has a reading corner." }],
+    ]);
+    const store: MemoryRetrieval = {
+      ...retrieval([], null),
+      searchMessages: vi.fn(async () => [
+        result({ messageId: stationMessage, threadId: stationThread, content: rows.get(stationMessage)?.content, combinedScore: 0.9 }),
+        result({ messageId: marketMessage, threadId: marketThread, content: rows.get(marketMessage)?.content, combinedScore: 0.7 }),
+      ]),
+      readMessages: vi.fn(async (_profile, messageId) => {
+        const row = rows.get(messageId);
+        return row ? window({ thread: { id: row.threadId, profileId: "profile-a", title: row.title, createdAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-05-01T00:00:00.000Z" }, target: { ...window().target, messageId: row.messageId, threadId: row.threadId, content: row.content } }) : null;
+      }),
+    };
+    const snapshot = {
+      id: "00000000-0000-4000-8000-000000000405", profileId: "profile-a", revision: 1, status: "active",
+      document: { version: "iris-reference-history-v1", ongoingWork: [{ text: "A bookshop has a reading corner.", confidence: 0.8, temporalQualifier: null, sourceMessageIds: [stationMessage], memoryKeys: [] }], recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [], renderedText: "" },
+      renderedText: "", sourceRanges: [], coveredTokenWatermark: 100, coveredThroughAt: null, sourceHash: "hash", memoryRevision: 0, model: "test", synthesizerVersion: "iris-reference-history-v1", previousSnapshotId: null, createdAt: "now",
+    } satisfies ReferenceHistorySnapshot;
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "where exactly did we talk about the blue-awning bookshop?", retrieval: store, referenceHistorySnapshot: snapshot });
+    expect(output.status).toBe("found");
+    expect(output.sources[0]).toMatchObject({ messageId: marketMessage, threadId: marketThread });
+  });
+
+  it("excludes the entire active thread and weak broad continuation chats", async () => {
+    const currentThread = "00000000-0000-4000-8000-000000000411";
+    const strongThread = "00000000-0000-4000-8000-000000000412";
+    const weakThread = "00000000-0000-4000-8000-000000000413";
+    const store = retrieval([
+      result({ threadId: currentThread, content: "Which bookshop chat was that?" }),
+      result({ threadId: strongThread, messageId: "00000000-0000-4000-8000-000000000414", content: "The station bookshop has a reading corner." }),
+      result({ threadId: weakThread, messageId: "00000000-0000-4000-8000-000000000415", content: "A broad list also briefly mentioned a bookshop among many ideas." }),
+    ]);
+    const read = store.readMessages as ReturnType<typeof vi.fn>;
+    read.mockImplementation(async (_profile, messageId) => window({ thread: { id: messageId === "00000000-0000-4000-8000-000000000414" ? strongThread : messageId === "00000000-0000-4000-8000-000000000415" ? weakThread : currentThread, profileId: "profile-a", title: messageId === "00000000-0000-4000-8000-000000000414" ? "A quieter station bookshop" : messageId === "00000000-0000-4000-8000-000000000415" ? "Ideas for when it cools down" : "Current chat", createdAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-05-01T00:00:00.000Z" }, target: { ...window().target, messageId, threadId: messageId === "00000000-0000-4000-8000-000000000414" ? strongThread : messageId === "00000000-0000-4000-8000-000000000415" ? weakThread : currentThread, content: messageId === "00000000-0000-4000-8000-000000000414" ? "The station bookshop has a reading corner." : messageId === "00000000-0000-4000-8000-000000000415" ? "A broad list also briefly mentioned a bookshop among many ideas." : "Which bookshop chat was that?" } }));
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "which bookshop chat was that?", retrieval: store, excludeThreadId: currentThread });
+    expect(output.sources.map((source) => source.threadId)).toEqual([strongThread]);
+  });
+
+  it("requires an ambiguous response to name candidates and ask for a choice", () => {
+    const source = { ...result(), threadTitle: "First bookshop", excerpt: "", action: { type: "open_message" as const, threadId: ids.thread, messageId: ids.message, label: "Open source" }, surrounding: { before: [], after: [] }, profileId: "profile-a" as const, threadId: ids.thread, messageId: ids.message, createdAt: "now", role: "user" as const, lexicalScore: 1, semanticScore: null, combinedScore: 0.8 };
+    const second = { ...source, threadTitle: "Second bookshop", threadId: "00000000-0000-4000-8000-000000000421", action: { ...source.action, threadId: "00000000-0000-4000-8000-000000000421" } };
+    expect(isSafeAmbiguousHistoryResponse("I found First bookshop and Second bookshop. Which one do you mean?", [source, second])).toBe(true);
+    expect(isSafeAmbiguousHistoryResponse("It was First bookshop.", [source, second])).toBe(false);
+    expect(formatAmbiguousHistoryChoice([source, second])).toContain("Which one do you mean?");
   });
 
   it("rejects cross-profile and deleted sources during reconstruction", async () => {
@@ -325,7 +392,7 @@ describe("deterministic historical preflight", () => {
   it("keeps the prompt bounded for large source content", () => {
     const output = formatHistoryPreflightPrompt({
       triggered: true,
-      intent: { kind: "evidence", query: "decision", exactPhrase: null, matchType: "hybrid", roles: null, from: null, to: null, trigger: "test" },
+      intent: { kind: "evidence", query: "decision", exactPhrase: null, matchType: "hybrid", roles: null, from: null, to: null, trigger: "test", includeCurrentThread: false },
       status: "found",
       sources: Array.from({ length: 3 }, (_, index) => ({
         ...result({ messageId: `00000000-0000-4000-8000-00000000001${index}` }),

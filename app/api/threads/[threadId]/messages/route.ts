@@ -43,7 +43,7 @@ import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
 import { DEFAULT_CONTINUITY_TAIL_TOKENS, hashContinuityInput, shouldQueueContinuity } from "@/server/memory/compaction";
 import { createSupabaseThreadContinuityStore } from "@/server/memory/compaction-repository";
 import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/reconciliation";
-import { runHistoryPreflight } from "@/server/memory/history-preflight";
+import { formatAmbiguousHistoryChoice, isSafeAmbiguousHistoryResponse, runHistoryPreflight } from "@/server/memory/history-preflight";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import { createTemporaryAgentResponse, sanitizeTemporaryHistory, validateTemporaryId } from "@/server/agent/temporary";
 import {
@@ -236,6 +236,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           // bounded set, then exclude that current message from evidence.
           maxResults: 8,
           excludeMessageId: userMessageId,
+          excludeThreadId: threadId,
           referenceHistorySnapshot,
         })
       : { triggered: false, intent: null, status: "skipped" as const, sources: [], prompt: "" };
@@ -272,7 +273,6 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const disableContextLookup = memoryContextSufficient || historicalPreflight.triggered;
     const memoryDisclosure = (memoryControls.savedMemoryEnabled && canonicalMemory.items.length > 0)
       || (memoryControls.referenceHistoryEnabled && Boolean(referenceHistoryPrompt))
-      || historicalPreflight.sources.length > 0
       ? {
           kind: "memory_context",
           items: canonicalMemory.items.slice(0, 8).map((item) => ({
@@ -281,16 +281,6 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             category: item.category,
             itemRevision: item.itemRevision,
             updatedAt: item.updatedAt,
-          })),
-          sources: historicalPreflight.sources.slice(0, 3).map((source) => ({
-            profileId: source.profileId,
-            threadId: source.threadId,
-            messageId: source.messageId,
-            excerpt: source.excerpt,
-            createdAt: source.createdAt,
-            role: source.role,
-            threadTitle: source.threadTitle,
-            action: source.action,
           })),
           ...(referenceHistoryPrompt && referenceHistorySnapshot ? { referenceRevision: referenceHistorySnapshot.revision } : {}),
         }
@@ -422,6 +412,11 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         let streamSequence = 0;
         let persistedSequence = 0;
         let assistantContent = "";
+        // Hold ambiguous source answers until completion so a model that
+        // asserts one candidate can be replaced by a deterministic choice
+        // question without retracting already-streamed text. Tool/action
+        // events continue to stream normally.
+        const bufferAmbiguousResponse = historicalPreflight.status === "ambiguous";
         let assistantPersisted = false;
         let assistantTokenEstimate = 0;
         let actualUsage: {
@@ -577,7 +572,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             }
             if (event.type === "text_delta") {
               assistantContent += event.text;
-              send({ type: "text_delta", runId: run.id, text: event.text });
+              if (!bufferAmbiguousResponse) send({ type: "text_delta", runId: run.id, text: event.text });
               continue;
             }
 
@@ -620,6 +615,13 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
 
           if (assistantContent.trim().length === 0) {
             throw new Error("The assistant returned an empty response.");
+          }
+
+          if (bufferAmbiguousResponse && !isSafeAmbiguousHistoryResponse(assistantContent, historicalPreflight.sources)) {
+            assistantContent = formatAmbiguousHistoryChoice(historicalPreflight.sources);
+          }
+          if (bufferAmbiguousResponse) {
+            send({ type: "text_delta", runId: run.id, text: assistantContent });
           }
 
           const completedAssistant = planAssistantPersistence({

@@ -170,6 +170,33 @@ describe("reference-history synthesis", () => {
     expect(JSON.stringify(events)).not.toContain("A useful detail.");
   });
 
+  it("persists usage for the accepted Dreaming invocation once and keeps its execution kind", async () => {
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const model = {
+      invoke: vi.fn(async () => ({
+        content: JSON.stringify({ ongoingWork: [{ text: "A useful detail.", confidence: 0.9, sourceMessageIds: [ids.messageA], memoryKeys: [] }], recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [] }),
+        usage_metadata: { input_tokens: 31, output_tokens: 17, total_tokens: 48 },
+        id: "dreaming-request-1",
+      })),
+    } as unknown as AgentModel;
+    const trace = createAgentTraceRecorder({ model: "openai/test-model", executionKind: "background_reference_history", append: async (type, payload) => { events.push({ type, payload }); } });
+    const { store, applied } = referenceStore({ messages: [message({ messageId: ids.messageA, threadId: ids.threadA, content: "A useful detail." })] });
+    const result = await processReferenceHistoryJobs({
+      store,
+      memoryStore: memoryStore(),
+      synthesizer: createInjectedReferenceHistorySynthesizer(async () => emptyDocument()),
+      synthesizerFactory: () => createProductionReferenceHistorySynthesizer(model, trace),
+      observabilityFactory: async () => trace,
+      workerId: "worker-accepted",
+    });
+    expect(result).toMatchObject({ completed: 1, failed: 0 });
+    expect(applied).toHaveLength(1);
+    expect(events.filter((event) => event.type === "model_call_started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "model_call_completed")).toHaveLength(1);
+    expect(events[1]?.payload).toMatchObject({ executionKind: "background_reference_history", usage: { inputTokens: 31, outputTokens: 17, totalTokens: 48 } });
+    expect(JSON.stringify(events)).not.toContain("A useful detail.");
+  });
+
   it("refreshes incrementally from the previous validated snapshot", async () => {
     const previous: ReferenceHistorySnapshot = {
       id: ids.snapshot,
