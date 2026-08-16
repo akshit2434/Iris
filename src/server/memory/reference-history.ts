@@ -244,15 +244,58 @@ function referenceQueryTokens(value: string) {
   ]).has(token));
 }
 
+const REFERENTIAL_RECALL_CUES = new Set([
+  "remember", "recall", "again", "those", "these", "that", "this", "it", "thing", "things", "idea", "ideas", "plan", "plans",
+]);
+const TEMPORAL_RECALL_CUES = new Set([
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow", "yesterday", "morning", "afternoon", "evening", "night", "week", "weeks", "month", "months", "season", "cooler", "warmer", "rain", "rainy", "weather", "recently", "lately", "before", "later",
+]);
+
+// These are domain signals, not fixture phrases. They let a referential query
+// such as “that rainy Sunday plan” select event-oriented claims even when the
+// synthesizer quite correctly summarized the source as “cinema followed by
+// ramen” and therefore shares no literal weather/day token with the query.
+const ACTIVITY_CLAIM_CUES = new Set([
+  "date", "dates", "plan", "plans", "planning", "idea", "ideas", "option", "options", "possibility", "possibilities", "activity", "activities", "outing", "outings", "venue", "venues", "bookshop", "bookshops", "cinema", "movie", "movies", "film", "films", "restaurant", "restaurants", "coffee", "dinner", "lunch", "picnic", "workshop", "walk", "walks", "trip", "trips", "visit", "visits", "weekend", "weekday", "evening", "morning", "night",
+]);
+
+function normalizedWords(value: string) {
+  return value.toLocaleLowerCase().replace(/[-–—]/g, " ").split(/[^a-z0-9]+/).filter((token) => token.length >= 3 || /\d/.test(token));
+}
+
+function hasQueryCue(tokens: readonly string[], cues: ReadonlySet<string>) {
+  return tokens.some((token) => cues.has(token));
+}
+
+function activityClaim(claim: ReferenceHistoryClaim) {
+  const words = normalizedWords(`${claim.text} ${claim.memoryOverlay ?? ""}`);
+  return words.some((word) => ACTIVITY_CLAIM_CUES.has(word));
+}
+
 function narrowReferenceHistoryToQuery(document: ReferenceHistoryDocument, query: string | null | undefined) {
   const tokens = typeof query === "string" ? referenceQueryTokens(query) : [];
   if (tokens.length === 0) return document;
   const sections = [document.ongoingWork, document.recurringPreferences, document.relationshipsContext, document.recentChanges, document.boundedPatterns];
   const score = (claim: ReferenceHistoryClaim) => {
-    const haystack = `${claim.text} ${claim.memoryOverlay ?? ""}`.toLocaleLowerCase();
-    return tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
+    const words = new Set(normalizedWords(`${claim.text} ${claim.memoryOverlay ?? ""}`));
+    return tokens.reduce((total, token) => total + (words.has(token) ? 1 : 0), 0);
   };
   const maxScore = Math.max(0, ...sections.flatMap((section) => section.map(score)));
+  const referential = hasQueryCue(tokens, REFERENTIAL_RECALL_CUES);
+  const temporal = hasQueryCue(tokens, TEMPORAL_RECALL_CUES);
+  if (referential && temporal && maxScore <= 1) {
+    const activityClaims = sections.map((section) => section.filter(activityClaim));
+    if (activityClaims.some((section) => section.length > 0)) {
+      const narrowed = {
+        ongoingWork: activityClaims[0] ?? [],
+        recurringPreferences: activityClaims[1] ?? [],
+        relationshipsContext: activityClaims[2] ?? [],
+        recentChanges: activityClaims[3] ?? [],
+        boundedPatterns: activityClaims[4] ?? [],
+      };
+      return { version: "iris-reference-history-v1" as const, ...narrowed, renderedText: renderReferenceHistoryText(narrowed) };
+    }
+  }
   // If the user is referring to something obliquely and no claim shares a
   // literal token, keep the bounded snapshot; the model can still use its
   // temporal/uncertainty context. Literal matches get a compact relevant view.

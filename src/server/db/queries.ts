@@ -25,6 +25,7 @@ export type AgentEventType =
   | "model_call_failed"
   | "assistant_completed"
   | "assistant_partial";
+export type BackgroundAgentEventType = Extract<AgentEventType, "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial">;
 
 export type AgentRun = {
   id: string;
@@ -669,6 +670,66 @@ export async function appendAgentEvent(input: {
   }
 
   return data;
+}
+
+/** Return the next sequence within one profile-owned background memory job. */
+export async function getNextReferenceHistoryEventSequence(profileId: ProfileId, jobId: string) {
+  const { data, error } = await getDatabase()
+    .from("reference_history_agent_events")
+    .select("sequence")
+    .eq("profile_id", profileId)
+    .eq("job_id", jobId)
+    .order("sequence", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.sequence ?? 0) + 1;
+}
+
+/**
+ * Persist background model lifecycle telemetry against the job itself. The
+ * optional thread/run links are only supplied after ownership validation.
+ * Prompts and raw source messages never enter this payload.
+ */
+export async function appendReferenceHistoryAgentEvent(input: {
+  id?: string;
+  profileId: ProfileId;
+  jobId: string;
+  threadId?: string | null;
+  sourceRunId?: string | null;
+  sequence: number;
+  type: BackgroundAgentEventType;
+  payload: Record<string, unknown>;
+  createdAt?: string;
+}) {
+  const { data, error } = await getDatabase()
+    .from("reference_history_agent_events")
+    .insert({
+      id: input.id,
+      profile_id: input.profileId,
+      job_id: input.jobId,
+      thread_id: input.threadId ?? null,
+      source_run_id: input.sourceRunId ?? null,
+      sequence: input.sequence,
+      type: input.type,
+      payload: input.payload as Json,
+      created_at: input.createdAt,
+    })
+    .select("id, profile_id, job_id, thread_id, source_run_id, sequence, type, payload, created_at")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getReferenceHistoryAgentEvents(profileId: ProfileId, jobId: string) {
+  const { data, error } = await getDatabase()
+    .from("reference_history_agent_events")
+    .select("id, profile_id, job_id, thread_id, source_run_id, sequence, type, payload, created_at")
+    .eq("profile_id", profileId)
+    .eq("job_id", jobId)
+    .order("sequence", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
 }
 
 export async function updateAgentRunStatus(input: {

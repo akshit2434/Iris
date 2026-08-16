@@ -213,6 +213,42 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      reference_history_agent_events: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          job_id: string;
+          thread_id: string | null;
+          source_run_id: string | null;
+          sequence: number;
+          type: "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial";
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          job_id: string;
+          thread_id?: string | null;
+          source_run_id?: string | null;
+          sequence: number;
+          type: "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial";
+          payload?: Json;
+          created_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          job_id: string;
+          thread_id: string | null;
+          source_run_id: string | null;
+          sequence: number;
+          type: "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial";
+          payload: Json;
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
       thread_context: {
         Row: {
           thread_id: string;

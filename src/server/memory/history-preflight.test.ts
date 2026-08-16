@@ -62,6 +62,8 @@ describe("deterministic historical preflight", () => {
     expect(output.sources[0]?.action).toEqual({ type: "open_message", threadId: ids.thread, messageId: ids.message, label: "Open source" });
     expect(output.prompt).toContain("Historical preflight status: found");
     expect(output.prompt).toContain(ids.message);
+    expect(output.prompt).toContain("validated open_message action");
+    expect(output.prompt).toContain("never claim that navigation is unavailable");
   });
 
   it("resolves explicit source requests from Dreaming claim provenance before raw search", async () => {

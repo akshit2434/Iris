@@ -269,6 +269,83 @@ describe("reference-history synthesis", () => {
     expect(formatReferenceHistoryPrompt({ ...snapshot, document: { ...emptyDocument(), renderedText: "hidden" }, renderedText: "hidden", revision: 1, sourceHash: "h" } as ReferenceHistorySnapshot)).toBe("");
   });
 
+  it("keeps the relevant activity claims for casual referential and temporal recall", () => {
+    const snapshot = {
+      ...({
+        id: ids.snapshot,
+        profileId: "profile-a",
+        revision: 1,
+        status: "active",
+        renderedText: "",
+        sourceRanges: [],
+        coveredTokenWatermark: 200,
+        coveredThroughAt: "now",
+        sourceHash: "hash",
+        memoryRevision: 0,
+        model: "openai/test-model",
+        synthesizerVersion: "iris-reference-history-v1",
+        previousSnapshotId: null,
+        createdAt: "now",
+      } satisfies Omit<ReferenceHistorySnapshot, "document">),
+      document: {
+        ...emptyDocument(),
+        ongoingWork: [
+          { text: "T1 exam revision is the main study priority this week.", confidence: 0.9, temporalQualifier: "this week", sourceMessageIds: [ids.messageA], memoryKeys: [] },
+          { text: "Date planning remains exploratory, with no activity confirmed.", confidence: 0.8, temporalQualifier: "recently", sourceMessageIds: [ids.messageB], memoryKeys: [] },
+        ],
+        relationshipsContext: [
+          { text: "A rainy Sunday could work for a cinema followed by ramen.", confidence: 0.8, temporalQualifier: "tentative", sourceMessageIds: [ids.messageC], memoryKeys: [] },
+        ],
+        boundedPatterns: [
+          { text: "Recurring date ideas include a cinema followed by ramen.", confidence: 0.8, temporalQualifier: "over recent weeks", sourceMessageIds: [ids.messageC], memoryKeys: [] },
+        ],
+      },
+    } as ReferenceHistorySnapshot;
+
+    const prompt = formatReferenceHistoryPrompt(snapshot, { query: "you remember that rainy Sunday plan?" });
+    expect(prompt).toContain("cinema followed by ramen");
+    expect(prompt).not.toContain("T1 exam revision");
+    expect(prompt).not.toContain("study priority");
+
+    const vaguePrompt = formatReferenceHistoryPrompt(snapshot, { query: "what were those nice things we had thought of doing when it gets cooler?" });
+    expect(vaguePrompt).toContain("cinema followed by ramen");
+    expect(vaguePrompt).not.toContain("T1 exam revision");
+    expect(vaguePrompt).toContain("tentative");
+  });
+
+  it("keeps direct topical matches narrow while preserving temporal qualifiers", () => {
+    const snapshot = {
+      ...({
+        id: ids.snapshot,
+        profileId: "profile-a",
+        revision: 1,
+        status: "active",
+        renderedText: "",
+        sourceRanges: [],
+        coveredTokenWatermark: 200,
+        coveredThroughAt: "now",
+        sourceHash: "hash",
+        memoryRevision: 0,
+        model: "openai/test-model",
+        synthesizerVersion: "iris-reference-history-v1",
+        previousSnapshotId: null,
+        createdAt: "now",
+      } satisfies Omit<ReferenceHistorySnapshot, "document">),
+      document: {
+        ...emptyDocument(),
+        ongoingWork: [
+          { text: "T1 exam revision is the main study priority this week.", confidence: 0.9, temporalQualifier: "this week", sourceMessageIds: [ids.messageA], memoryKeys: [] },
+          { text: "A cinema followed by ramen is a tentative date option.", confidence: 0.8, temporalQualifier: "last month", sourceMessageIds: [ids.messageB], memoryKeys: [] },
+        ],
+      },
+    } as ReferenceHistorySnapshot;
+
+    const prompt = formatReferenceHistoryPrompt(snapshot, { query: "what is my T1 priority this week?" });
+    expect(prompt).toContain("T1 exam revision");
+    expect(prompt).toContain("this week");
+    expect(prompt).not.toContain("cinema followed by ramen");
+  });
+
   it("deduplicates equivalent work and supports deterministic rebuild hashes", async () => {
     const messages = [message({ messageId: ids.messageA, threadId: ids.threadA, content: "Stable evidence" })];
     const sourceHash = hashReferenceHistoryInput({ profileId: "profile-a", messages, previousSnapshot: null, savedItems: [], suppressions: [], synthesizerVersion: "iris-reference-history-v1" });

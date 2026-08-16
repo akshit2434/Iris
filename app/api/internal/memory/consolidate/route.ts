@@ -3,8 +3,9 @@ import { createProductionConsolidationWorker } from "@/server/memory/consolidati
 import { createProductionThreadContinuityWorker } from "@/server/memory/compaction";
 import { createProductionReferenceHistoryWorker } from "@/server/memory/reference-history";
 import { hasWorkerSecret as compareWorkerSecret } from "@/server/memory/worker-auth";
-import { appendAgentEvent, getAgentRunScope, getNextAgentEventSequence } from "@/server/db/queries";
+import { appendReferenceHistoryAgentEvent, getAgentRunScope, getNextReferenceHistoryEventSequence } from "@/server/db/queries";
 import { createAgentTraceRecorder } from "@/server/agent/observability";
+import { resolveReferenceHistoryTelemetryScope } from "@/server/memory/reference-history-observability";
 
 export const runtime = "nodejs";
 
@@ -30,19 +31,27 @@ export async function POST(request: Request) {
           limit,
           maxDurationMs: 25_000,
           workerId,
-          observabilityFactory: async ({ job, threadId }) => {
-            if (!job.sourceRunId || !threadId) return undefined;
-            const scope = await getAgentRunScope(job.profileId, job.sourceRunId);
-            if (!scope || scope.threadId !== threadId) return undefined;
-            let sequence = await getNextAgentEventSequence(job.profileId, threadId, job.sourceRunId);
+          observabilityFactory: async ({ job }) => {
+            // A profile-wide job may synthesize messages from many threads.
+            // Resolve the triggering run's own scope instead of trusting the
+            // first source message, and keep telemetry job-scoped when no
+            // owned source run can be resolved.
+            const scope = await resolveReferenceHistoryTelemetryScope({
+              profileId: job.profileId,
+              jobId: job.id,
+              sourceRunId: job.sourceRunId,
+              getRunScope: getAgentRunScope,
+            });
+            let sequence = await getNextReferenceHistoryEventSequence(job.profileId, job.id);
             return createAgentTraceRecorder({
               model: job.model,
               provider: "openrouter",
               executionKind: "background_reference_history",
-              append: (type, payload) => appendAgentEvent({
+              append: (type, payload) => appendReferenceHistoryAgentEvent({
                 profileId: job.profileId,
-                threadId,
-                runId: job.sourceRunId as string,
+                jobId: job.id,
+                threadId: scope.threadId,
+                sourceRunId: scope.sourceRunId,
                 sequence: sequence++,
                 type,
                 payload,
