@@ -290,6 +290,33 @@ export async function createThreadWithFirstMessage(input: {
   };
 }
 
+/** Atomically persist an existing-thread user message and its agent run. */
+export async function createRunWithUserMessage(input: {
+  profileId: ProfileId;
+  threadId: string;
+  userMessageId: string;
+  runId: string;
+  assistantMessageId: string;
+  requestId: string;
+  content: string;
+  model: string;
+}): Promise<FirstMessageCreation> {
+  const { data, error } = await getDatabase().rpc("create_run_with_user_message", {
+    p_profile_id: input.profileId,
+    p_thread_id: input.threadId,
+    p_user_message_id: input.userMessageId,
+    p_run_id: input.runId,
+    p_assistant_message_id: input.assistantMessageId,
+    p_request_id: input.requestId,
+    p_content: input.content,
+    p_model: input.model,
+  });
+  if (error) throw error;
+  const row = data?.[0];
+  if (!row) throw new Error("Could not create the user turn.");
+  return { threadId: row.thread_id, userMessageId: row.user_message_id, runId: row.run_id, assistantMessageId: row.assistant_message_id, duplicate: row.duplicate };
+}
+
 export async function getThread(profileId: ProfileId, threadId: string) {
   const { data: thread, error: threadError } = await getDatabase()
     .from("threads")

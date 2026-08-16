@@ -132,7 +132,8 @@ export function createTemporaryAgentResponse(input: TemporaryAgentInput): Respon
           memoryMutation: createDisabledMemoryMutation(),
           memoryArchive: createDisabledMemoryArchive(),
           threadOverviewReader: createTemporaryThreadOverviewReader(),
-          disableHistoricalSearch: true,
+          savedMemoryEnabled: false,
+          referenceHistoryEnabled: false,
         })) {
           if (event.type === "usage_observed") continue;
           if (event.type === "text_delta") {

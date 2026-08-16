@@ -14,6 +14,14 @@ const MAX_PROPOSAL_CONTENT = 20_000;
 export const MIN_AUTOMATIC_CONSOLIDATION_TOKENS = 1_200;
 export const CONSOLIDATION_IDLE_DEBOUNCE_MS = 30_000;
 
+/** Cheap fast-lane gate. Meaning is still decided by the consolidator. */
+export function isMeaningfulMemoryCandidate(content: string) {
+  const text = content.replace(/\s+/g, " ").trim();
+  if (text.length < 18) return false;
+  if (/^(?:hi|hey|hello|yo|thanks|thank you|ok|okay|cool|nice)[.! ]*$/i.test(text)) return false;
+  return /\b(?:remember|don't forget|do not forget|i (?:own|use|prefer|work|study|live|have)|my (?:phone|laptop|computer|macbook|device|devices|car|job|college|school)|i'm|i am)\b/i.test(text);
+}
+
 export type ConsolidationProposalInput = {
   canonicalKey: string;
   proposedContent: string;
@@ -168,7 +176,7 @@ export async function processConsolidationJobs(options: ConsolidationWorkerOptio
         if (applied.status === "conflict" || applied.status === "rejected") conflicts += 1;
       }
       result.conflicts += conflicts;
-      if (process.env.MEMORY_SEMANTIC_INDEXING_ENABLED === "true" && options.indexDerived) { try { await options.indexDerived(messages); } catch { result.indexingErrors += 1; } }
+      if (process.env.MEMORY_SEMANTIC_INDEXING_ENABLED !== "false" && options.indexDerived) { try { await options.indexDerived(messages); } catch { result.indexingErrors += 1; } }
       await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: conflicts === proposals.length ? "skipped" : "completed", errorCode: conflicts > 0 ? "PROPOSAL_CONFLICT" : null, errorMessage: conflicts > 0 ? `${conflicts} proposal(s) conflicted.` : null });
       if (conflicts === proposals.length) result.skipped += 1; else result.completed += 1;
     } catch (error) {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createInjectedMemoryConsolidator, processConsolidationJobs, shouldEnqueueConsolidation, validateConsolidationProposals } from "@/server/memory/consolidation";
+import { createInjectedMemoryConsolidator, isMeaningfulMemoryCandidate, processConsolidationJobs, shouldEnqueueConsolidation, validateConsolidationProposals } from "@/server/memory/consolidation";
 import type { MemoryConsolidationJob, MemoryGovernanceStore, MemoryItem, MemoryStore } from "@/server/memory/types";
 
 const job: MemoryConsolidationJob = { id: "00000000-0000-4000-8000-000000000030", profileId: "profile-a", threadId: "00000000-0000-4000-8000-000000000011", sourceRunId: "00000000-0000-4000-8000-000000000012", status: "running", sourceTokenTotal: 1_500, attempts: 1, availableAt: "now", leaseExpiresAt: null, lockedAt: "now", lockedBy: "worker", lastErrorCode: null, lastErrorMessage: null, createdAt: "now", updatedAt: "now", completedAt: null };
@@ -13,6 +13,11 @@ function governanceStore(): MemoryGovernanceStore {
 }
 
 describe("durable structured memory consolidation", () => {
+  it("fast-lanes durable device facts but skips trivial chatter", () => {
+    expect(isMeaningfulMemoryCandidate("Also I have a macbook m4 air and realme gt 7 just fyi")).toBe(true);
+    expect(isMeaningfulMemoryCandidate("Hey")).toBe(false);
+    expect(isMeaningfulMemoryCandidate("thanks, that was helpful")).toBe(false);
+  });
   it("enqueues only after a successful run with a persisted assistant", () => {
     expect(shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted: true })).toBe(true);
     expect(shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted: true, sourceTokenTotal: 200 })).toBe(false);

@@ -20,13 +20,13 @@ export async function POST(request: Request) {
     const body = (await request.json().catch(() => ({}))) as { limit?: unknown };
     const limit = typeof body.limit === "number" && Number.isInteger(body.limit) ? Math.min(Math.max(body.limit, 1), 3) : 1;
     const workerId = `http-${crypto.randomUUID()}`;
-    const consolidation = process.env.MEMORY_CONSOLIDATION_ENABLED === "true"
+    const consolidation = process.env.MEMORY_CONSOLIDATION_ENABLED !== "false"
       ? await createProductionConsolidationWorker({ limit, maxDurationMs: 25_000, workerId })
       : { claimed: 0, completed: 0, skipped: 0, failed: 0, conflicts: 0, indexingErrors: 0 };
     const continuity = process.env.MEMORY_CONTINUITY_ENABLED === "true"
       ? await createProductionThreadContinuityWorker({ limit, maxDurationMs: 25_000, workerId })
       : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
-    const referenceHistory = process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "true"
+    const referenceHistory = process.env.MEMORY_REFERENCE_HISTORY_ENABLED !== "false"
       ? await createProductionReferenceHistoryWorker({
           limit,
           maxDurationMs: 25_000,
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
         })
       : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
     return NextResponse.json({
-      enabled: process.env.MEMORY_CONSOLIDATION_ENABLED === "true" || process.env.MEMORY_CONTINUITY_ENABLED === "true" || process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "true",
+      enabled: process.env.MEMORY_CONSOLIDATION_ENABLED !== "false" || process.env.MEMORY_CONTINUITY_ENABLED === "true" || process.env.MEMORY_REFERENCE_HISTORY_ENABLED !== "false",
       claimed: consolidation.claimed + continuity.claimed + referenceHistory.claimed,
       completed: consolidation.completed + continuity.completed + referenceHistory.completed,
       skipped: consolidation.skipped + continuity.skipped + referenceHistory.skipped,

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
-import type { EmbeddingProvider } from "@/server/memory/embeddings";
+import { createOpenRouterEmbeddingClient, type EmbeddingProvider } from "@/server/memory/embeddings";
 import type { MemoryItemSearchResult, MessageContextWindow, MessageMatchType, MessageSearchResult, MessageSearchRole, MemoryStore } from "@/server/memory/types";
 import { normalizeMemoryDate, normalizeMemoryExactPhrase, normalizeMemoryLimit, normalizeMemoryMatchType, normalizeMemoryQuery, normalizeMemoryRoles, validateEmbedding, validateMemoryUuid } from "@/server/memory/validation";
 import type { ProfileId } from "@/lib/profiles";
@@ -59,5 +59,11 @@ export function createMemoryRetrievalService(options: MemoryRetrievalOptions): M
 }
 
 export function createProductionMemoryRetrievalService() {
-  return createMemoryRetrievalService({ store: createSupabaseMemoryStore() });
+  const semanticSearchEnabled = process.env.MEMORY_SEMANTIC_SEARCH_ENABLED !== "false"
+    && Boolean(process.env.OPENROUTER_API_KEY?.trim());
+  return createMemoryRetrievalService({
+    store: createSupabaseMemoryStore(),
+    semanticSearchEnabled,
+    ...(semanticSearchEnabled ? { semanticQueryProvider: createOpenRouterEmbeddingClient() } : {}),
+  });
 }

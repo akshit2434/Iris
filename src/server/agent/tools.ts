@@ -29,10 +29,10 @@ export type InternalToolOptions = {
    * with a natural assistant reply after a tool call.
    */
   returnDirectTools?: readonly string[];
-  /** The trusted server preflight already searched/read historical sources. */
-  disableHistoricalSearch?: boolean;
-  /** The server supplied enough profile context for this turn. */
-  disableContextLookup?: boolean;
+  /** Profile-level saved-memory control. */
+  savedMemoryEnabled?: boolean;
+  /** Profile-level cross-chat history control. */
+  referenceHistoryEnabled?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -345,11 +345,11 @@ export function createInternalTools(
     },
   );
 
-  const contextLookupDisabled = options.disableContextLookup === true;
-  const historicalTools = options.disableHistoricalSearch || contextLookupDisabled ? [] : [searchMessagesTool, readMessagesTool];
-  const contextTools = contextLookupDisabled ? [] : [threadOverview];
-  const memorySearchTools = contextLookupDisabled ? [] : [memorySearchTool];
-  return [...contextTools, ...historicalTools, memoryListTool, memoryReadTool, ...memorySearchTools, memoryPatchTool, memoryArchiveTool] as const;
+  const historicalTools = options.referenceHistoryEnabled === false ? [] : [searchMessagesTool, readMessagesTool];
+  const memoryTools = options.savedMemoryEnabled === false
+    ? []
+    : [memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool];
+  return [threadOverview, ...historicalTools, ...memoryTools] as const;
 }
 
 /**

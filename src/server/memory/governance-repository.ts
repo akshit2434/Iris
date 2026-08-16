@@ -36,8 +36,11 @@ export function createSupabaseMemoryGovernanceStore(database: MemoryDatabase = g
     },
     async listJobMessages(profileId, threadId, sourceRunId, limit = 10) {
       assertMemoryProfileId(profileId); validateMemoryUuid(threadId, "Thread ID"); validateMemoryUuid(sourceRunId, "Run ID");
-      const { data, error } = await database.from("messages").select("id, thread_id, profile_id, content").eq("profile_id", profileId).eq("thread_id", threadId).eq("agent_run_id", sourceRunId).eq("role", "user").order("created_at", { ascending: true }).limit(normalizeMemoryLimit(limit, 10));
-      if (error) throw error; return (data ?? []).map((row) => ({ messageId: row.id, profileId: row.profile_id, threadId: row.thread_id, content: row.content } satisfies MemoryMessageForIndex));
+      // Jobs are thread-watermark work, not one-run work. Read the newest
+      // committed user range when the job is claimed so an older pending job
+      // cannot strand messages that arrived during its debounce window.
+      const { data, error } = await database.from("messages").select("id, thread_id, profile_id, content, created_at").eq("profile_id", profileId).eq("thread_id", threadId).eq("role", "user").eq("is_complete", true).order("created_at", { ascending: false }).order("id", { ascending: false }).limit(normalizeMemoryLimit(limit, 10));
+      if (error) throw error; return (data ?? []).reverse().map((row) => ({ messageId: row.id, profileId: row.profile_id, threadId: row.thread_id, content: row.content } satisfies MemoryMessageForIndex));
     },
     async insertMutationProposal(input) {
       assertMemoryProfileId(input.profileId); validateMemoryUuid(input.threadId, "Thread ID"); validateMemoryUuid(input.sourceRunId, "Run ID"); validateMemoryUuid(input.jobId, "Job ID");

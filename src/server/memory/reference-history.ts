@@ -296,10 +296,19 @@ function narrowReferenceHistoryToQuery(document: ReferenceHistoryDocument, query
       return { version: "iris-reference-history-v1" as const, ...narrowed, renderedText: renderReferenceHistoryText(narrowed) };
     }
   }
-  // If the user is referring to something obliquely and no claim shares a
-  // literal token, keep the bounded snapshot; the model can still use its
-  // temporal/uncertainty context. Literal matches get a compact relevant view.
-  if (maxScore === 0) return document;
+  // A zero-overlap snapshot is not relevant context. Returning the whole
+  // snapshot here made any stale claim look like sufficient memory and could
+  // suppress a real lookup for the user's subject.
+  if (maxScore === 0) {
+    const empty = {
+      ongoingWork: [],
+      recurringPreferences: [],
+      relationshipsContext: [],
+      recentChanges: [],
+      boundedPatterns: [],
+    };
+    return { version: "iris-reference-history-v1" as const, ...empty, renderedText: "" };
+  }
   const filter = (claims: readonly ReferenceHistoryClaim[]) => claims.filter((claim) => score(claim) > 0);
   const narrowed = {
     ongoingWork: filter(document.ongoingWork),

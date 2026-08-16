@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
 import {
-  createAgentRun,
   createMessage,
   updateMessageTokenLedger,
   updateAgentRunTokenLedger,
   applyAutomaticThreadTitle,
   claimAutomaticThreadTitle,
   createThreadWithFirstMessage,
+  createRunWithUserMessage,
   findAgentRun,
   getProfile,
   getThread,
@@ -35,11 +35,13 @@ import { createMemoryMutationService } from "@/server/memory/mutation";
 import { createMemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
+import { createOpenRouterEmbeddingClient } from "@/server/memory/embeddings";
+import { indexMessagesForMemory } from "@/server/memory/indexer";
 import { createSupabaseReferenceHistoryStore } from "@/server/memory/reference-history-repository";
 import { createDisabledMemoryArchive, createDisabledMemoryMutation, createDisabledMemoryRetrieval } from "@/server/memory/disabled";
 import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
 import { formatReferenceHistoryPrompt, referenceHistoryPromptIsFresh } from "@/server/memory/reference-history";
-import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
+import { createProductionConsolidationWorker, isMeaningfulMemoryCandidate, shouldEnqueueConsolidation } from "@/server/memory/consolidation";
 import { DEFAULT_CONTINUITY_TAIL_TOKENS, hashContinuityInput, shouldQueueContinuity } from "@/server/memory/compaction";
 import { createSupabaseThreadContinuityStore } from "@/server/memory/compaction-repository";
 import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/reconciliation";
@@ -48,7 +50,6 @@ import { planAssistantPersistence } from "@/server/agent/persistence";
 import { createTemporaryAgentResponse, sanitizeTemporaryHistory, validateTemporaryId } from "@/server/agent/temporary";
 import {
   AGENT_STREAM_PROTOCOL,
-  sanitizeForEvent,
   safeFailure,
   type AgentStreamEvent,
 } from "@/server/agent/protocol";
@@ -160,22 +161,26 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       if (!existingThread) {
         return NextResponse.json({ error: "Chat not found." }, { status: 404 });
       }
-      const existingRun = await findAgentRun(profileId, threadId, requestId);
-      if (existingRun) {
-        return NextResponse.json(
-          { run: existingRun, duplicate: true },
-          { status: 409, headers: { "Cache-Control": "no-store" } },
-        );
-      }
       thread = existingThread;
       try {
-        run = await createAgentRun({
-          id: runId,
+        const created = await createRunWithUserMessage({
           profileId,
           threadId,
+          userMessageId,
+          runId,
+          assistantMessageId,
           requestId,
+          content,
           model,
         });
+        run = await findAgentRun(profileId, threadId, requestId);
+        if (!run) throw new Error("Could not load the created run.");
+        if (created.duplicate) {
+          return NextResponse.json(
+            { run, duplicate: true },
+            { status: 409, headers: { "Cache-Control": "no-store" } },
+          );
+        }
       } catch {
         // A concurrent retry can win the unique request key between the lookup
         // above and insert. Return the existing scoped run instead of duplicating.
@@ -189,15 +194,6 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         throw new Error("Could not create agent run.");
       }
 
-      await createMessage({
-        id: userMessageId,
-        profileId,
-        threadId,
-        role: "user",
-        content,
-        agentRunId: run.id,
-      });
-      await linkAgentRunMessages(profileId, threadId, run.id, { userMessageId });
     }
 
     const titleClaim = thread.thread.titleSource === "default"
@@ -264,27 +260,6 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       && referenceHistorySnapshot
       ? formatReferenceHistoryPrompt(referenceHistorySnapshot, { savedItems: memoryItems, suppressions: memorySuppressions, currentMemoryRevision: memoryRevisionSnapshot, query: content })
       : "";
-    // ChatGPT-style ordinary recall is a direct context path. Once the server
-    // has a usable saved/reference snapshot, do not give the model lookup
-    // tools that invite redundant multi-turn searching. Explicit evidence
-    // requests remain server-controlled by the preflight above.
-    const memoryContextSufficient = !historicalPreflight.triggered
-      && (referenceHistoryPrompt.length > 0 || canonicalMemory.items.length > 0);
-    const disableContextLookup = memoryContextSufficient || historicalPreflight.triggered;
-    const memoryDisclosure = (memoryControls.savedMemoryEnabled && canonicalMemory.items.length > 0)
-      || (memoryControls.referenceHistoryEnabled && Boolean(referenceHistoryPrompt))
-      ? {
-          kind: "memory_context",
-          items: canonicalMemory.items.slice(0, 8).map((item) => ({
-            canonicalKey: item.canonicalKey,
-            excerpt: item.content.slice(0, 280),
-            category: item.category,
-            itemRevision: item.itemRevision,
-            updatedAt: item.updatedAt,
-          })),
-          ...(referenceHistoryPrompt && referenceHistorySnapshot ? { referenceRevision: referenceHistorySnapshot.revision } : {}),
-        }
-      : null;
     const baseAgentContext = createAgentContext({
       profileId,
       profileLabel: profile.displayName,
@@ -301,7 +276,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
-      memoryContextSufficient: disableContextLookup,
+      memoryContextSufficient: false,
       now: requestNow,
       // State slots are supplied by the token assembler below. Keeping them
       // empty here ensures the ledger measures each component exactly once.
@@ -331,8 +306,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         model,
         systemPrompt: buildDynamicSystemPrompt(baseAgentContext),
         toolSchemas: getInternalToolSchemaDescriptors({
-          disableHistoricalSearch: historicalPreflight.triggered || !memoryControls.referenceHistoryEnabled,
-          disableContextLookup,
+          savedMemoryEnabled: memoryControls.savedMemoryEnabled,
+          referenceHistoryEnabled: memoryControls.referenceHistoryEnabled,
         }),
         currentUser: currentUserMessage,
         messages: history,
@@ -373,7 +348,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
-      memoryContextSufficient: disableContextLookup,
+      memoryContextSufficient: false,
       now: requestNow,
       budgetedContext: contextAssembly.prompt,
     });
@@ -418,6 +393,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         // events continue to stream normally.
         const bufferAmbiguousResponse = historicalPreflight.status === "ambiguous";
         let assistantPersisted = false;
+        let memoryMutatedThisTurn = false;
         let assistantTokenEstimate = 0;
         let actualUsage: {
           inputTokens: number | null;
@@ -495,74 +471,14 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             at: new Date().toISOString(),
           });
 
-          if (memoryDisclosure) {
-            const toolCallId = `memory-context:${run.id}`;
-            const statusMessage = "Using memory";
-            const output = sanitizeForEvent(memoryDisclosure);
-            await appendAgentEvent({
-              profileId,
-              threadId,
-              runId: run.id,
-              sequence: ++persistedSequence,
-              type: "tool_call",
-              payload: { toolCallId, toolName: "memory_context", input: {}, statusMessage },
-            });
-            send({ type: "tool_started", runId: run.id, toolCallId, toolName: "memory_context", input: {}, statusMessage });
-            await appendAgentEvent({
-              profileId,
-              threadId,
-              runId: run.id,
-              sequence: ++persistedSequence,
-              type: "tool_result",
-              payload: { toolCallId, toolName: "memory_context", output, ok: true, statusMessage: "Used memory" },
-            });
-            send({ type: "tool_finished", runId: run.id, toolCallId, toolName: "memory_context", output, ok: true, statusMessage: "Used memory" });
-          }
-
-          if (historicalPreflight.triggered) {
-            const toolCallId = `history-preflight:${run.id}`;
-            const statusMessage = "Searching chats";
-            const completionMessage = historicalPreflight.status === "no_match"
-              ? "No matching chat found"
-              : historicalPreflight.status === "unavailable"
-                ? "Chat search unavailable"
-                : historicalPreflight.sources.length === 1
-                  ? "Found 1 source"
-                  : `Found ${historicalPreflight.sources.length} sources`;
-            await appendAgentEvent({
-              profileId,
-              threadId,
-              runId: run.id,
-              sequence: ++persistedSequence,
-              type: "tool_call",
-              payload: { toolCallId, toolName: "history_preflight", input: { query: content, trigger: historicalPreflight.intent?.trigger ?? "history" }, statusMessage },
-            });
-            send({ type: "tool_started", runId: run.id, toolCallId, toolName: "history_preflight", input: { query: content, trigger: historicalPreflight.intent?.trigger ?? "history" }, statusMessage });
-            const output = sanitizeForEvent({
-              kind: "history_preflight",
-              status: historicalPreflight.status,
-              sources: historicalPreflight.sources,
-              ...(historicalPreflight.errorCode ? { errorCode: historicalPreflight.errorCode } : {}),
-            });
-            await appendAgentEvent({
-              profileId,
-              threadId,
-              runId: run.id,
-              sequence: ++persistedSequence,
-              type: "tool_result",
-              payload: { toolCallId, toolName: "history_preflight", output, ok: historicalPreflight.status !== "unavailable", statusMessage: completionMessage },
-            });
-            send({ type: "tool_finished", runId: run.id, toolCallId, toolName: "history_preflight", output, ok: historicalPreflight.status !== "unavailable", statusMessage: completionMessage });
-          }
-
           for await (const event of streamAgentEvents({
             context: agentContext,
             messages: contextAssembly.messages,
             memoryRetrieval,
             memoryMutation,
             memoryArchive,
-            disableHistoricalSearch: historicalPreflight.triggered || !memoryControls.referenceHistoryEnabled,
-            disableContextLookup,
+            savedMemoryEnabled: memoryControls.savedMemoryEnabled,
+            referenceHistoryEnabled: memoryControls.referenceHistoryEnabled,
             observability: trace,
             executionKind: "interactive_agent",
           })) {
@@ -608,6 +524,15 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
                 ...(event.statusMessage ? { statusMessage: event.statusMessage } : {}),
               },
             });
+            if (event.toolName === "memory_patch"
+              && event.ok
+              && typeof event.output === "object"
+              && event.output !== null
+              && !Array.isArray(event.output)
+              && "status" in event.output
+              && event.output.status === "applied") {
+              memoryMutatedThisTurn = true;
+            }
             send({ ...event, runId: run.id });
           }
 
@@ -675,6 +600,23 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             payload: { assistantMessageId },
           });
           await touchThread(profileId, threadId);
+          if (memoryControls.referenceHistoryEnabled
+            && process.env.MEMORY_SEMANTIC_INDEXING_ENABLED !== "false"
+            && process.env.OPENROUTER_API_KEY?.trim()) {
+            try {
+              await indexMessagesForMemory({
+                profileId,
+                messages: [
+                  { messageId: userMessageId, profileId, threadId, content },
+                  { messageId: assistantMessageId, profileId, threadId, content: completedAssistant.content },
+                ],
+                provider: createOpenRouterEmbeddingClient(),
+                store: memoryStore,
+              });
+            } catch {
+              // The lexical index remains available if derived embeddings fail.
+            }
+          }
           if (memoryStore.advanceThreadMemoryRevisionSeen) {
             try {
               await memoryStore.advanceThreadMemoryRevisionSeen(profileId, threadId, memoryRevisionSnapshot);
@@ -687,13 +629,20 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             assistantTokenEstimate,
           );
           const idleSignal = Date.now() - new Date(thread.thread.updatedAt).getTime() >= 30_000;
-          if (memoryControls.savedMemoryEnabled && shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted, sourceTokenTotal, idleSignal })) {
+          const fastLaneSignal = !memoryMutatedThisTurn && isMeaningfulMemoryCandidate(content);
+          if (memoryControls.savedMemoryEnabled && shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted, sourceTokenTotal, idleSignal: idleSignal || fastLaneSignal })) {
             try {
               await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id, {
                 sourceTokenTotal,
-                idleSignal,
+                idleSignal: idleSignal || fastLaneSignal,
                 debounceSeconds: 30,
               });
+              // Fast-lane facts must be available when the completed stream is
+              // followed immediately by a new chat. This maintenance is
+              // internal and intentionally emits no user-visible tool event.
+              if (fastLaneSignal) {
+                await createProductionConsolidationWorker({ limit: 3, maxDurationMs: 25_000 });
+              }
             } catch {
               // Memory queue availability must not turn a completed chat run into a failure.
             }

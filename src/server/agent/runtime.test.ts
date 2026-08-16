@@ -54,10 +54,11 @@ describe("agent context", () => {
     expect(prompt).toContain("Do not end every answer with an offer or question");
     expect(prompt).toContain("Do not produce a long response unless the user explicitly requests or confirms one");
     expect(prompt).toContain("Be opinionated, candid, and direct");
-    expect(prompt).toContain("use the read-only search_messages or memory_search tools instead of guessing");
-    expect(prompt).toContain("search_messages is the first required tool");
-    expect(prompt).toContain("thread_overview only describes the currently open thread and cannot answer historical-source requests");
-    expect(prompt).toContain("Use read_messages when exact source wording or provenance matters");
+    expect(prompt).toContain("Memory lookup order:");
+    expect(prompt).toContain("search saved memory with memory_search");
+    expect(prompt).toContain("search retained chats with search_messages");
+    expect(prompt).toContain("Stop as soon as evidence is sufficient");
+    expect(prompt).toContain("owned or regularly used devices");
   });
 
   it("constructs the production OpenRouter model with no automatic retries", () => {
@@ -189,7 +190,8 @@ describe("context builder", () => {
         targetedRetrievalPrompt: "<historical-preflight>\nHistorical preflight status: found.\n</historical-preflight>",
       },
     }));
-    expect(prompt).toContain("do not call search_messages again");
+    expect(prompt).toContain("Use relevant evidence from it silently for ordinary recall");
+    expect(prompt).toContain("still make the appropriate visible read-only tool call");
   });
 
   it("sends only messages after a durable compaction checkpoint while keeping raw history", () => {
@@ -229,9 +231,11 @@ describe("internal tools", () => {
     ]);
   });
 
-  it("removes historical model tools after trusted preflight to avoid duplicate searches", () => {
-    expect(createInternalTools(undefined, undefined, undefined, undefined, { disableHistoricalSearch: true }).map((internalTool) => internalTool.name)).toEqual([
+  it("keeps read tools available when prefilled context exists", () => {
+    expect(createInternalTools().map((internalTool) => internalTool.name)).toEqual([
       "thread_overview",
+      "search_messages",
+      "read_messages",
       "memory_list",
       "memory_read",
       "memory_search",
@@ -240,19 +244,14 @@ describe("internal tools", () => {
     ]);
   });
 
-  it("removes all model-selected context lookups when the server supplied enough memory", () => {
-    expect(createInternalTools(undefined, undefined, undefined, undefined, { disableContextLookup: true }).map((internalTool) => internalTool.name)).toEqual([
-      "memory_list",
-      "memory_read",
-      "memory_patch",
-      "memory_archive",
+  it("hides only the tool family disabled by profile controls", () => {
+    expect(createInternalTools(undefined, undefined, undefined, undefined, { savedMemoryEnabled: false }).map((internalTool) => internalTool.name)).toEqual([
+      "thread_overview", "search_messages", "read_messages",
     ]);
-    expect(getInternalToolSchemaDescriptors({ disableContextLookup: true }).map((schema) => schema.name)).toEqual([
-      "memory_list",
-      "memory_read",
-      "memory_patch",
-      "memory_archive",
+    expect(getInternalToolSchemaDescriptors({ referenceHistoryEnabled: false }).map((schema) => schema.name)).toEqual([
+      "thread_overview", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive",
     ]);
+    expect(getInternalToolSchemaDescriptors({ savedMemoryEnabled: false, referenceHistoryEnabled: false }).map((schema) => schema.name)).toEqual(["thread_overview"]);
   });
 
   it("serializes tool schemas for token accounting without invoking a tool", () => {
