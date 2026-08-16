@@ -91,16 +91,18 @@ export function createIrisAgent(input: {
   const dynamicPrompt = dynamicSystemPromptMiddleware<AgentContext>((_state, runtime) =>
     buildDynamicSystemPrompt(runtime.context),
   );
+  let firstToolChoiceApplied = false;
   const acceptanceToolChoice = input.forceToolName
     ? createMiddleware({
         name: "acceptance-tool-choice",
-        wrapModelCall: async (request, handler) => handler({
-          ...request,
-          modelSettings: {
-            ...request.modelSettings,
-            tool_choice: { type: "function", function: { name: input.forceToolName } },
-          },
-        }),
+        wrapModelCall: async (request, handler) => {
+          if (firstToolChoiceApplied) return handler(request);
+          firstToolChoiceApplied = true;
+          return handler({
+            ...request,
+            toolChoice: { type: "function", function: { name: input.forceToolName! } },
+          });
+        },
       })
     : null;
   const observabilityMiddleware = input.observability

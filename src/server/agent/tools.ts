@@ -109,6 +109,28 @@ function boundedExcerpt(value: string, max = 280) {
   return compact.length > max ? `${compact.slice(0, max - 1).trimEnd()}…` : compact;
 }
 
+function searchTokens(value: string) {
+  return value.toLocaleLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 3);
+}
+
+function historicalResultPenalty(role: "user" | "assistant" | "tool", content: string, query: string) {
+  if (role === "assistant" && /\b(?:(?:you|the user)\s+(?:said|told|wrote|mentioned|shared)|here is the source|open message)\b/i.test(content)) return 1;
+  if (role !== "user") return 0;
+  if (/\b(?:show|find|locate|open|search|check)\b[\s\S]{0,140}\b(?:chat|conversation|thread|source|message|memory|history)\b/i.test(content)) return 1;
+  const wantsQuestion = /\b(?:asked|question|questions)\b/i.test(query);
+  if (!wantsQuestion && (/^\s*(?:what|where|when|which|who|why|how|can|could|would|should|do|did|does|is|are|was|were)\b/i.test(content) || /\?\s*$/.test(content))) return 1;
+  return 0;
+}
+
+function rankHistoricalResults<T extends { role: "user" | "assistant" | "tool"; excerpt: string }>(results: T[], query: string): T[] {
+  const queryTokens = [...new Set(searchTokens(query))];
+  return results.map((result, index) => {
+    const contentTokens = new Set(searchTokens(result.excerpt));
+    const overlap = queryTokens.length === 0 ? 0 : queryTokens.filter((token) => contentTokens.has(token)).length / queryTokens.length;
+    return { result, index, penalty: historicalResultPenalty(result.role, result.excerpt, query), overlap };
+  }).sort((left, right) => left.penalty - right.penalty || right.overlap - left.overlap || left.index - right.index).map(({ result }) => result);
+}
+
 export async function searchMessages(context: AgentContext, input: z.infer<typeof searchMessagesInput>, retrieval: MemoryRetrieval) {
   const query = normalizeMemoryQuery(input.query);
   const limit = normalizeMemoryLimit(input.limit);
@@ -130,7 +152,11 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
       action: buildOpenMessageAction(source.threadId, source.messageId, "Open message"),
     }))
     .filter((source): source is typeof source & { action: NonNullable<typeof source.action> } => source.action !== null);
-  if (preflightResults.length > 0) {
+  // A single deterministic hit is safe to reuse when the model paraphrases
+  // the request. Multiple hits can represent ambiguity or a compound request;
+  // in that case each visible search must honor its own query instead of
+  // replaying the same preflight candidates for every tool call.
+  if (preflightResults.length === 1) {
     return { kind: "message_search" as const, query, results: preflightResults };
   }
   const results = await retrieval.searchMessages({
@@ -167,7 +193,7 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
   return {
     kind: "message_search" as const,
     query,
-    results: validatedResults.filter((result): result is NonNullable<typeof result> => result !== null),
+    results: rankHistoricalResults(validatedResults.filter((result): result is NonNullable<typeof result> => result !== null), query),
   };
 }
 
@@ -208,7 +234,7 @@ export async function listMemory(context: AgentContext, retrieval: MemoryRetriev
 export async function readMemory(context: AgentContext, input: z.infer<typeof memoryReadInput>, retrieval: MemoryRetrieval) {
   const item = await retrieval.readMemory(context.profileId, input.canonicalKey);
   if (!item) return { kind: "memory_read" as const, found: false as const, item: null };
-  const sources = retrieval.memorySources
+  const sources = context.memoryControls.referenceHistoryEnabled && retrieval.memorySources
     ? await retrieval.memorySources(context.profileId, item.canonicalKey, 3).catch(() => [])
     : [];
   return {
@@ -220,7 +246,7 @@ export async function readMemory(context: AgentContext, input: z.infer<typeof me
       updatedAt: item.updatedAt,
       category: item.category,
       content: item.content.slice(0, 12_000),
-      sourceStatus: sources.length > 0 ? "available" as const : "unavailable" as const,
+      sourceStatus: !context.memoryControls.referenceHistoryEnabled ? "disabled" as const : sources.length > 0 ? "available" as const : "unavailable" as const,
       sources: sources.map((source) => ({
         messageId: source.messageId,
         threadId: source.threadId,
@@ -241,7 +267,7 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
   const limit = normalizeMemoryLimit(input.limit);
   const results = await retrieval.searchMemory(context.profileId, query, limit);
   const enriched = await Promise.all(results.map(async (result) => {
-    const sources = retrieval.memorySources
+    const sources = context.memoryControls.referenceHistoryEnabled && retrieval.memorySources
       ? await retrieval.memorySources(context.profileId, result.canonicalKey, 3).catch(() => [])
       : [];
     return {
@@ -249,7 +275,7 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
       itemRevision: result.itemRevision,
       updatedAt: result.updatedAt,
       excerpt: boundedExcerpt(result.excerpt),
-      sourceStatus: sources.length > 0 ? "available" as const : "unavailable" as const,
+      sourceStatus: !context.memoryControls.referenceHistoryEnabled ? "disabled" as const : sources.length > 0 ? "available" as const : "unavailable" as const,
       sources: sources.map((source) => ({
         messageId: source.messageId,
         threadId: source.threadId,

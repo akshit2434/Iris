@@ -497,6 +497,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             memoryArchive,
             savedMemoryEnabled: memoryControls.savedMemoryEnabled,
             referenceHistoryEnabled: memoryControls.referenceHistoryEnabled,
+            forceToolName: historicalPreflight.status === "ambiguous" ? "search_messages" : undefined,
             observability: trace,
             executionKind: "interactive_agent",
           })) {

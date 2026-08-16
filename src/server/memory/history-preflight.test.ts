@@ -119,6 +119,31 @@ describe("deterministic historical preflight", () => {
     expect(toldByAssistant.sources).toEqual([expect.objectContaining({ messageId: assistantMessageId, role: "assistant" })]);
   });
 
+  it("prefers the original assertion over later recall and source-search questions", async () => {
+    const assertionId = "00000000-0000-4000-8000-000000000221";
+    const recallId = "00000000-0000-4000-8000-000000000222";
+    const sourceRequestId = "00000000-0000-4000-8000-000000000223";
+    const rows = [
+      result({ messageId: sourceRequestId, threadId: "00000000-0000-4000-8000-000000000231", content: "Show me the chat where I corrected my studio codename.", combinedScore: 1 }),
+      result({ messageId: recallId, threadId: "00000000-0000-4000-8000-000000000232", content: "What is my studio codename now?", combinedScore: 0.95 }),
+      result({ messageId: assertionId, threadId: "00000000-0000-4000-8000-000000000233", content: "Actually, my studio codename is Willow Lantern now.", combinedScore: 0.8 }),
+    ];
+    const store: MemoryRetrieval = {
+      ...retrieval([], null),
+      searchMessages: vi.fn(async () => rows),
+      readMessages: vi.fn(async (_profileId, messageId) => {
+        const row = rows.find((candidate) => candidate.messageId === messageId);
+        return row ? window({
+          thread: { id: row.threadId, profileId: "profile-a", title: "Studio codename", createdAt: row.createdAt, updatedAt: row.createdAt },
+          target: { messageId: row.messageId, threadId: row.threadId, profileId: "profile-a", role: "user", content: row.content, createdAt: row.createdAt },
+        }) : null;
+      }),
+    };
+
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "Show me the chat where I corrected my studio codename.", retrieval: store });
+    expect(output.sources[0]).toMatchObject({ messageId: assertionId, excerpt: "Actually, my studio codename is Willow Lantern now." });
+  });
+
   it("resolves explicit source requests from Dreaming claim provenance before raw search", async () => {
     const store = retrieval([], window({ target: { ...window().target, content: "The blue-awning bookshop has a reading corner." } }));
     const snapshot = {

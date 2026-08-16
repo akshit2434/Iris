@@ -433,6 +433,67 @@ describe("runtime seams", () => {
     expect(retrieval.searchMessages).not.toHaveBeenCalled();
   });
 
+  it("honors the visible query when preflight has several candidates", async () => {
+    const firstMessageId = "00000000-0000-4000-8000-000000000010";
+    const secondMessageId = "00000000-0000-4000-8000-000000000012";
+    const sourceThreadId = "00000000-0000-4000-8000-000000000011";
+    const turnContext = createAgentContext({
+      ...context,
+      historicalPreflightSources: [firstMessageId, secondMessageId].map((messageId) => ({
+        messageId,
+        threadId: sourceThreadId,
+        profileId: "profile-a" as const,
+        role: "user" as const,
+        createdAt: "2026-08-14T12:00:00.000Z",
+        excerpt: "A broad preflight candidate.",
+        threadTitle: "Broad result",
+      })),
+    });
+    const exactResult = {
+      messageId: secondMessageId,
+      threadId: sourceThreadId,
+      profileId: "profile-a" as const,
+      role: "user" as const,
+      content: "The exact corrected value.",
+      createdAt: "2026-08-14T12:00:00.000Z",
+      lexicalScore: 1,
+      semanticScore: null,
+      combinedScore: 1,
+    };
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => [exactResult]),
+      readMessages: vi.fn(async () => ({
+        thread: { id: sourceThreadId, profileId: "profile-a" as const, title: "Correction", createdAt: exactResult.createdAt, updatedAt: exactResult.createdAt },
+        target: { messageId: secondMessageId, threadId: sourceThreadId, profileId: "profile-a" as const, role: "user" as const, content: exactResult.content, createdAt: exactResult.createdAt },
+        before: [], after: [],
+      })),
+      listMemory: vi.fn(async () => []), readMemory: vi.fn(async () => null), searchMemory: vi.fn(async () => []), currentRevision: vi.fn(async () => 0),
+    };
+
+    const output = await searchMessages(turnContext, { query: "exact corrected value", roles: ["user"], limit: 3 }, retrieval);
+    expect(retrieval.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ query: "exact corrected value" }));
+    expect(output).toMatchObject({ results: [{ messageId: secondMessageId }] });
+  });
+
+  it("ranks direct assertions above later recall and source-search echoes", async () => {
+    const sourceThreadId = "00000000-0000-4000-8000-000000000011";
+    const rows = [
+      { messageId: "00000000-0000-4000-8000-000000000013", content: "Show me the chat where I corrected my studio codename." },
+      { messageId: "00000000-0000-4000-8000-000000000014", content: "What is my studio codename now?" },
+      { messageId: "00000000-0000-4000-8000-000000000015", content: "Actually, my studio codename is Willow Lantern now." },
+    ].map((row) => ({ ...row, threadId: sourceThreadId, profileId: "profile-a" as const, role: "user" as const, createdAt: "2026-08-14T12:00:00.000Z", lexicalScore: 1, semanticScore: null, combinedScore: 1 }));
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => rows),
+      readMessages: vi.fn(async (_profileId, messageId) => {
+        const row = rows.find((candidate) => candidate.messageId === messageId)!;
+        return { thread: { id: sourceThreadId, profileId: "profile-a" as const, title: "Studio", createdAt: row.createdAt, updatedAt: row.createdAt }, target: row, before: [], after: [] };
+      }),
+      listMemory: vi.fn(async () => []), readMemory: vi.fn(async () => null), searchMemory: vi.fn(async () => []), currentRevision: vi.fn(async () => 0),
+    };
+    const output = await searchMessages(context, { query: "Willow Lantern studio codename", roles: ["user"], limit: 5 }, retrieval);
+    expect(output.results.map((item) => item.messageId)).toEqual([rows[2]!.messageId, rows[0]!.messageId, rows[1]!.messageId]);
+  });
+
   it("refuses to create an action from an inconsistent message context", async () => {
     const requestedMessageId = "00000000-0000-4000-8000-000000000010";
     const retrieval: MemoryRetrieval = {
@@ -470,6 +531,23 @@ describe("runtime seams", () => {
       results: [{ canonicalKey: "profile.machine", sourceStatus: "unavailable", sources: [] }],
     });
     expect(retrieval.searchMemory).toHaveBeenCalledWith("profile-a", "machine", 3);
+  });
+
+  it("keeps saved facts available without exposing provenance when history is disabled", async () => {
+    const memorySources = vi.fn(async () => [{
+      messageId: "00000000-0000-4000-8000-000000000010", threadId: context.threadId, profileId: "profile-a" as const,
+      role: "user" as const, createdAt: "2026-08-15T12:00:00.000Z", threadTitle: "Private source", relation: "supports" as const, content: "Original private history.",
+    }]);
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => []), readMessages: vi.fn(async () => null), listMemory: vi.fn(async () => []), currentRevision: vi.fn(async () => 1), readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => [{ itemId: "item", profileId: "profile-a" as const, canonicalKey: "profile.machine", excerpt: "The user owns a LunarBook 14.", itemRevision: 1, updatedAt: "2026-08-15T12:00:00.000Z", category: "personal_fact" as const, status: "active" as const }]),
+      memorySources,
+    };
+    const noHistory = createAgentContext({ ...context, memoryControls: { savedMemoryEnabled: true, referenceHistoryEnabled: false } });
+    await expect(searchMemory(noHistory, { query: "machine", limit: 3 }, retrieval)).resolves.toMatchObject({
+      results: [{ canonicalKey: "profile.machine", sourceStatus: "disabled", sources: [] }],
+    });
+    expect(memorySources).not.toHaveBeenCalled();
   });
 
   it("constructs the agent with an injected deterministic model", () => {

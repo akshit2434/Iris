@@ -151,7 +151,7 @@ type SourceScoreInput = {
  * clarification, an earlier tentative idea, and a later summary. Score the
  * re-read message itself so a precise source wins over merely related ones.
  */
-function scoreSource(input: SourceScoreInput, queryTokens: readonly string[], exactPhrase: string | null) {
+function scoreSource(input: SourceScoreInput, queryTokens: readonly string[], exactPhrase: string | null, preferQuestionSources = false) {
   const contentTokens = new Set(meaningfulTokens(input.content));
   const titleTokens = new Set(meaningfulTokens(input.threadTitle));
   const claimTokens = new Set(meaningfulTokens(input.claimText ?? ""));
@@ -169,10 +169,14 @@ function scoreSource(input: SourceScoreInput, queryTokens: readonly string[], ex
   // A later assistant answer that merely cites what the user said is useful
   // context, but it is not the primary assistant-authored source of a fact.
   // Keep exact-source searches from recursively citing prior search answers.
-  const sourceNavigationEchoPenalty = input.result.role === "assistant"
-    && /\b(?:(?:you|the user)\s+(?:said|told|wrote|mentioned|shared)|here is the source|open message)\b/i.test(input.content)
-    ? 0.18
-    : 0;
+  const assistantSourceEcho = input.result.role === "assistant"
+    && /\b(?:(?:you|the user)\s+(?:said|told|wrote|mentioned|shared)|here is the source|open message)\b/i.test(input.content);
+  const userHistoryRequestEcho = input.result.role === "user"
+    && /\b(?:show|find|locate|open|search|check)\b[\s\S]{0,140}\b(?:chat|conversation|thread|source|message|memory|history)\b/i.test(input.content);
+  const userQuestionEcho = input.result.role === "user"
+    && !preferQuestionSources
+    && (/^\s*(?:what|where|when|which|who|why|how|can|could|would|should|do|did|does|is|are|was|were)\b/i.test(input.content) || /\?\s*$/.test(input.content));
+  const sourceNavigationEchoPenalty = assistantSourceEcho || userHistoryRequestEcho || userQuestionEcho ? 0.18 : 0;
   const score = Math.min(1,
     contentCoverage * 0.30
       + entityActivityCoverage * 0.20
@@ -403,6 +407,7 @@ export async function runHistoryPreflight(input: {
   const excludedThreadId = intent.includeCurrentThread ? undefined : input.excludeThreadId;
   const limit = normalizeMemoryLimit(input.maxResults ?? MAX_RESULTS, MAX_RESULTS);
   const queryTokens = meaningfulTokens(intent.query);
+  const preferQuestionSources = /\b(?:where|when)\b[\s\S]{0,100}\b(?:i|we)\s+(?:asked|questioned)\b|\b(?:question|what\s+i\s+asked)\b/i.test(input.query);
   const broadContinuation = intent.kind === "continuation" && hasBroadContinuationSubject(intent.query);
   const matchingClaims = input.referenceHistorySnapshot
     ? Object.values(input.referenceHistorySnapshot.document)
@@ -519,7 +524,7 @@ export async function runHistoryPreflight(input: {
   }
 
   const ranked = prepared
-    .map((candidate) => ({ ...candidate, relevance: scoreSource({ result: candidate.result, content: candidate.window.target.content, threadTitle: candidate.window.thread.title, claimText: candidate.claimText }, queryTokens, intent.exactPhrase) }))
+    .map((candidate) => ({ ...candidate, relevance: scoreSource({ result: candidate.result, content: candidate.window.target.content, threadTitle: candidate.window.thread.title, claimText: candidate.claimText }, queryTokens, intent.exactPhrase, preferQuestionSources) }))
     .filter((candidate) => (queryTokens.length === 0 || candidate.relevance.score >= MIN_SOURCE_RELEVANCE)
       && (!broadContinuation || queryTokens.length === 0 || candidate.relevance.score >= MIN_BROAD_CONTINUATION_RELEVANCE))
     .sort(compareRankedSources);
