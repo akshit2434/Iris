@@ -1,67 +1,51 @@
-import type { CanonicalMemoryDocument } from "@/server/memory/types";
 import type { ProfileId } from "@/lib/profiles";
+import type { MemoryItem } from "@/server/memory/types";
 
-export const CANONICAL_MEMORY_MAX_DOCUMENTS = 8;
+export const CANONICAL_MEMORY_MAX_ITEMS = 24;
 export const CANONICAL_MEMORY_MAX_CHARACTERS = 6_000;
 
 export type CanonicalMemoryContext = {
   globalRevision: number;
-  documents: Array<Pick<CanonicalMemoryDocument, "logicalKey" | "contentMarkdown" | "documentRevision" | "updatedAt">>;
+  items: Array<{ canonicalKey: string; content: string; category: string; itemRevision: number; updatedAt: string }>;
 };
 
-type BudgetOptions = {
-  maxDocuments?: number;
-  maxCharacters?: number;
-  profileId?: ProfileId;
-};
+type BudgetItem = MemoryItem & { itemRevision?: number };
+type BudgetOptions = { maxItems?: number; maxCharacters?: number; profileId?: ProfileId };
 
-function priority(logicalKey: string) {
-  const normalized = logicalKey.toLocaleUpperCase();
-  if (normalized === "PROFILE" || normalized === "PROFILE.MD") return 0;
-  if (normalized === "CURRENT" || normalized === "CURRENT.MD") return 1;
-  return 2;
+function priority(item: MemoryItem) {
+  if (item.category === "instruction") return 0;
+  if (item.category === "personal_fact" || item.category === "preference") return 1;
+  if (item.category === "active_state" || item.category === "project" || item.category === "goal") return 2;
+  return 3;
 }
 
 /** Select a deterministic, bounded snapshot for a fresh agent context. */
-export function budgetCanonicalMemory(
-  documents: readonly CanonicalMemoryDocument[],
-  globalRevision: number,
-  options: BudgetOptions = {},
-): CanonicalMemoryContext {
-  const maxDocuments = Math.max(0, Math.min(options.maxDocuments ?? CANONICAL_MEMORY_MAX_DOCUMENTS, CANONICAL_MEMORY_MAX_DOCUMENTS));
+export function budgetCanonicalMemory(items: readonly BudgetItem[], globalRevision: number, options: BudgetOptions = {}): CanonicalMemoryContext {
+  const maxItems = Math.max(0, Math.min(options.maxItems ?? CANONICAL_MEMORY_MAX_ITEMS, CANONICAL_MEMORY_MAX_ITEMS));
   const maxCharacters = Math.max(0, Math.min(options.maxCharacters ?? CANONICAL_MEMORY_MAX_CHARACTERS, CANONICAL_MEMORY_MAX_CHARACTERS));
-  const selected: CanonicalMemoryContext["documents"] = [];
+  const selected: CanonicalMemoryContext["items"] = [];
   let usedCharacters = 0;
-
-  const ordered = [...documents]
-    .filter((document) => !document.archivedAt && (!options.profileId || document.profileId === options.profileId))
-    .sort((left, right) => priority(left.logicalKey) - priority(right.logicalKey)
-      || right.updatedAt.localeCompare(left.updatedAt)
-      || left.logicalKey.localeCompare(right.logicalKey));
-
-  for (const document of ordered) {
-    if (selected.length >= maxDocuments || usedCharacters >= maxCharacters) break;
+  const ordered = [...items]
+    .filter((item) => item.status === "active" && (!options.profileId || item.profileId === options.profileId))
+    .sort((left, right) => priority(left) - priority(right) || right.importance - left.importance || right.updatedAt.localeCompare(left.updatedAt) || left.canonicalKey.localeCompare(right.canonicalKey));
+  for (const item of ordered) {
+    if (selected.length >= maxItems || usedCharacters >= maxCharacters) break;
     const remaining = maxCharacters - usedCharacters;
-    if (remaining <= 0) break;
-    const content = document.contentMarkdown.slice(0, remaining);
+    const content = item.content.slice(0, remaining);
     if (!content) continue;
-    selected.push({
-      logicalKey: document.logicalKey,
-      contentMarkdown: content,
-      documentRevision: document.documentRevision,
-      updatedAt: document.updatedAt,
-    });
+    selected.push({ canonicalKey: item.canonicalKey, content, category: item.category, itemRevision: item.itemRevision ?? 0, updatedAt: item.updatedAt });
     usedCharacters += content.length;
   }
-
-  return {
-    globalRevision: Number.isSafeInteger(globalRevision) && globalRevision >= 0 ? globalRevision : 0,
-    documents: selected,
-  };
+  return { globalRevision: Number.isSafeInteger(globalRevision) && globalRevision >= 0 ? globalRevision : 0, items: selected };
 }
 
+function escapePrompt(value: string) {
+  return value.replace(/[<>]/g, (character) => character === "<" ? "&lt;" : "&gt;");
+}
+
+/** Render structured items as a small Markdown-like model view. */
 export function formatCanonicalMemoryPrompt(memory: CanonicalMemoryContext) {
-  if (memory.documents.length === 0) return "";
-  const body = memory.documents.map((document) => `<memory-document key="${document.logicalKey}" revision="${document.documentRevision}">\n${document.contentMarkdown.replace(/[<>]/g, (character) => character === "<" ? "&lt;" : "&gt;")}\n</memory-document>`).join("\n");
-  return `<canonical-memory global-revision="${memory.globalRevision}">\n${body}\n</canonical-memory>`;
+  if (memory.items.length === 0) return "";
+  const body = memory.items.map((item) => `### ${item.canonicalKey}\n_${item.category}_\n\n${escapePrompt(item.content)}`).join("\n\n");
+  return `<saved-memory global-revision="${memory.globalRevision}">\n${body}\n</saved-memory>`;
 }

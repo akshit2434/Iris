@@ -1,8 +1,8 @@
 import { isProfileId, type ProfileId } from "@/lib/profiles";
-import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryDocumentRevisionInput, type MemoryProvenanceInput } from "@/server/memory/types";
+import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryItemRevisionInput, type MemoryProvenanceInput } from "@/server/memory/types";
 
-const LOGICAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-const MAX_MARKDOWN_LENGTH = 500_000;
+const CANONICAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const MAX_CONTENT_LENGTH = 500_000;
 const MAX_EXCERPT_LENGTH = 2_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 240;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -11,17 +11,17 @@ export function assertMemoryProfileId(value: unknown): asserts value is ProfileI
   if (!isProfileId(value)) throw new Error("A valid profile scope is required.");
 }
 
-export function validateLogicalKey(value: string) {
-  const logicalKey = value.trim();
-  if (!logicalKey || logicalKey.length > 200 || !LOGICAL_KEY_PATTERN.test(logicalKey)) {
-    throw new Error("Canonical memory logical keys must be short safe paths.");
+export function validateCanonicalKey(value: string) {
+  const canonicalKey = value.trim();
+  if (!canonicalKey || canonicalKey.length > 200 || !CANONICAL_KEY_PATTERN.test(canonicalKey)) {
+    throw new Error("Memory canonical keys must be short safe identifiers.");
   }
-  return logicalKey;
+  return canonicalKey;
 }
 
-export function validateCanonicalMarkdown(value: string) {
-  if (!value || value.length > MAX_MARKDOWN_LENGTH || value.includes("\u0000")) {
-    throw new Error("Canonical memory content must be non-empty natural Markdown.");
+export function validateMemoryContent(value: string) {
+  if (!value || value.length > MAX_CONTENT_LENGTH || value.includes("\u0000")) {
+    throw new Error("Memory content must be non-empty natural language.");
   }
   return value;
 }
@@ -46,19 +46,22 @@ export function validateProvenance(provenance: MemoryProvenanceInput | undefined
   return source;
 }
 
-export function validateApplyMemoryDocumentRevision(input: ApplyMemoryDocumentRevisionInput) {
+export function validateApplyMemoryItemRevision(input: ApplyMemoryItemRevisionInput) {
   assertMemoryProfileId(input.profileId);
-  const logicalKey = validateLogicalKey(input.logicalKey);
-  const contentMarkdown = validateCanonicalMarkdown(input.contentMarkdown);
-  if (input.expectedDocumentRevision !== undefined && input.expectedDocumentRevision !== null && (!Number.isSafeInteger(input.expectedDocumentRevision) || input.expectedDocumentRevision < 0)) {
-    throw new Error("Expected memory document revision must be a non-negative integer.");
+  const canonicalKey = validateCanonicalKey(input.canonicalKey);
+  const content = validateMemoryContent(input.content);
+  if (input.expectedItemRevision !== undefined && input.expectedItemRevision !== null && (!Number.isSafeInteger(input.expectedItemRevision) || input.expectedItemRevision < 0)) {
+    throw new Error("Expected memory item revision must be a non-negative integer.");
   }
   const idempotencyKey = input.idempotencyKey === undefined || input.idempotencyKey === null ? null : input.idempotencyKey.trim();
   if (idempotencyKey !== null && (!idempotencyKey || idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH)) {
     throw new Error("Memory idempotency keys must be short and non-empty.");
   }
   validateProvenance(input.provenance);
-  return { ...input, logicalKey, contentMarkdown, idempotencyKey };
+  if (input.supersededByItemId !== undefined && input.supersededByItemId !== null) validateMemoryUuid(input.supersededByItemId, "Superseded memory item ID");
+  if (input.confidence !== undefined && (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1)) throw new Error("Memory confidence must be between 0 and 1.");
+  if (input.importance !== undefined && (!Number.isFinite(input.importance) || input.importance < 0 || input.importance > 1)) throw new Error("Memory importance must be between 0 and 1.");
+  return { ...input, canonicalKey, content, idempotencyKey };
 }
 
 export function validateEmbedding(vector: readonly number[]) {

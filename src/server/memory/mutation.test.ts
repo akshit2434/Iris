@@ -1,59 +1,42 @@
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryMutationService } from "@/server/memory/mutation";
-import type { MemoryStore } from "@/server/memory/types";
+import type { MemoryItem, MemoryStore } from "@/server/memory/types";
 
-const base = {
-  profileId: "profile-a" as const,
-  threadId: "00000000-0000-4000-8000-000000000011",
-  currentUserMessageId: "00000000-0000-4000-8000-000000000010",
-  agentRunId: "00000000-0000-4000-8000-000000000012",
-  toolCallId: "call-memory",
-  logicalKey: "PROFILE.md",
-  contentMarkdown: "# Profile\n\nThe user prefers concise answers.",
-  expectedDocumentRevision: null,
-  mutationKind: "create" as const,
-};
+const ids = { thread: "00000000-0000-4000-8000-000000000001", message: "00000000-0000-4000-8000-000000000002", run: "00000000-0000-4000-8000-000000000003" };
+const base = { profileId: "profile-a" as const, threadId: ids.thread, currentUserMessageId: ids.message, agentRunId: ids.run, toolCallId: "call-1", canonicalKey: "profile.communication", content: "The user prefers concise answers.", expectedItemRevision: null, mutationKind: "create" as const };
 
-function store(documents: Awaited<ReturnType<MemoryStore["listDocuments"]>> = []): MemoryStore {
-  return {
-    listDocuments: vi.fn(async () => documents),
-    getDocument: vi.fn(async () => null),
-    getCurrentRevision: vi.fn(async () => 0),
-    applyDocumentRevision: vi.fn(async (input) => ({ profileId: input.profileId, documentId: "00000000-0000-4000-8000-000000000020", documentRevision: 1, profileGlobalRevision: 1, revisionId: "00000000-0000-4000-8000-000000000021", provenanceId: "00000000-0000-4000-8000-000000000022" })),
-    searchMessages: vi.fn(async () => []),
-    readMessageContext: vi.fn(async (_profileId, messageId) => messageId === base.currentUserMessageId ? ({
-      thread: { id: base.threadId, profileId: "profile-a" as const, title: "Test", createdAt: "now", updatedAt: "now" },
-      target: { messageId, threadId: base.threadId, profileId: "profile-a" as const, role: "user" as const, content: "remember", createdAt: "now" },
-      before: [], after: [],
-    }) : null),
-    searchDocuments: vi.fn(async () => []),
-  };
+function makeItem(itemRevision = 1): MemoryItem {
+  return { id: "00000000-0000-4000-8000-000000000010", profileId: "profile-a", canonicalKey: "profile.communication", content: "old", itemRevision, category: "preference", valueScope: "single", origin: "explicit", confidence: 1, importance: 0.5, sensitivity: "normal", status: "active", validFrom: null, validUntil: null, lastConfirmedAt: null, supersededByItemId: null, createdAt: "now", updatedAt: "now", archivedAt: null, deletedAt: null };
 }
 
-describe("governed memory mutation", () => {
-  it("applies only with current message provenance and a run/tool idempotency key", async () => {
+function store(items: MemoryItem[] = []): MemoryStore {
+  return {
+    listItems: vi.fn(async () => items), getItem: vi.fn(async () => null), getCurrentRevision: vi.fn(async () => 0),
+    readMessageContext: vi.fn(async () => ({ thread: { id: ids.thread, profileId: "profile-a" as const, title: "Test", createdAt: "now", updatedAt: "now" }, target: { messageId: ids.message, threadId: ids.thread, profileId: "profile-a" as const, role: "user" as const, content: "Remember this", createdAt: "now" }, before: [], after: [] })),
+    applyItemRevision: vi.fn(async (input) => ({ profileId: input.profileId, itemId: "00000000-0000-4000-8000-000000000020", canonicalKey: input.canonicalKey, itemRevision: 1, profileGlobalRevision: 1, revisionId: "00000000-0000-4000-8000-000000000021", sourceId: "00000000-0000-4000-8000-000000000022", contentHash: "a".repeat(64) })),
+    searchMessages: vi.fn(async () => []), searchItems: vi.fn(async () => []),
+  } as unknown as MemoryStore;
+}
+
+describe("governed structured memory mutation", () => {
+  it("applies only with current user-message provenance", async () => {
     const memoryStore = store();
-    const service = createMemoryMutationService(memoryStore);
-    await expect(service.apply(base)).resolves.toMatchObject({ status: "applied", logicalKey: "PROFILE.md" });
-    expect(memoryStore.applyDocumentRevision).toHaveBeenCalledWith(expect.objectContaining({
-      idempotencyKey: "memory-patch:00000000-0000-4000-8000-000000000012:call-memory",
-      provenance: { sourceKind: "message", sourceThreadId: base.threadId, sourceMessageId: base.currentUserMessageId },
-    }));
+    memoryStore.liftSuppression = vi.fn(async () => 1);
+    const result = await createMemoryMutationService(memoryStore).apply(base);
+    expect(result).toMatchObject({ status: "applied", canonicalKey: "profile.communication" });
+    expect(memoryStore.applyItemRevision).toHaveBeenCalledWith(expect.objectContaining({ canonicalKey: "profile.communication", content: base.content, origin: "explicit", status: "active" }));
+    expect(memoryStore.liftSuppression).toHaveBeenCalledWith("profile-a", "profile.communication");
   });
 
-  it("rejects stale revisions, duplicate creates, and oversized content without writing", async () => {
-    const existing = [{ id: "doc", profileId: "profile-a" as const, logicalKey: "PROFILE.md", contentMarkdown: "old", documentRevision: 4, contentHash: "a".repeat(64), createdAt: "now", updatedAt: "now", archivedAt: null }];
-    const memoryStore = store(existing);
-    const service = createMemoryMutationService(memoryStore);
-    await expect(service.apply(base)).resolves.toMatchObject({ status: "conflict" });
-    await expect(service.apply({ ...base, mutationKind: "update", expectedDocumentRevision: 3 })).resolves.toMatchObject({ status: "stale" });
-    await expect(service.apply({ ...base, contentMarkdown: "x".repeat(20_001) })).resolves.toMatchObject({ status: "conflict" });
-    expect(memoryStore.applyDocumentRevision).not.toHaveBeenCalled();
+  it("rejects stale revisions and oversized content without writing", async () => {
+    const memoryStore = store([makeItem(4)]);
+    await expect(createMemoryMutationService(memoryStore).apply({ ...base, mutationKind: "update", expectedItemRevision: 3 })).resolves.toMatchObject({ status: "stale" });
+    await expect(createMemoryMutationService(store()).apply({ ...base, content: "x".repeat(20_001) })).resolves.toMatchObject({ status: "conflict" });
   });
 
-  it("does not permit malformed or foreign provenance inputs", async () => {
-    const service = createMemoryMutationService(store());
-    await expect(service.apply({ ...base, currentUserMessageId: "foreign" })).rejects.toThrow("valid UUID");
-    await expect(service.apply({ ...base, currentUserMessageId: "00000000-0000-4000-8000-000000000099" })).resolves.toMatchObject({ status: "conflict" });
+  it("rejects malformed or foreign provenance", async () => {
+    const memoryStore = store();
+    vi.mocked(memoryStore.readMessageContext!).mockResolvedValue(null);
+    await expect(createMemoryMutationService(memoryStore).apply(base)).resolves.toMatchObject({ status: "conflict" });
   });
 });

@@ -16,7 +16,7 @@ export type ThreadAgentContext = {
     continuityRevision: number;
   };
   futureMemory: {
-    global: CanonicalMemoryContext["documents"];
+    global: CanonicalMemoryContext["items"];
     thread: readonly [];
     globalRevision: number;
   };
@@ -50,7 +50,7 @@ export function buildThreadAgentContext(input: {
       continuityRevision: input.continuityRevision ?? 0,
     },
     futureMemory: {
-      global: [...(input.canonicalMemory?.documents ?? [])],
+      global: [...(input.canonicalMemory?.items ?? [])],
       thread: [],
       globalRevision: input.canonicalMemory?.globalRevision ?? 0,
     },

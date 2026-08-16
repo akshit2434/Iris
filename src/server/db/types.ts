@@ -237,87 +237,112 @@ export type Database = {
         }>;
         Relationships: [];
       };
-      memory_documents: {
+      memory_items: {
         Row: {
           id: string;
           profile_id: "profile-a" | "profile-b";
-          logical_key: string;
-          content_markdown: string;
-          document_revision: number;
-          content_hash: string;
+          canonical_key: string;
+          content: string;
+          item_revision: number;
+          category: "personal_fact" | "preference" | "instruction" | "project" | "goal" | "relationship" | "active_state" | "pattern" | "other";
+          value_scope: "single" | "multi";
+          origin: "explicit" | "inferred" | "system";
+          confidence: number;
+          importance: number;
+          sensitivity: "normal" | "sensitive" | "highly_sensitive";
+          status: "active" | "superseded" | "archived" | "deleted";
+          valid_from: string | null;
+          valid_until: string | null;
+          last_confirmed_at: string | null;
+          superseded_by_item_id: string | null;
           created_at: string;
           updated_at: string;
           archived_at: string | null;
+          deleted_at: string | null;
         };
         Insert: {
           id?: string;
           profile_id: "profile-a" | "profile-b";
-          logical_key: string;
-          content_markdown: string;
-          document_revision?: number;
-          content_hash: string;
+          canonical_key: string;
+          content: string;
+          item_revision?: number;
+          category?: Database["public"]["Tables"]["memory_items"]["Row"]["category"];
+          value_scope?: Database["public"]["Tables"]["memory_items"]["Row"]["value_scope"];
+          origin?: Database["public"]["Tables"]["memory_items"]["Row"]["origin"];
+          confidence?: number;
+          importance?: number;
+          sensitivity?: Database["public"]["Tables"]["memory_items"]["Row"]["sensitivity"];
+          status?: Database["public"]["Tables"]["memory_items"]["Row"]["status"];
+          valid_from?: string | null;
+          valid_until?: string | null;
+          last_confirmed_at?: string | null;
+          superseded_by_item_id?: string | null;
           created_at?: string;
           updated_at?: string;
           archived_at?: string | null;
+          deleted_at?: string | null;
         };
-        Update: Partial<{
-          id: string;
-          profile_id: "profile-a" | "profile-b";
-          logical_key: string;
-          content_markdown: string;
-          document_revision: number;
-          content_hash: string;
-          created_at: string;
-          updated_at: string;
-          archived_at: string | null;
-        }>;
+        Update: Partial<Database["public"]["Tables"]["memory_items"]["Insert"]>;
         Relationships: [];
       };
-      memory_document_revisions: {
+      memory_item_revisions: {
         Row: {
           id: string;
           profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision: number;
+          item_id: string;
+          item_revision: number;
           profile_global_revision: number;
-          content_markdown: string;
+          canonical_key: string;
+          content: string;
           content_hash: string;
-          mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          category: Database["public"]["Tables"]["memory_items"]["Row"]["category"];
+          value_scope: Database["public"]["Tables"]["memory_items"]["Row"]["value_scope"];
+          origin: Database["public"]["Tables"]["memory_items"]["Row"]["origin"];
+          confidence: number;
+          importance: number;
+          sensitivity: Database["public"]["Tables"]["memory_items"]["Row"]["sensitivity"];
+          status: Database["public"]["Tables"]["memory_items"]["Row"]["status"];
+          valid_from: string | null;
+          valid_until: string | null;
+          last_confirmed_at: string | null;
+          superseded_by_item_id: string | null;
+          mutation_kind: "create" | "update" | "supersede" | "archive" | "restore" | "delete" | "merge";
           idempotency_key: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision: number;
+          item_id: string;
+          item_revision: number;
           profile_global_revision: number;
-          content_markdown: string;
+          canonical_key: string;
+          content: string;
           content_hash: string;
-          mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
+          category: Database["public"]["Tables"]["memory_items"]["Row"]["category"];
+          value_scope: Database["public"]["Tables"]["memory_items"]["Row"]["value_scope"];
+          origin: Database["public"]["Tables"]["memory_items"]["Row"]["origin"];
+          confidence: number;
+          importance: number;
+          sensitivity: Database["public"]["Tables"]["memory_items"]["Row"]["sensitivity"];
+          status: Database["public"]["Tables"]["memory_items"]["Row"]["status"];
+          valid_from?: string | null;
+          valid_until?: string | null;
+          last_confirmed_at?: string | null;
+          superseded_by_item_id?: string | null;
+          mutation_kind: "create" | "update" | "supersede" | "archive" | "restore" | "delete" | "merge";
           idempotency_key?: string | null;
           created_at?: string;
         };
-        Update: Partial<{
-          id: string;
-          profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision: number;
-          profile_global_revision: number;
-          content_markdown: string;
-          content_hash: string;
-          mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
-          idempotency_key?: string | null;
-          created_at: string;
-        }>;
+        Update: Partial<Database["public"]["Tables"]["memory_item_revisions"]["Insert"]>;
         Relationships: [];
       };
-      memory_provenance: {
+      memory_item_sources: {
         Row: {
           id: string;
           profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision_id: string;
+          item_id: string;
+          revision_id: string;
           source_kind: "message" | "thread" | "agent_event" | "manual" | "system";
           source_thread_id: string | null;
           source_message_id: string | null;
@@ -330,8 +355,8 @@ export type Database = {
         Insert: {
           id?: string;
           profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision_id: string;
+          item_id: string;
+          revision_id: string;
           source_kind: "message" | "thread" | "agent_event" | "manual" | "system";
           source_thread_id?: string | null;
           source_message_id?: string | null;
@@ -341,20 +366,31 @@ export type Database = {
           metadata?: Json;
           created_at?: string;
         };
-        Update: Partial<{
+        Update: Partial<Database["public"]["Tables"]["memory_item_sources"]["Insert"]>;
+        Relationships: [];
+      };
+      memory_suppressions: {
+        Row: {
           id: string;
           profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision_id: string;
-          source_kind: "message" | "thread" | "agent_event" | "manual" | "system";
-          source_thread_id: string | null;
-          source_message_id: string | null;
-          source_agent_event_id: string | null;
-          source_agent_run_id: string | null;
-          source_excerpt: string | null;
-          metadata: Json;
+          canonical_key: string;
+          content_hash: string | null;
+          item_id: string | null;
+          reason: string;
           created_at: string;
-        }>;
+          lifted_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          canonical_key: string;
+          content_hash?: string | null;
+          item_id?: string | null;
+          reason?: string;
+          created_at?: string;
+          lifted_at?: string | null;
+        };
+        Update: Partial<Database["public"]["Tables"]["memory_suppressions"]["Insert"]>;
         Relationships: [];
       };
       message_semantic_index: {
@@ -450,10 +486,16 @@ export type Database = {
           job_id: string;
           proposal_index: number;
           idempotency_key: string;
-          logical_key: string;
-          proposed_content_markdown: string;
-          expected_document_revision: number | null;
-          mutation_kind: "create" | "update" | "merge";
+          canonical_key: string;
+          proposed_content: string;
+          category: Database["public"]["Tables"]["memory_items"]["Row"]["category"];
+          value_scope: Database["public"]["Tables"]["memory_items"]["Row"]["value_scope"];
+          origin: Database["public"]["Tables"]["memory_items"]["Row"]["origin"];
+          confidence: number;
+          importance: number;
+          sensitivity: Database["public"]["Tables"]["memory_items"]["Row"]["sensitivity"];
+          expected_item_revision: number | null;
+          mutation_kind: "create" | "update" | "supersede" | "merge";
           source_message_ids: string[];
           rationale: string | null;
           status: "proposed" | "applied" | "rejected" | "conflict";
@@ -471,10 +513,16 @@ export type Database = {
           job_id: string;
           proposal_index: number;
           idempotency_key: string;
-          logical_key: string;
-          proposed_content_markdown: string;
-          expected_document_revision?: number | null;
-          mutation_kind: "create" | "update" | "merge";
+          canonical_key: string;
+          proposed_content: string;
+          category?: Database["public"]["Tables"]["memory_items"]["Row"]["category"];
+          value_scope?: Database["public"]["Tables"]["memory_items"]["Row"]["value_scope"];
+          origin?: Database["public"]["Tables"]["memory_items"]["Row"]["origin"];
+          confidence?: number;
+          importance?: number;
+          sensitivity?: Database["public"]["Tables"]["memory_items"]["Row"]["sensitivity"];
+          expected_item_revision?: number | null;
+          mutation_kind: "create" | "update" | "supersede" | "merge";
           source_message_ids: string[];
           rationale?: string | null;
           status?: "proposed" | "applied" | "rejected" | "conflict";
@@ -492,10 +540,16 @@ export type Database = {
           job_id: string;
           proposal_index: number;
           idempotency_key: string;
-          logical_key: string;
-          proposed_content_markdown: string;
-          expected_document_revision: number | null;
-          mutation_kind: "create" | "update" | "merge";
+          canonical_key: string;
+          proposed_content: string;
+          category: Database["public"]["Tables"]["memory_items"]["Row"]["category"];
+          value_scope: Database["public"]["Tables"]["memory_items"]["Row"]["value_scope"];
+          origin: Database["public"]["Tables"]["memory_items"]["Row"]["origin"];
+          confidence: number;
+          importance: number;
+          sensitivity: Database["public"]["Tables"]["memory_items"]["Row"]["sensitivity"];
+          expected_item_revision: number | null;
+          mutation_kind: "create" | "update" | "supersede" | "merge";
           source_message_ids: string[];
           rationale: string | null;
           status: "proposed" | "applied" | "rejected" | "conflict";
@@ -601,13 +655,20 @@ export type Database = {
           combined_score: number;
         }>;
       };
-      apply_memory_document_revision: {
+      apply_memory_item_revision: {
         Args: {
           p_profile_id: "profile-a" | "profile-b";
-          p_logical_key: string;
-          p_content_markdown: string;
-          p_mutation_kind: "create" | "update" | "archive" | "restore" | "merge";
-          p_expected_document_revision?: number | null;
+          p_canonical_key: string;
+          p_content: string;
+          p_category?: "personal_fact" | "preference" | "instruction" | "project" | "goal" | "relationship" | "active_state" | "pattern" | "other";
+          p_value_scope?: "single" | "multi";
+          p_origin?: "explicit" | "inferred" | "system";
+          p_confidence?: number;
+          p_importance?: number;
+          p_sensitivity?: string;
+          p_status?: "active" | "superseded" | "archived" | "deleted";
+          p_mutation_kind?: "create" | "update" | "supersede" | "archive" | "restore" | "delete" | "merge";
+          p_expected_item_revision?: number | null;
           p_source_kind?: "message" | "thread" | "agent_event" | "manual" | "system";
           p_source_thread_id?: string | null;
           p_source_message_id?: string | null;
@@ -616,15 +677,26 @@ export type Database = {
           p_source_excerpt?: string | null;
           p_source_metadata?: Json;
           p_idempotency_key?: string | null;
+          p_superseded_by_item_id?: string | null;
         };
         Returns: Array<{
           profile_id: "profile-a" | "profile-b";
-          document_id: string;
-          document_revision: number;
+          item_id: string;
+          canonical_key: string;
+          item_revision: number;
           profile_global_revision: number;
           revision_id: string;
-          provenance_id: string;
+          source_id: string;
+          content_hash: string;
         }>;
+      };
+      create_memory_suppression: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_canonical_key: string; p_content_hash?: string | null; p_item_id?: string | null; p_reason?: string };
+        Returns: string;
+      };
+      lift_memory_suppression: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_canonical_key: string; p_content_hash?: string | null };
+        Returns: number;
       };
       enqueue_memory_consolidation_job: {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string };
@@ -652,11 +724,11 @@ export type Database = {
         Returns: Array<{
           status: "applied" | "conflict" | "rejected";
           proposal_id: string;
-          document_id: string | null;
-          document_revision: number | null;
+          item_id: string | null;
+          item_revision: number | null;
           profile_global_revision: number | null;
           revision_id: string | null;
-          provenance_id: string | null;
+          source_id: string | null;
           reason: string | null;
         }>;
       };

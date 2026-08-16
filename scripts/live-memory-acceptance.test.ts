@@ -24,8 +24,8 @@ type Ledger = {
   threadIds: string[];
   messageIds: string[];
   runIds: string[];
-  documentIds: string[];
-  logicalKeys: string[];
+  itemIds: string[];
+  canonicalKeys: string[];
 };
 
 type Aggregate = {
@@ -34,7 +34,7 @@ type Aggregate = {
   runs: number;
   events: number;
   contexts: number;
-  documents: number;
+  items: number;
 };
 
 type TurnResult = {
@@ -74,7 +74,7 @@ function hasFinishedTool(events: AgentRuntimeEvent[], name: string, predicate: (
   return events.some((event) => event.type === "tool_finished" && event.toolName === name && event.ok && predicate(event.output));
 }
 
-async function countRows(table: "threads" | "messages" | "agent_runs" | "agent_events" | "thread_context" | "memory_documents") {
+async function countRows(table: "threads" | "messages" | "agent_runs" | "agent_events" | "thread_context" | "memory_items") {
   const column = table === "thread_context" ? "thread_id" : "id";
   const { count, error } = await getDatabase().from(table).select(column, { count: "exact", head: true });
   if (error) throw error;
@@ -82,15 +82,15 @@ async function countRows(table: "threads" | "messages" | "agent_runs" | "agent_e
 }
 
 async function aggregate(): Promise<Aggregate> {
-  const [threads, messages, runs, events, contexts, documents] = await Promise.all([
+  const [threads, messages, runs, events, contexts, items] = await Promise.all([
     countRows("threads"),
     countRows("messages"),
     countRows("agent_runs"),
     countRows("agent_events"),
     countRows("thread_context"),
-    countRows("memory_documents"),
+    countRows("memory_items"),
   ]);
-  return { threads, messages, runs, events, contexts, documents };
+  return { threads, messages, runs, events, contexts, items };
 }
 
 function sameAggregate(left: Aggregate, right: Aggregate) {
@@ -185,11 +185,12 @@ function requireHealthyTurn(result: TurnResult) {
 
 async function cleanup(ledgerPath: string, ledger: Ledger) {
   const database = getDatabase();
-  const documentIds = unique(ledger.documentIds);
-  for (const documentId of documentIds) {
-    await database.from("memory_provenance").delete().eq("profile_id", ledger.profileId).eq("document_id", documentId);
-    await database.from("memory_document_revisions").delete().eq("profile_id", ledger.profileId).eq("document_id", documentId);
-    await database.from("memory_documents").delete().eq("profile_id", ledger.profileId).eq("id", documentId);
+  const itemIds = unique(ledger.itemIds);
+  for (const itemId of itemIds) {
+    await database.from("memory_item_sources").delete().eq("profile_id", ledger.profileId).eq("item_id", itemId);
+    await database.from("memory_item_revisions").delete().eq("profile_id", ledger.profileId).eq("item_id", itemId);
+    await database.from("memory_suppressions").delete().eq("profile_id", ledger.profileId).eq("item_id", itemId);
+    await database.from("memory_items").delete().eq("profile_id", ledger.profileId).eq("id", itemId);
   }
   const threadIds = unique(ledger.threadIds);
   if (threadIds.length > 0) {
@@ -205,8 +206,8 @@ describe("guarded live memory acceptance", () => {
     const ledgerDirectory = mkdtempSync(join(tmpdir(), "iris-memory-acceptance-"));
     const ledgerPath = join(ledgerDirectory, "ledger.json");
     const tag = `accept-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-    const logicalKey = `acceptance-${tag}.md`;
-    const ledger: Ledger = { profileId: PROFILE_ID, threadIds: [], messageIds: [], runIds: [], documentIds: [], logicalKeys: [logicalKey] };
+    const canonicalKey = `acceptance.${tag}`;
+    const ledger: Ledger = { profileId: PROFILE_ID, threadIds: [], messageIds: [], runIds: [], itemIds: [], canonicalKeys: [canonicalKey] };
     persistLedger(ledgerPath, ledger);
     const database = getDatabase();
     const store = createSupabaseMemoryStore(database);
@@ -230,7 +231,7 @@ describe("guarded live memory acceptance", () => {
       // local configuration failure must leave the database untouched.
       const model = createProductionChatModel();
       const baselineRevision = await store.getCurrentRevision(PROFILE_ID);
-      const baselineDocumentIds = new Set((await store.listDocuments(PROFILE_ID, { includeArchived: true })).map((document) => document.id));
+      const baselineItemIds = new Set((await store.listItems(PROFILE_ID, { includeArchived: true })).map((item) => item.id));
       const oldThreads = [
         { threadId: crypto.randomUUID(), messageId: crypto.randomUUID(), at: "2026-08-13T10:00:00.000Z", text: `${tag}: Project Ember early launch plan was 2026-08-01.` },
         { threadId: crypto.randomUUID(), messageId: crypto.randomUUID(), at: "2026-07-05T10:00:00.000Z", text: `${tag}: Project Ember launch decision was 2026-08-15.` },
@@ -258,18 +259,18 @@ describe("guarded live memory acceptance", () => {
         context: chatAContext,
         memoryMutation,
         returnDirectTools: ["memory_patch"],
-        messages: [{ role: "user", content: `I explicitly want you to remember one durable synthetic fact now. Use memory_patch immediately with logicalKey ${logicalKey}, mutationKind create, expectedDocumentRevision null, and a full replacement Markdown document saying the fictional Project Ember launch date is 2026-09-30 and supersedes earlier plans. Make the tool call your only action.` }],
+        messages: [{ role: "user", content: `I explicitly want you to remember one durable synthetic fact now. Use memory_patch immediately with canonicalKey ${canonicalKey}, mutationKind create, expectedItemRevision null, and plain content saying the fictional Project Ember launch date is 2026-09-30 and supersedes earlier plans. Make the tool call your only action.` }],
       });
       observedEvents.push(...chatAResult.events);
       requireHealthyTurn(chatAResult);
 
-      const documentAfterPatch = await store.getDocument(PROFILE_ID, logicalKey, { includeArchived: true });
-      if (documentAfterPatch) ledger.documentIds.push(documentAfterPatch.id);
-      for (const document of await store.listDocuments(PROFILE_ID, { includeArchived: true })) {
-        if (!baselineDocumentIds.has(document.id) && document.contentMarkdown.includes(tag)) ledger.documentIds.push(document.id);
+      const itemAfterPatch = await store.getItem(PROFILE_ID, canonicalKey, { includeArchived: true });
+      if (itemAfterPatch) ledger.itemIds.push(itemAfterPatch.id);
+      for (const item of await store.listItems(PROFILE_ID, { includeArchived: true })) {
+        if (!baselineItemIds.has(item.id) && item.content.includes(tag)) ledger.itemIds.push(item.id);
       }
-      const currentDocuments = await store.listDocuments(PROFILE_ID);
-      const canonicalMemory = budgetCanonicalMemory(currentDocuments, await store.getCurrentRevision(PROFILE_ID), { profileId: PROFILE_ID });
+      const currentItems = await store.listItems(PROFILE_ID);
+      const canonicalMemory = budgetCanonicalMemory(currentItems, await store.getCurrentRevision(PROFILE_ID), { profileId: PROFILE_ID });
 
       const chatB = await createFreshTurn(ledger, tag, `Synthetic ${tag}: answer a short question about the current fictional Project Ember launch date.`);
       const chatBResult = await collectTurn({
@@ -284,7 +285,7 @@ describe("guarded live memory acceptance", () => {
       const chatCResult = await collectTurn({
         model,
         context: createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: chatC.threadId, threadTitle: `Synthetic ${tag} C`, browserTimezone: "UTC", currentUserMessageId: chatC.messageId, agentRunId: chatC.runId, canonicalMemory, now: new Date("2026-08-16T00:02:00.000Z") }),
-        memoryRetrieval: { searchMessages: (input) => store.searchMessages(input), readMessages: (profileId, messageId, windowSize) => store.readMessageContext(profileId, messageId, windowSize), listMemory: (profileId) => store.listDocuments(profileId), currentRevision: (profileId) => store.getCurrentRevision(profileId), readMemory: (profileId, key) => store.getDocument(profileId, key), searchMemory: (profileId, query, limit) => store.searchDocuments(profileId, query, limit) },
+        memoryRetrieval: { searchMessages: (input) => store.searchMessages(input), readMessages: (profileId, messageId, windowSize) => store.readMessageContext(profileId, messageId, windowSize), listMemory: (profileId) => store.listItems(profileId), currentRevision: (profileId) => store.getCurrentRevision(profileId), readMemory: (profileId, key) => store.getItem(profileId, key), searchMemory: (profileId, query, limit) => store.searchItems(profileId, query, limit) },
         returnDirectTools: ["search_messages", "read_messages"],
         messages: [{ role: "user", content: "Where did I decide that? Search prior chats for the exact source of the fictional Project Ember launch decision and return a validated internal open source action. Do not guess and do not use an external URL." }],
       });
@@ -294,7 +295,7 @@ describe("guarded live memory acceptance", () => {
       const oldTurn = await createExistingTurn(ledger, oldThreads[0].threadId, tag, `Synthetic ${tag}: what is the current fictional Project Ember launch date? Use the latest memory correction, not stale history.`);
       const throughRevision = await store.getCurrentRevision(PROFILE_ID);
       const changeHint = await readMemoryChangeHint({ store, profileId: PROFILE_ID, afterRevision: baselineRevision, throughRevision });
-      const oldCanonical = budgetCanonicalMemory(await store.listDocuments(PROFILE_ID), throughRevision, { profileId: PROFILE_ID });
+      const oldCanonical = budgetCanonicalMemory(await store.listItems(PROFILE_ID), throughRevision, { profileId: PROFILE_ID });
       const oldContext = createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: oldThreads[0].threadId, threadTitle: `Synthetic ${tag} old`, browserTimezone: "UTC", currentUserMessageId: oldTurn.messageId, agentRunId: oldTurn.runId, canonicalMemory: oldCanonical, memoryChangeHint: changeHint, now: new Date("2026-08-16T00:03:00.000Z") });
       const oldResult = await collectTurn({ model, context: oldContext, messages: [{ role: "user", content: "What is the current fictional Project Ember launch date? Use the latest correction." }] });
       observedEvents.push(...oldResult.events);
@@ -303,23 +304,23 @@ describe("guarded live memory acceptance", () => {
       const patchFinished = chatAResult.events.find((event): event is Extract<AgentRuntimeEvent, { type: "tool_finished" }> => event.type === "tool_finished" && event.toolName === "memory_patch");
       const sourceRows = chatCResult.events.flatMap((event) => event.type === "tool_finished" && (event.toolName === "search_messages" || event.toolName === "read_messages") ? memorySourceRows(event.toolName, event.output, PROFILE_ID) : []);
       const sourceRow = sourceRows.find((row) => oldMessageIds.includes(row.action.messageId));
-      const archiveRevision = documentAfterPatch?.documentRevision ?? 0;
-      const archiveResult = documentAfterPatch && archiveRevision > 0
-        ? await memoryArchive.archive({ profileId: PROFILE_ID, threadId: chatC.threadId, currentUserMessageId: chatC.messageId, agentRunId: chatC.runId, toolCallId: `acceptance-archive-${tag}`, logicalKey, expectedDocumentRevision: archiveRevision, reason: "Synthetic acceptance cleanup." })
-        : { status: "not_found" as const, logicalKey, reason: "Synthetic document was not created." };
-      const activeAfterArchive = await store.getDocument(PROFILE_ID, logicalKey);
+      const archiveRevision = itemAfterPatch?.itemRevision ?? 0;
+      const archiveResult = itemAfterPatch && archiveRevision > 0
+        ? await memoryArchive.archive({ profileId: PROFILE_ID, threadId: chatC.threadId, currentUserMessageId: chatC.messageId, agentRunId: chatC.runId, toolCallId: `acceptance-archive-${tag}`, canonicalKey, expectedItemRevision: archiveRevision, reason: "Synthetic acceptance cleanup." })
+        : { status: "not_found" as const, canonicalKey, reason: "Synthetic memory item was not created." };
+      const activeAfterArchive = await store.getItem(PROFILE_ID, canonicalKey);
       const rawSourceStillPresent = Boolean(await store.readMessageContext(PROFILE_ID, oldMessageIds[0], 1));
       const assertions = {
         requestBudget: providerCalls <= MAX_REQUESTS,
         chatAPatchStarted: chatAResult.events.some((event) => event.type === "tool_started" && event.toolName === "memory_patch"),
         chatAPatchFinished: Boolean(patchFinished && patchFinished.ok && patchFinished.output && typeof patchFinished.output === "object" && (patchFinished.output as Record<string, unknown>).status === "applied"),
-        canonicalMutationApplied: Boolean(documentAfterPatch && documentAfterPatch.contentMarkdown.includes("2026-09-30")),
+        canonicalMutationApplied: Boolean(itemAfterPatch && itemAfterPatch.content.includes("2026-09-30")),
         chatBCurrentValue: /2026-09-30|september 30/i.test(textOutput(chatBResult.events)),
         chatBNoToolClaim: toolNames(chatBResult.events).length === 0,
         chatCSearchStarted: chatCResult.events.some((event) => event.type === "tool_started" && event.toolName === "search_messages"),
         chatCSearchFinished: hasFinishedTool(chatCResult.events, "search_messages", () => true) || hasFinishedTool(chatCResult.events, "read_messages", () => true),
         validatedHistoricalSourceAction: Boolean(sourceRow && validateOpenMessageAction(sourceRow.action) && oldMessageIds.includes(sourceRow.action.messageId)),
-        oldContextHasCollapsedCorrection: changeHint.changes.some((change) => change.logicalKey === logicalKey && change.contentMarkdown.includes("2026-09-30")) && buildDynamicSystemPrompt(oldContext).includes("memory-changes"),
+        oldContextHasCollapsedCorrection: changeHint.changes.some((change) => change.canonicalKey === canonicalKey && change.content.includes("2026-09-30")) && buildDynamicSystemPrompt(oldContext).includes("memory-changes"),
         oldChatFollowsCorrection: /2026-09-30|september 30/i.test(textOutput(oldResult.events)),
         archiveApplied: archiveResult.status === "applied",
         archivedDocumentAbsentFromActiveContext: activeAfterArchive === null,

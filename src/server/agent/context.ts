@@ -24,24 +24,25 @@ export const agentContextSchema = z.object({
   agentRunId: z.string().uuid().nullable(),
   canonicalMemory: z.object({
     globalRevision: z.number().int().nonnegative(),
-    documents: z.array(z.object({
-      logicalKey: z.string().max(200),
-      contentMarkdown: z.string().max(6_000),
-      documentRevision: z.number().int().nonnegative(),
+    items: z.array(z.object({
+      canonicalKey: z.string().max(200),
+      content: z.string().max(6_000),
+      category: z.string().max(40),
+      itemRevision: z.number().int().nonnegative(),
       updatedAt: z.string(),
-    })).max(8),
+    })).max(24),
   }),
   memoryChangeHint: z.object({
     afterRevision: z.number().int().nonnegative(),
     throughRevision: z.number().int().nonnegative(),
     changes: z.array(z.object({
-      logicalKey: z.string().max(200),
-      mutationKind: z.enum(["create", "update", "archive", "restore", "merge"]),
-      documentRevision: z.number().int().positive(),
+      canonicalKey: z.string().max(200),
+      mutationKind: z.enum(["create", "update", "supersede", "archive", "restore", "delete", "merge"]),
+      itemRevision: z.number().int().positive(),
       profileGlobalRevision: z.number().int().positive(),
       createdAt: z.string(),
-      archivedAt: z.string().nullable(),
-      contentMarkdown: z.string().max(20_000),
+      status: z.enum(["active", "superseded", "archived", "deleted"]),
+      content: z.string().max(20_000),
       excerpt: z.string().max(400),
     })).max(8),
   }),
@@ -138,7 +139,7 @@ export function createAgentContext(input: {
     continuityRevision: input.continuityRevision ?? 0,
     currentUserMessageId: input.currentUserMessageId ?? null,
     agentRunId: input.agentRunId ?? null,
-    canonicalMemory: input.canonicalMemory ?? { globalRevision: 0, documents: [] },
+    canonicalMemory: input.canonicalMemory ?? { globalRevision: 0, items: [] },
     memoryChangeHint: input.memoryChangeHint ?? { afterRevision: 0, throughRevision: 0, changes: [] },
   });
 

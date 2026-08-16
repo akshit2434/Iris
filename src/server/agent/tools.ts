@@ -44,17 +44,19 @@ const searchMessagesInput = z.object({
   limit: z.number().int().min(1).max(10).default(5),
 }).extend(optionalToolProgressSchema.shape);
 const readMessagesInput = z.object({ messageId: z.string().uuid(), windowSize: z.number().int().min(1).max(10).default(3) });
-const memoryReadInput = z.object({ logicalKey: z.string().trim().min(1).max(200) });
+const memoryReadInput = z.object({ canonicalKey: z.string().trim().min(1).max(200) });
 const memorySearchInput = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(10).default(5) }).extend(optionalToolProgressSchema.shape);
 const memoryPatchInput = z.object({
-  logicalKey: z.string().trim().min(1).max(200),
-  contentMarkdown: z.string().min(1).max(20_000),
-  expectedDocumentRevision: z.number().int().nonnegative().nullable(),
-  mutationKind: z.enum(["create", "update", "merge"]),
+  canonicalKey: z.string().trim().min(1).max(200),
+  content: z.string().min(1).max(20_000),
+  expectedItemRevision: z.number().int().nonnegative().nullable(),
+  mutationKind: z.enum(["create", "update", "supersede", "merge"]),
+  category: z.enum(["personal_fact", "preference", "instruction", "project", "goal", "relationship", "active_state", "pattern", "other"]).optional(),
+  valueScope: z.enum(["single", "multi"]).optional(),
 }).extend(optionalToolProgressSchema.shape);
 const memoryArchiveInput = z.object({
-  logicalKey: z.string().trim().min(1).max(200),
-  expectedDocumentRevision: z.number().int().min(1),
+  canonicalKey: z.string().trim().min(1).max(200),
+  expectedItemRevision: z.number().int().min(1),
   reason: z.string().trim().max(240).optional(),
 }).extend(optionalToolProgressSchema.shape);
 
@@ -132,29 +134,31 @@ export async function readMessages(context: AgentContext, input: z.infer<typeof 
 }
 
 export async function listMemory(context: AgentContext, retrieval: MemoryRetrieval) {
-  const documents = await retrieval.listMemory(context.profileId);
+  const items = await retrieval.listMemory(context.profileId);
   return {
     kind: "memory_list" as const,
-    results: documents.slice(0, 20).map((document) => ({
-      logicalKey: document.logicalKey,
-      documentRevision: document.documentRevision,
-      updatedAt: document.updatedAt,
-      excerpt: boundedExcerpt(document.contentMarkdown),
+    results: items.slice(0, 20).map((item) => ({
+      canonicalKey: item.canonicalKey,
+      itemRevision: item.itemRevision,
+      updatedAt: item.updatedAt,
+      category: item.category,
+      excerpt: boundedExcerpt(item.content),
     })),
   };
 }
 
 export async function readMemory(context: AgentContext, input: z.infer<typeof memoryReadInput>, retrieval: MemoryRetrieval) {
-  const document = await retrieval.readMemory(context.profileId, input.logicalKey);
-  if (!document) return { kind: "memory_read" as const, found: false as const, document: null };
+  const item = await retrieval.readMemory(context.profileId, input.canonicalKey);
+  if (!item) return { kind: "memory_read" as const, found: false as const, item: null };
   return {
     kind: "memory_read" as const,
     found: true as const,
-    document: {
-      logicalKey: document.logicalKey,
-      documentRevision: document.documentRevision,
-      updatedAt: document.updatedAt,
-      contentMarkdown: document.contentMarkdown.slice(0, 12_000),
+    item: {
+      canonicalKey: item.canonicalKey,
+      itemRevision: item.itemRevision,
+      updatedAt: item.updatedAt,
+      category: item.category,
+      content: item.content.slice(0, 12_000),
     },
   };
 }
@@ -167,8 +171,8 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
     kind: "memory_search" as const,
     query,
     results: results.map((result) => ({
-      logicalKey: result.logicalKey,
-      documentRevision: result.documentRevision,
+      canonicalKey: result.canonicalKey,
+      itemRevision: result.itemRevision,
       updatedAt: result.updatedAt,
       excerpt: boundedExcerpt(result.excerpt),
     })),
@@ -177,7 +181,7 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
 
 export async function patchMemory(context: AgentContext, input: z.infer<typeof memoryPatchInput>, mutation: MemoryMutationService, toolCallId: string) {
   if (!context.currentUserMessageId || !context.agentRunId) {
-    return { kind: "memory_patch" as const, status: "conflict" as const, logicalKey: input.logicalKey.trim(), reason: "Memory writes are available only during a persisted user turn.", candidates: [] };
+    return { kind: "memory_patch" as const, status: "conflict" as const, canonicalKey: input.canonicalKey.trim(), reason: "Memory writes are available only during a persisted user turn.", candidates: [] };
   }
   const result = await mutation.apply({
     profileId: context.profileId,
@@ -185,17 +189,19 @@ export async function patchMemory(context: AgentContext, input: z.infer<typeof m
     currentUserMessageId: context.currentUserMessageId,
     agentRunId: context.agentRunId,
     toolCallId,
-    logicalKey: input.logicalKey,
-    contentMarkdown: input.contentMarkdown,
-    expectedDocumentRevision: input.expectedDocumentRevision,
+    canonicalKey: input.canonicalKey,
+    content: input.content,
+    expectedItemRevision: input.expectedItemRevision,
     mutationKind: input.mutationKind,
+    category: input.category,
+    valueScope: input.valueScope,
   });
   if (result.status !== "applied") return { kind: "memory_patch" as const, ...result };
   return {
     kind: "memory_patch" as const,
     status: "applied" as const,
-    logicalKey: result.logicalKey,
-    documentRevision: result.revision.documentRevision,
+    canonicalKey: result.canonicalKey,
+    itemRevision: result.revision.itemRevision,
     profileGlobalRevision: result.revision.profileGlobalRevision,
     revisionId: result.revision.revisionId,
   };
@@ -203,7 +209,7 @@ export async function patchMemory(context: AgentContext, input: z.infer<typeof m
 
 export async function archiveMemory(context: AgentContext, input: z.infer<typeof memoryArchiveInput>, archive: MemoryArchiveService, toolCallId: string) {
   if (!context.currentUserMessageId || !context.agentRunId) {
-    return { kind: "memory_archive" as const, status: "conflict" as const, logicalKey: input.logicalKey.trim(), reason: "Memory archives are available only during a persisted user turn." };
+    return { kind: "memory_archive" as const, status: "conflict" as const, canonicalKey: input.canonicalKey.trim(), reason: "Memory archives are available only during a persisted user turn." };
   }
   const result = await archive.archive({
     profileId: context.profileId,
@@ -211,16 +217,16 @@ export async function archiveMemory(context: AgentContext, input: z.infer<typeof
     currentUserMessageId: context.currentUserMessageId,
     agentRunId: context.agentRunId,
     toolCallId,
-    logicalKey: input.logicalKey,
-    expectedDocumentRevision: input.expectedDocumentRevision,
+    canonicalKey: input.canonicalKey,
+    expectedItemRevision: input.expectedItemRevision,
     reason: input.reason,
   });
   if (result.status !== "applied") return { kind: "memory_archive" as const, ...result };
   return {
     kind: "memory_archive" as const,
     status: "applied" as const,
-    logicalKey: result.logicalKey,
-    documentRevision: result.revision.documentRevision,
+    canonicalKey: result.canonicalKey,
+    itemRevision: result.revision.itemRevision,
     profileGlobalRevision: result.revision.profileGlobalRevision,
     revisionId: result.revision.revisionId,
   };
@@ -282,7 +288,7 @@ export function createInternalTools(
     async (_input, runtime: ToolRuntime<unknown, AgentContext>) => listMemory(runtime.context, getMemoryRetrieval()),
     {
       name: "memory_list",
-      description: "List the current profile's canonical memory documents for read-only inspection. Do not invent documents or claim a write.",
+      description: "List the current profile's structured saved memory items for read-only inspection. Do not invent items or claim a write.",
       schema: emptyInput,
       returnDirect: isReturnDirect("memory_list"),
     },
@@ -291,7 +297,7 @@ export function createInternalTools(
     async (input: z.infer<typeof memoryReadInput>, runtime: ToolRuntime<unknown, AgentContext>) => readMemory(runtime.context, input, getMemoryRetrieval()),
     {
       name: "memory_read",
-      description: "Read one canonical memory document by its logical key. This is read-only and profile-scoped.",
+      description: "Read one structured saved memory item by canonical key. This is read-only and profile-scoped.",
       schema: memoryReadInput,
       returnDirect: isReturnDirect("memory_read"),
     },
@@ -300,7 +306,7 @@ export function createInternalTools(
     async (input: z.infer<typeof memorySearchInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMemory(runtime.context, input, getMemoryRetrieval()),
     {
       name: "memory_search",
-      description: "Search current canonical memory documents lexically when relevant context is missing. Keep ordinary self-contained requests tool-free.",
+      description: "Search current structured saved memory items lexically when relevant context is missing. Keep ordinary self-contained requests tool-free.",
       schema: memorySearchInput,
       returnDirect: isReturnDirect("memory_search"),
     },
@@ -309,7 +315,7 @@ export function createInternalTools(
     async (input: z.infer<typeof memoryPatchInput>, runtime: ToolRuntime<unknown, AgentContext>) => patchMemory(runtime.context, input, getMemoryMutation(), runtime.toolCallId),
     {
       name: "memory_patch",
-      description: "Use only when the user explicitly asks to remember, correct, or preserve a durable fact, or a stable fact clearly has future value. Search/read related memory first when uncertain. Submit a full replacement Markdown document with the current expected revision; do not store transient chatter, secrets, or speculative psychology. This is profile/thread scoped and read-only tools cannot be bypassed.",
+      description: "Use only when the user explicitly asks to remember, correct, or preserve a durable fact, or a stable fact clearly has future value. Search/read related memory first when uncertain. Submit plain natural-language content with the current expected item revision; do not store transient chatter, secrets, or speculative psychology. This is profile/thread scoped and read-only tools cannot be bypassed.",
       schema: memoryPatchInput,
       returnDirect: isReturnDirect("memory_patch"),
     },
@@ -318,7 +324,7 @@ export function createInternalTools(
     async (input: z.infer<typeof memoryArchiveInput>, runtime: ToolRuntime<unknown, AgentContext>) => archiveMemory(runtime.context, input, getMemoryArchive(), runtime.toolCallId),
     {
       name: "memory_archive",
-      description: "Use only when the user clearly asks Iris to forget, stop treating, or archive a canonical memory. Keep the raw transcript; this is not legal or physical erasure and there is no hard-delete tool. Supply the current expected document revision after reading the document.",
+      description: "Use only when the user clearly asks Iris to forget, stop treating, or archive a saved memory item. Keep the raw transcript; this is not legal or physical erasure. Supply the current expected item revision after reading the item.",
       schema: memoryArchiveInput,
       returnDirect: isReturnDirect("memory_archive"),
     },

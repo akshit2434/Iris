@@ -2,67 +2,99 @@ import type { ProfileId } from "@/lib/profiles";
 
 export const MEMORY_EMBEDDING_DIMENSIONS = 1536;
 
-export type CanonicalMutationKind = "create" | "update" | "archive" | "restore" | "merge";
+export type MemoryItemCategory =
+  | "personal_fact"
+  | "preference"
+  | "instruction"
+  | "project"
+  | "goal"
+  | "relationship"
+  | "active_state"
+  | "pattern"
+  | "other";
+export type MemoryItemValueScope = "single" | "multi";
+export type MemoryItemOrigin = "explicit" | "inferred" | "system";
+export type MemoryItemStatus = "active" | "superseded" | "archived" | "deleted";
+export type MemoryMutationKind = "create" | "update" | "supersede" | "archive" | "restore" | "delete" | "merge";
 export type MemorySourceKind = "message" | "thread" | "agent_event" | "manual" | "system";
 
-export type CanonicalMemoryDocument = {
+export type MemoryItem = {
   id: string;
   profileId: ProfileId;
-  logicalKey: string;
-  contentMarkdown: string;
-  documentRevision: number;
-  contentHash: string;
+  canonicalKey: string;
+  content: string;
+  itemRevision: number;
+  category: MemoryItemCategory;
+  valueScope: MemoryItemValueScope;
+  origin: MemoryItemOrigin;
+  confidence: number;
+  importance: number;
+  sensitivity: "normal" | "sensitive" | "highly_sensitive";
+  status: MemoryItemStatus;
+  validFrom: string | null;
+  validUntil: string | null;
+  lastConfirmedAt: string | null;
+  supersededByItemId: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  deletedAt: string | null;
 };
 
-export type MemoryDocumentListOptions = {
-  includeArchived?: boolean;
-};
+export type MemoryItemListOptions = { includeArchived?: boolean; includeDeleted?: boolean };
 
-export type MemoryRevisionDelta = {
-  logicalKey: string;
-  mutationKind: CanonicalMutationKind;
-  documentRevision: number;
+export type MemoryItemRevision = {
+  id: string;
+  profileId: ProfileId;
+  itemId: string;
+  itemRevision: number;
   profileGlobalRevision: number;
+  canonicalKey: string;
+  content: string;
+  contentHash: string;
+  category: MemoryItemCategory;
+  valueScope: MemoryItemValueScope;
+  origin: MemoryItemOrigin;
+  confidence: number;
+  importance: number;
+  sensitivity: "normal" | "sensitive" | "highly_sensitive";
+  status: MemoryItemStatus;
+  validFrom: string | null;
+  validUntil: string | null;
+  lastConfirmedAt: string | null;
+  supersededByItemId: string | null;
+  mutationKind: MemoryMutationKind;
+  idempotencyKey: string | null;
   createdAt: string;
-  archivedAt: string | null;
-  contentMarkdown: string;
-  excerpt: string;
 };
 
-export type MemoryProvenanceRecord = {
+export type MemorySource = {
   id: string;
   sourceKind: MemorySourceKind;
   sourceThreadId: string | null;
   sourceMessageId: string | null;
+  sourceAgentEventId: string | null;
+  sourceAgentRunId: string | null;
   sourceExcerpt: string | null;
+  metadata: Record<string, unknown>;
   createdAt: string;
-  action?: {
-    type: "open_message";
-    threadId: string;
-    messageId: string;
-    label: string;
-  };
+  action?: { type: "open_message"; threadId: string; messageId: string; label: string };
 };
 
-export type MemoryDocumentAudit = {
-  document: CanonicalMemoryDocument;
-  revisions: Array<MemoryDocumentRevision & { provenance: MemoryProvenanceRecord[] }>;
+export type MemoryItemAudit = {
+  item: MemoryItem;
+  revisions: Array<MemoryItemRevision & { sources: MemorySource[] }>;
 };
 
-export type MemoryDocumentRevision = {
-  id: string;
-  profileId: ProfileId;
-  documentId: string;
-  documentRevision: number;
+export type MemoryRevisionDelta = {
+  canonicalKey: string;
+  mutationKind: MemoryMutationKind;
+  itemRevision: number;
   profileGlobalRevision: number;
-  contentMarkdown: string;
-  contentHash: string;
-  mutationKind: CanonicalMutationKind;
-  idempotencyKey: string | null;
   createdAt: string;
+  status: MemoryItemStatus;
+  content: string;
+  excerpt: string;
 };
 
 export type MemoryProvenanceInput = {
@@ -75,23 +107,44 @@ export type MemoryProvenanceInput = {
   metadata?: Record<string, unknown>;
 };
 
-export type ApplyMemoryDocumentRevisionInput = {
+export type ApplyMemoryItemRevisionInput = {
   profileId: ProfileId;
-  logicalKey: string;
-  contentMarkdown: string;
-  mutationKind: CanonicalMutationKind;
-  expectedDocumentRevision?: number | null;
+  canonicalKey: string;
+  content: string;
+  category?: MemoryItemCategory;
+  valueScope?: MemoryItemValueScope;
+  origin?: MemoryItemOrigin;
+  confidence?: number;
+  importance?: number;
+  sensitivity?: "normal" | "sensitive" | "highly_sensitive";
+  status: MemoryItemStatus;
+  mutationKind: MemoryMutationKind;
+  expectedItemRevision?: number | null;
   provenance?: MemoryProvenanceInput;
   idempotencyKey?: string | null;
+  supersededByItemId?: string | null;
 };
 
-export type AppliedMemoryDocumentRevision = {
+export type AppliedMemoryItemRevision = {
   profileId: ProfileId;
-  documentId: string;
-  documentRevision: number;
+  itemId: string;
+  canonicalKey: string;
+  itemRevision: number;
   profileGlobalRevision: number;
   revisionId: string;
-  provenanceId: string;
+  sourceId: string;
+  contentHash: string;
+};
+
+export type MemorySuppression = {
+  id: string;
+  profileId: ProfileId;
+  canonicalKey: string;
+  contentHash: string | null;
+  itemId: string | null;
+  reason: string;
+  createdAt: string;
+  liftedAt: string | null;
 };
 
 export type MessageSearchInput = {
@@ -126,25 +179,21 @@ export type MessageContextItem = {
 };
 
 export type MessageContextWindow = {
-  thread: {
-    id: string;
-    profileId: ProfileId;
-    title: string;
-    createdAt: string;
-    updatedAt: string;
-  };
+  thread: { id: string; profileId: ProfileId; title: string; createdAt: string; updatedAt: string };
   target: MessageContextItem;
   before: MessageContextItem[];
   after: MessageContextItem[];
 };
 
-export type CanonicalDocumentSearchResult = {
-  documentId: string;
+export type MemoryItemSearchResult = {
+  itemId: string;
   profileId: ProfileId;
-  logicalKey: string;
+  canonicalKey: string;
   excerpt: string;
-  documentRevision: number;
+  itemRevision: number;
   updatedAt: string;
+  category: MemoryItemCategory;
+  status: MemoryItemStatus;
 };
 
 export type MessageEmbeddingMetadata = {
@@ -155,134 +204,66 @@ export type MessageEmbeddingMetadata = {
   embeddingModel: string | null;
   indexedAt: string;
 };
-
-export type DerivedMessageEmbedding = MessageEmbeddingMetadata & {
-  embedding: readonly number[];
-};
-
-export type MemoryMessageForIndex = {
-  messageId: string;
-  profileId: ProfileId;
-  threadId: string;
-  content: string;
-};
+export type DerivedMessageEmbedding = MessageEmbeddingMetadata & { embedding: readonly number[] };
+export type MemoryMessageForIndex = { messageId: string; profileId: ProfileId; threadId: string; content: string };
 
 export type MemoryStore = {
-  listDocuments: (profileId: ProfileId, options?: MemoryDocumentListOptions) => Promise<CanonicalMemoryDocument[]>;
-  getDocument: (profileId: ProfileId, logicalKey: string, options?: MemoryDocumentListOptions) => Promise<CanonicalMemoryDocument | null>;
+  listItems: (profileId: ProfileId, options?: MemoryItemListOptions) => Promise<MemoryItem[]>;
+  getItem: (profileId: ProfileId, canonicalKey: string, options?: MemoryItemListOptions) => Promise<MemoryItem | null>;
   getCurrentRevision: (profileId: ProfileId) => Promise<number>;
-  applyDocumentRevision: (input: ApplyMemoryDocumentRevisionInput) => Promise<AppliedMemoryDocumentRevision>;
+  applyItemRevision: (input: ApplyMemoryItemRevisionInput) => Promise<AppliedMemoryItemRevision>;
   searchMessages: (input: MessageSearchInput) => Promise<MessageSearchResult[]>;
   readMessageContext: (profileId: ProfileId, messageId: string, windowSize?: number) => Promise<MessageContextWindow | null>;
-  searchDocuments: (profileId: ProfileId, query: string, limit?: number, options?: MemoryDocumentListOptions) => Promise<CanonicalDocumentSearchResult[]>;
+  searchItems: (profileId: ProfileId, query: string, limit?: number, options?: MemoryItemListOptions) => Promise<MemoryItemSearchResult[]>;
   listMemoryChanges?: (profileId: ProfileId, afterRevision: number, throughRevision: number, limit?: number) => Promise<MemoryRevisionDelta[]>;
-  getDocumentAudit?: (profileId: ProfileId, logicalKey: string) => Promise<MemoryDocumentAudit | null>;
+  getItemAudit?: (profileId: ProfileId, canonicalKey: string) => Promise<MemoryItemAudit | null>;
+  isSuppressed?: (profileId: ProfileId, canonicalKey: string, contentHash?: string | null) => Promise<boolean>;
+  createSuppression?: (input: { profileId: ProfileId; canonicalKey: string; contentHash?: string | null; itemId?: string | null; reason?: string | null }) => Promise<string>;
+  liftSuppression?: (profileId: ProfileId, canonicalKey: string, contentHash?: string | null) => Promise<number>;
   advanceThreadMemoryRevisionSeen?: (profileId: ProfileId, threadId: string, snapshotRevision: number) => Promise<number>;
 };
 
 export type MemoryConsolidationJobStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 export type MemoryMutationProposalStatus = "proposed" | "applied" | "rejected" | "conflict";
-
 export type MemoryConsolidationJob = {
-  id: string;
-  profileId: ProfileId;
-  threadId: string;
-  sourceRunId: string;
-  status: MemoryConsolidationJobStatus;
-  attempts: number;
-  availableAt: string;
-  leaseExpiresAt: string | null;
-  lockedAt: string | null;
-  lockedBy: string | null;
-  lastErrorCode: string | null;
-  lastErrorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
-  completedAt: string | null;
+  id: string; profileId: ProfileId; threadId: string; sourceRunId: string; status: MemoryConsolidationJobStatus;
+  attempts: number; availableAt: string; leaseExpiresAt: string | null; lockedAt: string | null; lockedBy: string | null;
+  lastErrorCode: string | null; lastErrorMessage: string | null; createdAt: string; updatedAt: string; completedAt: string | null;
 };
-
 export type MemoryMutationProposal = {
-  id: string;
-  profileId: ProfileId;
-  threadId: string;
-  sourceRunId: string;
-  jobId: string;
-  proposalIndex: number;
-  idempotencyKey: string;
-  logicalKey: string;
-  proposedContentMarkdown: string;
-  expectedDocumentRevision: number | null;
-  mutationKind: Extract<CanonicalMutationKind, "create" | "update" | "merge">;
-  sourceMessageIds: string[];
-  rationale: string | null;
-  status: MemoryMutationProposalStatus;
-  reason: string | null;
-  resultRevisionId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  appliedAt: string | null;
+  id: string; profileId: ProfileId; threadId: string; sourceRunId: string; jobId: string; proposalIndex: number;
+  idempotencyKey: string; canonicalKey: string; proposedContent: string; category: MemoryItemCategory;
+  valueScope: MemoryItemValueScope; origin: MemoryItemOrigin; confidence: number; importance: number;
+  sensitivity: "normal" | "sensitive" | "highly_sensitive"; expectedItemRevision: number | null;
+  mutationKind: Extract<MemoryMutationKind, "create" | "update" | "supersede" | "merge">; sourceMessageIds: string[];
+  rationale: string | null; status: MemoryMutationProposalStatus; reason: string | null; resultRevisionId: string | null;
+  createdAt: string; updatedAt: string; appliedAt: string | null;
 };
-
 export type MemoryProposalApplyResult = {
-  status: "applied" | "conflict" | "rejected";
-  proposalId: string;
-  documentId: string | null;
-  documentRevision: number | null;
-  profileGlobalRevision: number | null;
-  revisionId: string | null;
-  provenanceId: string | null;
-  reason: string | null;
+  status: "applied" | "conflict" | "rejected"; proposalId: string; itemId: string | null; itemRevision: number | null;
+  profileGlobalRevision: number | null; revisionId: string | null; sourceId: string | null; reason: string | null;
 };
-
 export type MemoryGovernanceStore = {
   enqueueConsolidationJob: (profileId: ProfileId, threadId: string, sourceRunId: string) => Promise<MemoryConsolidationJob>;
   claimConsolidationJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<MemoryConsolidationJob[]>;
-  finishConsolidationJob: (input: {
-    profileId: ProfileId;
-    jobId: string;
-    workerId: string;
-    status: Extract<MemoryConsolidationJobStatus, "completed" | "failed" | "skipped">;
-    errorCode?: string | null;
-    errorMessage?: string | null;
-    retry?: boolean;
-    availableAt?: string | null;
-  }) => Promise<MemoryConsolidationJob>;
+  finishConsolidationJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Extract<MemoryConsolidationJobStatus, "completed" | "failed" | "skipped">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<MemoryConsolidationJob>;
   listJobMessages: (profileId: ProfileId, threadId: string, sourceRunId: string, limit?: number) => Promise<MemoryMessageForIndex[]>;
   insertMutationProposal: (proposal: Omit<MemoryMutationProposal, "id" | "status" | "reason" | "resultRevisionId" | "createdAt" | "updatedAt" | "appliedAt">) => Promise<MemoryMutationProposal>;
   applyMutationProposal: (profileId: ProfileId, jobId: string, proposalId: string, workerId: string) => Promise<MemoryProposalApplyResult>;
 };
-
 export type MessageSemanticIndexStore = {
   getMessageEmbeddingMetadata: (profileId: ProfileId, messageId: string) => Promise<MessageEmbeddingMetadata | null>;
   upsertMessageEmbedding: (input: DerivedMessageEmbedding) => Promise<void>;
 };
 
 export type ThreadCompactionJobStatus = "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
-
 export type ThreadCompactionJob = {
-  id: string;
-  profileId: ProfileId;
-  threadId: string;
-  sourceRunId: string;
-  status: ThreadCompactionJobStatus;
-  attempts: number;
-  idempotencyKey: string;
-  expectedCompactedThroughMessageId: string | null;
-  expectedContinuityRevision: number;
-  checkpointMessageId: string;
-  checkpointCreatedAt: string;
-  recentTailMessages: number;
-  availableAt: string;
-  leaseExpiresAt: string | null;
-  lockedAt: string | null;
-  lockedBy: string | null;
-  lastErrorCode: string | null;
-  lastErrorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
-  completedAt: string | null;
+  id: string; profileId: ProfileId; threadId: string; sourceRunId: string; status: ThreadCompactionJobStatus; attempts: number;
+  idempotencyKey: string; expectedCompactedThroughMessageId: string | null; expectedContinuityRevision: number;
+  checkpointMessageId: string; checkpointCreatedAt: string; recentTailMessages: number; availableAt: string;
+  leaseExpiresAt: string | null; lockedAt: string | null; lockedBy: string | null; lastErrorCode: string | null;
+  lastErrorMessage: string | null; createdAt: string; updatedAt: string; completedAt: string | null;
 };
-
 export type ThreadCompactionStore = {
   enqueueCompactionJob: (profileId: ProfileId, threadId: string, sourceRunId: string, minMessages?: number, recentTailMessages?: number) => Promise<ThreadCompactionJob | null>;
   claimCompactionJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<ThreadCompactionJob[]>;
@@ -291,12 +272,4 @@ export type ThreadCompactionStore = {
   applyCompactionCheckpoint: (input: { profileId: ProfileId; jobId: string; workerId: string; summary: string; pinnedNotes: string[]; checkpointMessageId: string; checkpointCreatedAt: string }) => Promise<"applied" | "conflict">;
   finishCompactionJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Exclude<ThreadCompactionJobStatus, "pending" | "running">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<ThreadCompactionJob>;
 };
-
-export type ThreadCompactionMessage = {
-  messageId: string;
-  profileId: ProfileId;
-  threadId: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  createdAt: string;
-};
+export type ThreadCompactionMessage = { messageId: string; profileId: ProfileId; threadId: string; role: "user" | "assistant" | "tool"; content: string; createdAt: string };

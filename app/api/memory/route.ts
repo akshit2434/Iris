@@ -9,64 +9,39 @@ function excerpt(value: string, max = 280) {
 }
 
 export async function GET(request: Request) {
-  try {
-    await assertAppAccess();
-  } catch {
-    return NextResponse.json({ error: "App access is required." }, { status: 401 });
-  }
+  try { await assertAppAccess(); } catch { return NextResponse.json({ error: "App access is required." }, { status: 401 }); }
   try {
     const profileId = await getSelectedProfile();
     if (!profileId) return NextResponse.json({ error: "Select a profile first." }, { status: 400 });
     const url = new URL(request.url);
-    const logicalKey = url.searchParams.get("logicalKey")?.trim() || null;
+    const canonicalKey = url.searchParams.get("canonicalKey")?.trim() || null;
     const includeArchived = url.searchParams.get("archived") === "true";
     const store = createSupabaseMemoryStore();
-    const [documents, globalRevision] = await Promise.all([
-      store.listDocuments(profileId, { includeArchived }),
-      store.getCurrentRevision(profileId),
-    ]);
-    const response: {
-      profileId: typeof profileId;
-      globalRevision: number;
-      documents: Array<{ logicalKey: string; documentRevision: number; updatedAt: string; archivedAt: string | null; excerpt: string }>;
-      document?: unknown;
-    } = {
-      profileId,
-      globalRevision,
-      documents: documents.slice(0, 40).map((document) => ({
-        logicalKey: document.logicalKey,
-        documentRevision: document.documentRevision,
-        updatedAt: document.updatedAt,
-        archivedAt: document.archivedAt,
-        excerpt: excerpt(document.contentMarkdown),
-      })),
+    const [items, globalRevision] = await Promise.all([store.listItems(profileId, { includeArchived }), store.getCurrentRevision(profileId)]);
+    const response: { profileId: typeof profileId; globalRevision: number; items: Array<{ canonicalKey: string; itemRevision: number; category: string; updatedAt: string; status: string; excerpt: string }>; item?: unknown } = {
+      profileId, globalRevision,
+      items: items.slice(0, 40).map((item) => ({ canonicalKey: item.canonicalKey, itemRevision: item.itemRevision, category: item.category, updatedAt: item.updatedAt, status: item.status, excerpt: excerpt(item.content) })),
     };
-    if (logicalKey) {
-      const audit = store.getDocumentAudit ? await store.getDocumentAudit(profileId, logicalKey) : null;
-      if (!audit || (!includeArchived && audit.document.archivedAt)) return NextResponse.json({ error: "Memory document not found." }, { status: 404 });
-      response.document = {
-        logicalKey: audit.document.logicalKey,
-        contentMarkdown: audit.document.contentMarkdown.slice(0, 20_000),
-        documentRevision: audit.document.documentRevision,
-        updatedAt: audit.document.updatedAt,
-        archivedAt: audit.document.archivedAt,
+    if (canonicalKey) {
+      const audit = store.getItemAudit ? await store.getItemAudit(profileId, canonicalKey) : null;
+      if (!audit || (!includeArchived && audit.item.status !== "active")) return NextResponse.json({ error: "Memory item not found." }, { status: 404 });
+      response.item = {
+        canonicalKey: audit.item.canonicalKey,
+        content: audit.item.content.slice(0, 20_000),
+        itemRevision: audit.item.itemRevision,
+        category: audit.item.category,
+        status: audit.item.status,
+        updatedAt: audit.item.updatedAt,
         revisions: audit.revisions.slice(0, 40).map((revision) => ({
-          documentRevision: revision.documentRevision,
+          itemRevision: revision.itemRevision,
           profileGlobalRevision: revision.profileGlobalRevision,
           mutationKind: revision.mutationKind,
           createdAt: revision.createdAt,
-          contentMarkdown: revision.contentMarkdown.slice(0, 20_000),
-          provenance: revision.provenance.slice(0, 5).map((source) => ({
-            sourceKind: source.sourceKind,
-            sourceExcerpt: source.sourceExcerpt,
-            createdAt: source.createdAt,
-            ...(source.action ? { action: source.action } : {}),
-          })),
+          content: revision.content.slice(0, 20_000),
+          sources: revision.sources.slice(0, 20).map((source) => ({ sourceKind: source.sourceKind, sourceThreadId: source.sourceThreadId, sourceMessageId: source.sourceMessageId, sourceAgentEventId: source.sourceAgentEventId, sourceAgentRunId: source.sourceAgentRunId, sourceExcerpt: source.sourceExcerpt, metadata: source.metadata, createdAt: source.createdAt, ...(source.action ? { action: source.action } : {}) })),
         })),
       };
     }
     return NextResponse.json(response, { headers: { "Cache-Control": "no-store" } });
-  } catch {
-    return NextResponse.json({ error: "Could not load memory." }, { status: 500 });
-  }
+  } catch { return NextResponse.json({ error: "Could not load memory." }, { status: 500 }); }
 }

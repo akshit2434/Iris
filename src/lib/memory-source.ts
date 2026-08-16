@@ -21,11 +21,12 @@ export type MemorySourceRow = {
   threadTitle?: string;
 };
 
-export type CanonicalMemoryRow = {
-  logicalKey: string;
+export type MemoryItemRow = {
+  canonicalKey: string;
   excerpt: string;
-  documentRevision: number;
+  itemRevision: number;
   updatedAt: string;
+  category?: string;
 };
 
 function isUuid(value: unknown): value is string {
@@ -102,25 +103,27 @@ export function memorySourceRows(toolName: string, output: SafeToolJson | undefi
   return [];
 }
 
-export function canonicalMemoryRows(toolName: string, output: SafeToolJson | undefined): CanonicalMemoryRow[] {
+export function memoryItemRows(toolName: string, output: SafeToolJson | undefined): MemoryItemRow[] {
   if (toolName === "memory_read") {
     const object = objectOutput(output);
-    if (!object?.document || typeof object.document !== "object" || Array.isArray(object.document)) return [];
-    const document = object.document as Record<string, SafeToolJson>;
-    const logicalKey = boundedText(document.logicalKey, 200);
-    const excerpt = boundedText(document.contentMarkdown, MAX_EXCERPT_LENGTH);
-    const documentRevision = typeof document.documentRevision === "number" && Number.isSafeInteger(document.documentRevision) ? document.documentRevision : null;
-    const updatedAt = boundedText(document.updatedAt, 80);
-    return logicalKey && excerpt && documentRevision !== null && updatedAt ? [{ logicalKey, excerpt, documentRevision, updatedAt }] : [];
+    if (!object?.item || typeof object.item !== "object" || Array.isArray(object.item)) return [];
+    const item = object.item as Record<string, SafeToolJson>;
+    const canonicalKey = boundedText(item.canonicalKey, 200);
+    const excerpt = boundedText(item.content, MAX_EXCERPT_LENGTH);
+    const itemRevision = typeof item.itemRevision === "number" && Number.isSafeInteger(item.itemRevision) ? item.itemRevision : null;
+    const updatedAt = boundedText(item.updatedAt, 80);
+    const category = boundedText(item.category, 80) ?? undefined;
+    return canonicalKey && excerpt && itemRevision !== null && updatedAt ? [{ canonicalKey, excerpt, itemRevision, updatedAt, ...(category ? { category } : {}) }] : [];
   }
   if (toolName !== "memory_list" && toolName !== "memory_search") return [];
   return getRows(output).flatMap((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return [];
     const candidate = value as Record<string, unknown>;
-    const logicalKey = boundedText(candidate.logicalKey, 200);
+    const canonicalKey = boundedText(candidate.canonicalKey, 200);
     const excerpt = boundedText(candidate.excerpt, MAX_EXCERPT_LENGTH);
-    const documentRevision = typeof candidate.documentRevision === "number" && Number.isSafeInteger(candidate.documentRevision) ? candidate.documentRevision : null;
+    const itemRevision = typeof candidate.itemRevision === "number" && Number.isSafeInteger(candidate.itemRevision) ? candidate.itemRevision : null;
     const updatedAt = boundedText(candidate.updatedAt, 80);
-    return logicalKey && excerpt && documentRevision !== null && updatedAt ? [{ logicalKey, excerpt, documentRevision, updatedAt }] : [];
+    const category = boundedText(candidate.category, 80) ?? undefined;
+    return canonicalKey && excerpt && itemRevision !== null && updatedAt ? [{ canonicalKey, excerpt, itemRevision, updatedAt, ...(category ? { category } : {}) }] : [];
   }).slice(0, 5);
 }

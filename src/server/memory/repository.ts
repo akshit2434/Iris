@@ -4,34 +4,86 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getDatabase } from "@/server/db/client";
 import type { Database, Json } from "@/server/db/types";
 import {
-  type AppliedMemoryDocumentRevision,
-  type CanonicalDocumentSearchResult,
-  type CanonicalMemoryDocument,
+  type AppliedMemoryItemRevision,
+  type MemoryItem,
+  type MemoryItemAudit,
+  type MemoryItemSearchResult,
+  type MemoryItemRevision,
+  type MemoryProvenanceInput,
+  type MemorySource,
   type MessageContextItem,
   type MessageContextWindow,
-  type MemoryProvenanceInput,
   type MessageEmbeddingMetadata,
   type MessageSearchResult,
   type MemoryStore,
   type MessageSemanticIndexStore,
-  type MemoryDocumentAudit,
-  type MemoryProvenanceRecord,
+  type ApplyMemoryItemRevisionInput,
 } from "@/server/memory/types";
-import { assertMemoryProfileId, normalizeMemoryLimit, normalizeMemoryQuery, validateApplyMemoryDocumentRevision, validateEmbedding, validateEmbeddingModel, validateLogicalKey, validateMemoryUuid } from "@/server/memory/validation";
+import {
+  assertMemoryProfileId,
+  normalizeMemoryLimit,
+  normalizeMemoryQuery,
+  validateApplyMemoryItemRevision,
+  validateCanonicalKey,
+  validateEmbedding,
+  validateEmbeddingModel,
+  validateMemoryUuid,
+} from "@/server/memory/validation";
 
 type MemoryDatabase = SupabaseClient<Database>;
 
-function toDocument(row: Database["public"]["Tables"]["memory_documents"]["Row"]): CanonicalMemoryDocument {
+type MemoryItemRow = Database["public"]["Tables"]["memory_items"]["Row"];
+type MemoryItemRevisionRow = Database["public"]["Tables"]["memory_item_revisions"]["Row"];
+
+function toItem(row: MemoryItemRow): MemoryItem {
   return {
     id: row.id,
     profileId: row.profile_id,
-    logicalKey: row.logical_key,
-    contentMarkdown: row.content_markdown,
-    documentRevision: row.document_revision,
-    contentHash: row.content_hash,
+    canonicalKey: row.canonical_key,
+    content: row.content,
+    itemRevision: row.item_revision,
+    category: row.category,
+    valueScope: row.value_scope,
+    origin: row.origin,
+    confidence: row.confidence,
+    importance: row.importance,
+    sensitivity: row.sensitivity,
+    status: row.status,
+    validFrom: row.valid_from,
+    validUntil: row.valid_until,
+    lastConfirmedAt: row.last_confirmed_at,
+    supersededByItemId: row.superseded_by_item_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,
+    deletedAt: row.deleted_at,
+  };
+}
+
+function toRevision(row: MemoryItemRevisionRow): MemoryItemRevision {
+  return {
+    id: row.id,
+    profileId: row.profile_id,
+    itemId: row.item_id,
+    itemRevision: row.item_revision,
+    profileGlobalRevision: row.profile_global_revision,
+    canonicalKey: row.canonical_key,
+    content: row.content,
+    contentHash: row.content_hash,
+    category: row.category,
+    valueScope: row.value_scope,
+    origin: row.origin,
+    confidence: row.confidence,
+    importance: row.importance,
+    sensitivity: row.sensitivity,
+    status: row.status,
+    validFrom: row.valid_from,
+    validUntil: row.valid_until,
+    lastConfirmedAt: row.last_confirmed_at,
+    supersededByItemId: row.superseded_by_item_id,
+    mutationKind: row.mutation_kind,
+    idempotencyKey: row.idempotency_key,
+    createdAt: row.created_at,
   };
 }
 
@@ -49,22 +101,8 @@ function toSearchResult(row: Database["public"]["Functions"]["search_messages"][
   };
 }
 
-function toMessageContextItem(row: {
-  id: string;
-  thread_id: string;
-  profile_id: "profile-a" | "profile-b";
-  role: "user" | "assistant" | "tool";
-  content: string;
-  created_at: string;
-}): MessageContextItem {
-  return {
-    messageId: row.id,
-    threadId: row.thread_id,
-    profileId: row.profile_id,
-    role: row.role,
-    content: row.content,
-    createdAt: row.created_at,
-  };
+function toMessageContextItem(row: { id: string; thread_id: string; profile_id: "profile-a" | "profile-b"; role: "user" | "assistant" | "tool"; content: string; created_at: string }): MessageContextItem {
+  return { messageId: row.id, threadId: row.thread_id, profileId: row.profile_id, role: row.role, content: row.content, createdAt: row.created_at };
 }
 
 function compactExcerpt(value: string, max = 280) {
@@ -74,54 +112,66 @@ function compactExcerpt(value: string, max = 280) {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function statusFilter(options: { includeArchived?: boolean; includeDeleted?: boolean }) {
+  if (options.includeDeleted) return ["active", "superseded", "archived", "deleted"] as const;
+  if (options.includeArchived) return ["active", "superseded", "archived"] as const;
+  return ["active"] as const;
+}
+
 export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase()): MemoryStore & MessageSemanticIndexStore {
   return {
-    async listDocuments(profileId, options = {}) {
+    async listItems(profileId, options = {}) {
       assertMemoryProfileId(profileId);
-      const query = database
-        .from("memory_documents")
-        .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
-        .eq("profile_id", profileId);
-      const filtered = options.includeArchived ? query : query.is("archived_at", null);
-      const result = await filtered.order("logical_key", { ascending: true });
-      if (result.error) throw result.error;
-      return (result.data ?? []).map((row) => toDocument(row));
+      const { data, error } = await database
+        .from("memory_items")
+        .select("id, profile_id, canonical_key, content, item_revision, category, value_scope, origin, confidence, importance, sensitivity, status, valid_from, valid_until, last_confirmed_at, superseded_by_item_id, created_at, updated_at, archived_at, deleted_at")
+        .eq("profile_id", profileId)
+        .in("status", [...statusFilter(options)])
+        .order("canonical_key", { ascending: true })
+        .order("updated_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map(toItem);
     },
 
-    async getDocument(profileId, logicalKey, options = {}) {
+    async getItem(profileId, canonicalKey, options = {}) {
       assertMemoryProfileId(profileId);
-      const validatedLogicalKey = validateLogicalKey(logicalKey);
-      let query = database
-        .from("memory_documents")
-        .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
+      const validatedKey = validateCanonicalKey(canonicalKey);
+      const { data, error } = await database
+        .from("memory_items")
+        .select("id, profile_id, canonical_key, content, item_revision, category, value_scope, origin, confidence, importance, sensitivity, status, valid_from, valid_until, last_confirmed_at, superseded_by_item_id, created_at, updated_at, archived_at, deleted_at")
         .eq("profile_id", profileId)
-        .eq("logical_key", validatedLogicalKey);
-      if (!options.includeArchived) query = query.is("archived_at", null);
-      const { data, error } = await query.maybeSingle();
+        .eq("canonical_key", validatedKey)
+        .in("status", [...statusFilter(options)])
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
       if (error) throw error;
-      return data ? toDocument(data) : null;
+      return data ? toItem(data) : null;
     },
 
     async getCurrentRevision(profileId) {
       assertMemoryProfileId(profileId);
-      const { data, error } = await database
-        .from("profile_memory_state")
-        .select("current_revision")
-        .eq("profile_id", profileId)
-        .maybeSingle();
+      const { data, error } = await database.from("profile_memory_state").select("current_revision").eq("profile_id", profileId).maybeSingle();
       if (error) throw error;
       return data?.current_revision ?? 0;
     },
 
-    async applyDocumentRevision(input) {
-      const validated = validateApplyMemoryDocumentRevision(input);
+    async applyItemRevision(input: ApplyMemoryItemRevisionInput) {
+      const validated = validateApplyMemoryItemRevision(input);
       const source = validated.provenance ?? ({ sourceKind: "manual" } satisfies MemoryProvenanceInput);
-      const { data, error } = await database.rpc("apply_memory_document_revision", {
+      const { data, error } = await database.rpc("apply_memory_item_revision", {
         p_profile_id: validated.profileId,
-        p_logical_key: validated.logicalKey,
-        p_content_markdown: validated.contentMarkdown,
+        p_canonical_key: validated.canonicalKey,
+        p_content: validated.content,
+        p_category: validated.category ?? "other",
+        p_value_scope: validated.valueScope ?? "single",
+        p_origin: validated.origin ?? "inferred",
+        p_confidence: validated.confidence ?? 0.5,
+        p_importance: validated.importance ?? 0.5,
+        p_sensitivity: validated.sensitivity ?? "normal",
+        p_status: validated.status,
         p_mutation_kind: validated.mutationKind,
-        p_expected_document_revision: validated.expectedDocumentRevision ?? null,
+        p_expected_item_revision: validated.expectedItemRevision ?? null,
         p_source_kind: source.sourceKind,
         p_source_thread_id: source.sourceThreadId ?? null,
         p_source_message_id: source.sourceMessageId ?? null,
@@ -130,18 +180,21 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
         p_source_excerpt: source.sourceExcerpt ?? null,
         p_source_metadata: (source.metadata ?? {}) as Json,
         p_idempotency_key: validated.idempotencyKey ?? null,
+        p_superseded_by_item_id: validated.supersededByItemId ?? null,
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
-      if (!row) throw new Error("Memory revision RPC returned no result.");
+      if (!row) throw new Error("Memory item revision RPC returned no result.");
       return {
         profileId: row.profile_id,
-        documentId: row.document_id,
-        documentRevision: row.document_revision,
+        itemId: row.item_id,
+        canonicalKey: row.canonical_key,
+        itemRevision: row.item_revision,
         profileGlobalRevision: row.profile_global_revision,
         revisionId: row.revision_id,
-        provenanceId: row.provenance_id,
-      } satisfies AppliedMemoryDocumentRevision;
+        sourceId: row.source_id,
+        contentHash: row.content_hash,
+      } satisfies AppliedMemoryItemRevision;
     },
 
     async searchMessages(input) {
@@ -164,250 +217,137 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
       validateMemoryUuid(messageId, "Message ID");
       const boundedWindow = normalizeMemoryLimit(windowSize, 3);
       const messageColumns = "id, thread_id, profile_id, role, content, created_at";
-      const { data: target, error: targetError } = await database
-        .from("messages")
-        .select(messageColumns)
-        .eq("id", messageId)
-        .eq("profile_id", profileId)
-        .maybeSingle();
+      const { data: target, error: targetError } = await database.from("messages").select(messageColumns).eq("id", messageId).eq("profile_id", profileId).maybeSingle();
       if (targetError) throw targetError;
       if (!target) return null;
-
-      const { data: thread, error: threadError } = await database
-        .from("threads")
-        .select("id, profile_id, title, created_at, updated_at")
-        .eq("id", target.thread_id)
-        .eq("profile_id", profileId)
-        .maybeSingle();
+      const { data: thread, error: threadError } = await database.from("threads").select("id, profile_id, title, created_at, updated_at").eq("id", target.thread_id).eq("profile_id", profileId).maybeSingle();
       if (threadError) throw threadError;
       if (!thread) return null;
-
-      const beforePromise = database
-        .from("messages")
-        .select(messageColumns)
-        .eq("thread_id", target.thread_id)
-        .eq("profile_id", profileId)
-        .or(`created_at.lt.${target.created_at},and(created_at.eq.${target.created_at},id.lt.${target.id})`)
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(boundedWindow);
-      const afterPromise = database
-        .from("messages")
-        .select(messageColumns)
-        .eq("thread_id", target.thread_id)
-        .eq("profile_id", profileId)
-        .or(`created_at.gt.${target.created_at},and(created_at.eq.${target.created_at},id.gt.${target.id})`)
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .limit(boundedWindow);
+      const beforePromise = database.from("messages").select(messageColumns).eq("thread_id", target.thread_id).eq("profile_id", profileId).or(`created_at.lt.${target.created_at},and(created_at.eq.${target.created_at},id.lt.${target.id})`).order("created_at", { ascending: false }).order("id", { ascending: false }).limit(boundedWindow);
+      const afterPromise = database.from("messages").select(messageColumns).eq("thread_id", target.thread_id).eq("profile_id", profileId).or(`created_at.gt.${target.created_at},and(created_at.eq.${target.created_at},id.gt.${target.id})`).order("created_at", { ascending: true }).order("id", { ascending: true }).limit(boundedWindow);
       const [{ data: before, error: beforeError }, { data: after, error: afterError }] = await Promise.all([beforePromise, afterPromise]);
       if (beforeError) throw beforeError;
       if (afterError) throw afterError;
-
       return {
-        thread: {
-          id: thread.id,
-          profileId: thread.profile_id,
-          title: thread.title,
-          createdAt: thread.created_at,
-          updatedAt: thread.updated_at,
-        },
-        target: toMessageContextItem(target),
-        before: (before ?? []).reverse().map(toMessageContextItem),
-        after: (after ?? []).map(toMessageContextItem),
+        thread: { id: thread.id, profileId: thread.profile_id, title: thread.title, createdAt: thread.created_at, updatedAt: thread.updated_at },
+        target: toMessageContextItem(target), before: (before ?? []).reverse().map(toMessageContextItem), after: (after ?? []).map(toMessageContextItem),
       } satisfies MessageContextWindow;
     },
 
-    async searchDocuments(profileId, rawQuery, rawLimit = 5, options = {}) {
+    async searchItems(profileId, rawQuery, rawLimit = 5, options = {}) {
       assertMemoryProfileId(profileId);
       const query = normalizeMemoryQuery(rawQuery);
       const limit = normalizeMemoryLimit(rawLimit);
-      let queryBuilder = database
-        .from("memory_documents")
-        .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
-        .eq("profile_id", profileId);
-      if (!options.includeArchived) queryBuilder = queryBuilder.is("archived_at", null);
-      const { data, error } = await queryBuilder.order("logical_key", { ascending: true });
+      const { data, error } = await database
+        .from("memory_items")
+        .select("id, profile_id, canonical_key, content, item_revision, category, value_scope, origin, confidence, importance, sensitivity, status, valid_from, valid_until, last_confirmed_at, superseded_by_item_id, created_at, updated_at, archived_at, deleted_at")
+        .eq("profile_id", profileId)
+        .in("status", [...statusFilter(options)])
+        .order("updated_at", { ascending: false });
       if (error) throw error;
       const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
       return (data ?? [])
-        .map((document) => {
-          const haystack = `${document.logical_key} ${document.content_markdown}`.toLocaleLowerCase();
+        .map((item) => {
+          const haystack = `${item.canonical_key} ${item.content} ${item.category}`.toLocaleLowerCase();
           const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
-          const compact = document.content_markdown.replace(/\s+/g, " ").trim();
+          const compact = item.content.replace(/\s+/g, " ").trim();
           const matchAt = compact.toLocaleLowerCase().indexOf(terms[0] ?? "");
           const start = matchAt > 0 ? Math.max(0, matchAt - 70) : 0;
           const excerpt = compact.length <= 280 ? compact : `${start > 0 ? "…" : ""}${compact.slice(start, start + 278).trimEnd()}…`;
-          return { document, score, excerpt };
+          return { item, score, excerpt };
         })
         .filter(({ score }) => score > 0)
-        .sort((left, right) => right.score - left.score || left.document.logical_key.localeCompare(right.document.logical_key))
+        .sort((left, right) => right.score - left.score || right.item.updated_at.localeCompare(left.item.updated_at) || left.item.canonical_key.localeCompare(right.item.canonical_key))
         .slice(0, limit)
-        .map(({ document, excerpt }) => ({
-          documentId: document.id,
-          profileId: document.profile_id,
-          logicalKey: document.logical_key,
-          excerpt,
-          documentRevision: document.document_revision,
-          updatedAt: document.updated_at,
-        } satisfies CanonicalDocumentSearchResult));
+        .map(({ item, excerpt }) => ({ itemId: item.id, profileId: item.profile_id, canonicalKey: item.canonical_key, excerpt, itemRevision: item.item_revision, updatedAt: item.updated_at, category: item.category, status: item.status } satisfies MemoryItemSearchResult));
     },
 
     async listMemoryChanges(profileId, afterRevision, throughRevision, rawLimit = 20) {
       assertMemoryProfileId(profileId);
       if (!Number.isSafeInteger(afterRevision) || afterRevision < 0 || !Number.isSafeInteger(throughRevision) || throughRevision < afterRevision) return [];
       const limit = normalizeMemoryLimit(rawLimit, 20);
-      const { data: revisions, error: revisionError } = await database
-        .from("memory_document_revisions")
-        .select("id, document_id, profile_id, document_revision, profile_global_revision, content_markdown, mutation_kind, created_at")
-        .eq("profile_id", profileId)
-        .gt("profile_global_revision", afterRevision)
-        .lte("profile_global_revision", throughRevision)
-        .order("profile_global_revision", { ascending: true })
-        .limit(Math.min(limit * 8, 100));
-      if (revisionError) throw revisionError;
-      const rows = revisions ?? [];
-      const documentIds = [...new Set(rows.map((row) => row.document_id))];
-      if (documentIds.length === 0) return [];
-      const { data: documents, error: documentError } = await database
-        .from("memory_documents")
-        .select("id, logical_key, archived_at")
-        .eq("profile_id", profileId)
-        .in("id", documentIds);
-      if (documentError) throw documentError;
-      const byDocument = new Map((documents ?? []).map((document) => [document.id, document]));
-      const latest = new Map<string, (typeof rows)[number]>();
-      for (const row of rows) {
-        const document = byDocument.get(row.document_id);
-        if (!document) continue;
-        latest.set(document.logical_key, row);
-      }
+      const { data, error } = await database.from("memory_item_revisions")
+        .select("id, profile_id, item_id, item_revision, profile_global_revision, canonical_key, content, content_hash, category, value_scope, origin, confidence, importance, sensitivity, status, valid_from, valid_until, last_confirmed_at, superseded_by_item_id, mutation_kind, idempotency_key, created_at")
+        .eq("profile_id", profileId).gt("profile_global_revision", afterRevision).lte("profile_global_revision", throughRevision)
+        .order("profile_global_revision", { ascending: true }).limit(Math.min(limit * 8, 100));
+      if (error) throw error;
+      const latest = new Map<string, MemoryItemRevisionRow>();
+      for (const row of data ?? []) latest.set(row.canonical_key, row);
       return [...latest.entries()]
         .sort((left, right) => left[1].profile_global_revision - right[1].profile_global_revision || left[0].localeCompare(right[0]))
         .slice(0, limit)
-        .map(([logicalKey, row]) => ({
-          logicalKey,
-          mutationKind: row.mutation_kind,
-          documentRevision: row.document_revision,
-          profileGlobalRevision: row.profile_global_revision,
-          createdAt: row.created_at,
-          archivedAt: row.mutation_kind === "archive" ? row.created_at : null,
-          contentMarkdown: row.content_markdown,
-          excerpt: compactExcerpt(row.content_markdown),
-        }));
+        .map(([canonicalKey, row]) => ({ canonicalKey, mutationKind: row.mutation_kind, itemRevision: row.item_revision, profileGlobalRevision: row.profile_global_revision, createdAt: row.created_at, status: row.status, content: row.content, excerpt: compactExcerpt(row.content) }));
     },
 
-    async getDocumentAudit(profileId, logicalKey) {
+    async getItemAudit(profileId, canonicalKey) {
       assertMemoryProfileId(profileId);
-      const validatedLogicalKey = validateLogicalKey(logicalKey);
-      const { data: document, error: documentError } = await database
-        .from("memory_documents")
-        .select("id, profile_id, logical_key, content_markdown, document_revision, content_hash, created_at, updated_at, archived_at")
-        .eq("profile_id", profileId)
-        .eq("logical_key", validatedLogicalKey)
-        .maybeSingle();
-      if (documentError) throw documentError;
-      if (!document) return null;
-      const { data: revisions, error: revisionError } = await database
-        .from("memory_document_revisions")
-        .select("id, profile_id, document_id, document_revision, profile_global_revision, content_markdown, content_hash, mutation_kind, idempotency_key, created_at")
-        .eq("profile_id", profileId)
-        .eq("document_id", document.id)
-        .order("document_revision", { ascending: false });
+      const validatedKey = validateCanonicalKey(canonicalKey);
+      const { data: item, error: itemError } = await database.from("memory_items").select("id, profile_id, canonical_key, content, item_revision, category, value_scope, origin, confidence, importance, sensitivity, status, valid_from, valid_until, last_confirmed_at, superseded_by_item_id, created_at, updated_at, archived_at, deleted_at").eq("profile_id", profileId).eq("canonical_key", validatedKey).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+      if (itemError) throw itemError;
+      if (!item) return null;
+      const { data: revisions, error: revisionError } = await database.from("memory_item_revisions").select("id, profile_id, item_id, item_revision, profile_global_revision, canonical_key, content, content_hash, category, value_scope, origin, confidence, importance, sensitivity, status, valid_from, valid_until, last_confirmed_at, superseded_by_item_id, mutation_kind, idempotency_key, created_at").eq("profile_id", profileId).eq("item_id", item.id).order("item_revision", { ascending: false });
       if (revisionError) throw revisionError;
       const revisionIds = (revisions ?? []).map((revision) => revision.id);
-      const { data: provenanceRows, error: provenanceError } = revisionIds.length === 0
-        ? { data: [], error: null }
-        : await database
-          .from("memory_provenance")
-          .select("id, profile_id, document_id, document_revision_id, source_kind, source_thread_id, source_message_id, source_excerpt, created_at")
-          .eq("profile_id", profileId)
-          .in("document_revision_id", revisionIds)
-          .order("created_at", { ascending: true });
-      if (provenanceError) throw provenanceError;
-      const provenanceByRevision = new Map<string, MemoryProvenanceRecord[]>();
-      for (const row of provenanceRows ?? []) {
-        const sourceAction = row.source_thread_id && row.source_message_id && UUID_PATTERN.test(row.source_thread_id) && UUID_PATTERN.test(row.source_message_id)
-          ? { type: "open_message" as const, threadId: row.source_thread_id, messageId: row.source_message_id, label: "Open source" }
-          : undefined;
-        const record: MemoryProvenanceRecord = {
-          id: row.id,
-          sourceKind: row.source_kind,
-          sourceThreadId: row.source_thread_id,
-          sourceMessageId: row.source_message_id,
-          sourceExcerpt: row.source_excerpt,
-          createdAt: row.created_at,
-          ...(sourceAction ? { action: sourceAction } : {}),
-        };
-        const existing = provenanceByRevision.get(row.document_revision_id) ?? [];
-        existing.push(record);
-        provenanceByRevision.set(row.document_revision_id, existing);
+      const { data: sources, error: sourceError } = revisionIds.length === 0 ? { data: [], error: null } : await database.from("memory_item_sources").select("id, profile_id, item_id, revision_id, source_kind, source_thread_id, source_message_id, source_agent_event_id, source_agent_run_id, source_excerpt, metadata, created_at").eq("profile_id", profileId).in("revision_id", revisionIds).order("created_at", { ascending: true });
+      if (sourceError) throw sourceError;
+      const sourcesByRevision = new Map<string, MemorySource[]>();
+      for (const source of sources ?? []) {
+        const action = source.source_thread_id && source.source_message_id && UUID_PATTERN.test(source.source_thread_id) && UUID_PATTERN.test(source.source_message_id) ? { type: "open_message" as const, threadId: source.source_thread_id, messageId: source.source_message_id, label: "Open source" } : undefined;
+        const record: MemorySource = { id: source.id, sourceKind: source.source_kind, sourceThreadId: source.source_thread_id, sourceMessageId: source.source_message_id, sourceAgentEventId: source.source_agent_event_id, sourceAgentRunId: source.source_agent_run_id, sourceExcerpt: source.source_excerpt, metadata: (source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata) ? source.metadata : {}) as Record<string, unknown>, createdAt: source.created_at, ...(action ? { action } : {}) };
+        sourcesByRevision.set(source.revision_id, [...(sourcesByRevision.get(source.revision_id) ?? []), record]);
       }
       return {
-        document: toDocument(document),
-        revisions: (revisions ?? []).map((revision) => ({
-          id: revision.id,
-          profileId: revision.profile_id,
-          documentId: revision.document_id,
-          documentRevision: revision.document_revision,
-          profileGlobalRevision: revision.profile_global_revision,
-          contentMarkdown: revision.content_markdown,
-          contentHash: revision.content_hash,
-          mutationKind: revision.mutation_kind,
-          idempotencyKey: revision.idempotency_key,
-          createdAt: revision.created_at,
-          provenance: provenanceByRevision.get(revision.id) ?? [],
-        })),
-      } satisfies MemoryDocumentAudit;
+        item: toItem(item),
+        revisions: (revisions ?? []).map((revision) => ({ ...toRevision(revision), sources: sourcesByRevision.get(revision.id) ?? [] })),
+      } satisfies MemoryItemAudit;
+    },
+
+    async isSuppressed(profileId, canonicalKey, contentHash = null) {
+      assertMemoryProfileId(profileId);
+      const validatedKey = validateCanonicalKey(canonicalKey);
+      let query = database.from("memory_suppressions").select("id").eq("profile_id", profileId).eq("canonical_key", validatedKey).is("lifted_at", null).limit(1);
+      if (contentHash) query = query.or(`content_hash.is.null,content_hash.eq.${contentHash}`);
+      const { data, error } = await query.maybeSingle();
+      if (error) throw error;
+      return Boolean(data);
+    },
+
+    async createSuppression(input) {
+      assertMemoryProfileId(input.profileId);
+      const { data, error } = await database.rpc("create_memory_suppression", { p_profile_id: input.profileId, p_canonical_key: validateCanonicalKey(input.canonicalKey), p_content_hash: input.contentHash ?? null, p_item_id: input.itemId ?? null, ...(input.reason ? { p_reason: input.reason } : {}) });
+      if (error) throw error;
+      if (typeof data !== "string") throw new Error("Memory suppression returned no ID.");
+      return data;
+    },
+
+    async liftSuppression(profileId, canonicalKey, contentHash = null) {
+      assertMemoryProfileId(profileId);
+      const { data, error } = await database.rpc("lift_memory_suppression", { p_profile_id: profileId, p_canonical_key: validateCanonicalKey(canonicalKey), p_content_hash: contentHash });
+      if (error) throw error;
+      return typeof data === "number" ? data : Number(data ?? 0);
     },
 
     async advanceThreadMemoryRevisionSeen(profileId, threadId, snapshotRevision) {
       assertMemoryProfileId(profileId);
       validateMemoryUuid(threadId, "Thread ID");
       if (!Number.isSafeInteger(snapshotRevision) || snapshotRevision < 0) throw new Error("Invalid memory revision snapshot.");
-      const { data, error } = await database.rpc("advance_thread_memory_revision_seen", {
-        p_profile_id: profileId,
-        p_thread_id: threadId,
-        p_snapshot_revision: snapshotRevision,
-      });
+      const { data, error } = await database.rpc("advance_thread_memory_revision_seen", { p_profile_id: profileId, p_thread_id: threadId, p_snapshot_revision: snapshotRevision });
       if (error) throw error;
       return typeof data === "number" ? data : Number(data ?? 0);
     },
 
     async getMessageEmbeddingMetadata(profileId, messageId) {
       assertMemoryProfileId(profileId);
-      const { data, error } = await database
-        .from("message_semantic_index")
-        .select("message_id, profile_id, thread_id, content_hash, embedding_model, indexed_at")
-        .eq("profile_id", profileId)
-        .eq("message_id", messageId)
-        .maybeSingle();
+      const { data, error } = await database.from("message_semantic_index").select("message_id, profile_id, thread_id, content_hash, embedding_model, indexed_at").eq("profile_id", profileId).eq("message_id", messageId).maybeSingle();
       if (error) throw error;
-      return data ? {
-        messageId: data.message_id,
-        profileId: data.profile_id,
-        threadId: data.thread_id,
-        contentHash: data.content_hash,
-        embeddingModel: data.embedding_model,
-        indexedAt: data.indexed_at,
-      } satisfies MessageEmbeddingMetadata : null;
+      return data ? { messageId: data.message_id, profileId: data.profile_id, threadId: data.thread_id, contentHash: data.content_hash, embeddingModel: data.embedding_model, indexedAt: data.indexed_at } satisfies MessageEmbeddingMetadata : null;
     },
 
     async upsertMessageEmbedding(input) {
       assertMemoryProfileId(input.profileId);
       validateEmbedding(input.embedding);
       validateEmbeddingModel(input.embeddingModel ?? "");
-      const { error } = await database
-        .from("message_semantic_index")
-        .upsert({
-          message_id: input.messageId,
-          profile_id: input.profileId,
-          thread_id: input.threadId,
-          embedding: [...input.embedding],
-          embedding_model: input.embeddingModel,
-          content_hash: input.contentHash,
-          indexed_at: input.indexedAt,
-        }, { onConflict: "message_id,profile_id,thread_id" });
+      const { error } = await database.from("message_semantic_index").upsert({ message_id: input.messageId, profile_id: input.profileId, thread_id: input.threadId, embedding: [...input.embedding], embedding_model: input.embeddingModel, content_hash: input.contentHash, indexed_at: input.indexedAt }, { onConflict: "message_id,profile_id,thread_id" });
       if (error) throw error;
     },
   };

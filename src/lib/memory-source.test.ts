@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenMessageAction, buildOpenMessageHref, memorySourceRows, validateOpenMessageAction } from "@/lib/memory-source";
+import { buildOpenMessageAction, buildOpenMessageHref, memoryItemRows, memorySourceRows, validateOpenMessageAction } from "@/lib/memory-source";
 
 const action = {
   type: "open_message",
@@ -40,5 +40,18 @@ describe("memory source actions", () => {
       results: [{ profileId: "profile-b", threadId: action.threadId, messageId: action.messageId, excerpt: "Foreign hit", createdAt: "2026-08-14T12:00:00.000Z" }],
     }, "profile-a")).toEqual([]);
     expect(buildOpenMessageAction("not-a-uuid", action.messageId)).toBeNull();
+  });
+
+  it("renders structured memory item tool results without document-era fields", () => {
+    expect(memoryItemRows("memory_read", {
+      kind: "memory_read",
+      found: true,
+      item: { canonicalKey: "profile.communication", itemRevision: 3, category: "preference", updatedAt: "2026-08-16T12:00:00.000Z", content: "The user prefers concise answers." },
+    })).toEqual([{ canonicalKey: "profile.communication", itemRevision: 3, category: "preference", updatedAt: "2026-08-16T12:00:00.000Z", excerpt: "The user prefers concise answers." }]);
+    expect(memoryItemRows("memory_list", {
+      kind: "memory_list",
+      results: [{ canonicalKey: "profile.communication", itemRevision: 3, category: "preference", updatedAt: "2026-08-16T12:00:00.000Z", excerpt: "The user prefers concise answers." }],
+    })).toHaveLength(1);
+    expect(memoryItemRows("memory_read", { kind: "memory_read", item: { canonicalKey: "", itemRevision: "3", updatedAt: "2026-08-16T12:00:00.000Z", content: "invalid" } })).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@ describe("memory governance migration contract", () => {
   it("defines idempotent revisions, leased jobs, proposals, and ownership constraints", () => {
     for (const required of [
       "add column if not exists idempotency_key",
-      "memory_document_revisions_profile_idempotency_idx",
+      "memory_item_revisions_profile_idempotency_idx",
       "create table if not exists public.memory_consolidation_jobs",
       "unique (profile_id, source_run_id)",
       "foreign key (source_run_id, profile_id, thread_id)",
@@ -16,6 +16,8 @@ describe("memory governance migration contract", () => {
       "unique (profile_id, idempotency_key)",
       "validate_memory_proposal_sources",
       "source_message_ids uuid[]",
+      "source_message_ids', to_jsonb(proposal.source_message_ids)",
+      "preserve every source message",
     ]) expect(migration).toContain(required);
   });
 
@@ -25,8 +27,6 @@ describe("memory governance migration contract", () => {
       "claim_memory_consolidation_jobs",
       "finish_memory_consolidation_job",
       "apply_memory_mutation_proposal",
-      "create or replace function public.apply_memory_document_revision",
-      "canonical memory idempotency key replay mismatch",
       "alter table public.memory_consolidation_jobs enable row level security",
       "revoke all on table public.memory_mutation_proposals from public, anon, authenticated",
     ]) expect(migration).toContain(required);

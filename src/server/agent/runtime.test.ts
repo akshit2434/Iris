@@ -113,9 +113,9 @@ describe("context builder", () => {
 
     const withMemory = buildThreadAgentContext({
       messages: [{ role: "user", content: "latest" }],
-      canonicalMemory: { globalRevision: 3, documents: [{ logicalKey: "CURRENT.md", contentMarkdown: "# Current", documentRevision: 1, updatedAt: "now" }] },
+      canonicalMemory: { globalRevision: 3, items: [{ canonicalKey: "profile.current", content: "Current", category: "active_state", itemRevision: 1, updatedAt: "now" }] },
     });
-    expect(withMemory.futureMemory).toMatchObject({ globalRevision: 3, global: [{ logicalKey: "CURRENT.md" }] });
+    expect(withMemory.futureMemory).toMatchObject({ globalRevision: 3, global: [{ canonicalKey: "profile.current" }] });
   });
 
   it("keeps existing continuity and pinned notes separate from raw history", () => {
@@ -141,11 +141,11 @@ describe("context builder", () => {
       ...context,
       canonicalMemory: {
         globalRevision: 4,
-        documents: [{ logicalKey: "PROFILE.md", contentMarkdown: "# Profile\n\nConcise answers.", documentRevision: 2, updatedAt: "2026-08-15T12:00:00.000Z" }],
+        items: [{ canonicalKey: "profile.communication", content: "Concise answers.", category: "preference", itemRevision: 2, updatedAt: "2026-08-15T12:00:00.000Z" }],
       },
     });
     const prompt = buildDynamicSystemPrompt(withMemory);
-    expect(prompt).toContain('<canonical-memory global-revision="4">');
+    expect(prompt).toContain('<saved-memory global-revision="4">');
     expect(prompt).toContain("Concise answers.");
     expect(prompt).toContain("Do not claim a durable write unless memory_patch or memory_archive returned an applied result.");
   });
@@ -287,9 +287,9 @@ describe("runtime seams", () => {
   });
 
   it("registers only the governed memory patch write and derives its source from context", async () => {
-    const mutation: MemoryMutationService = { apply: vi.fn(async (input) => ({ status: "applied" as const, logicalKey: input.logicalKey, revision: { profileId: input.profileId, documentId: "doc", documentRevision: 1, profileGlobalRevision: 1, revisionId: "rev", provenanceId: "prov" } })) };
+    const mutation: MemoryMutationService = { apply: vi.fn(async (input) => ({ status: "applied" as const, canonicalKey: input.canonicalKey, revision: { profileId: input.profileId, itemId: "doc", canonicalKey: input.canonicalKey, itemRevision: 1, profileGlobalRevision: 1, revisionId: "rev", sourceId: "prov", contentHash: "a".repeat(64) } })) };
     const turnContext = createAgentContext({ ...context, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012" });
-    await expect(patchMemory(turnContext, { logicalKey: "PROFILE.md", contentMarkdown: "# Profile", expectedDocumentRevision: null, mutationKind: "create" }, mutation, "call-patch")).resolves.toMatchObject({ kind: "memory_patch", status: "applied" });
+    await expect(patchMemory(turnContext, { canonicalKey: "profile.communication", content: "Concise answers", expectedItemRevision: null, mutationKind: "create" }, mutation, "call-patch")).resolves.toMatchObject({ kind: "memory_patch", status: "applied" });
     expect(mutation.apply).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a", threadId: context.threadId, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012", toolCallId: "call-patch" }));
     expect(createInternalTools().map((internalTool) => internalTool.name)).toEqual(expect.arrayContaining(["memory_archive"]));
     expect(createInternalTools().map((internalTool) => internalTool.name)).not.toEqual(expect.arrayContaining(["memory_delete", "memory_file_write"]));
@@ -401,14 +401,16 @@ describe("runtime seams", () => {
     const mutation: MemoryMutationService = {
       apply: vi.fn(async (input) => ({
         status: "applied" as const,
-        logicalKey: input.logicalKey,
+        canonicalKey: input.canonicalKey,
         revision: {
           profileId: input.profileId,
-          documentId: "00000000-0000-4000-8000-000000000020",
-          documentRevision: 1,
+          itemId: "00000000-0000-4000-8000-000000000020",
+          canonicalKey: input.canonicalKey,
+          itemRevision: 1,
           profileGlobalRevision: 1,
           revisionId: "00000000-0000-4000-8000-000000000021",
-          provenanceId: "00000000-0000-4000-8000-000000000022",
+          sourceId: "00000000-0000-4000-8000-000000000022",
+          contentHash: "a".repeat(64),
         },
       })),
     };
@@ -428,7 +430,7 @@ describe("runtime seams", () => {
     const events = [];
     for await (const event of streamAgentEvents({
       model: new FakeToolCallingModel({
-        toolCalls: [[{ id: "call-patch", name: "memory_patch", args: { logicalKey: "PROFILE.md", contentMarkdown: "# Profile\n\nThe demo color is cobalt blue.", expectedDocumentRevision: null, mutationKind: "create" } }]],
+        toolCalls: [[{ id: "call-patch", name: "memory_patch", args: { canonicalKey: "profile.color", content: "The demo color is cobalt blue.", expectedItemRevision: null, mutationKind: "create" } }]],
       }),
       context: turnContext,
       memoryMutation: mutation,
@@ -438,7 +440,7 @@ describe("runtime seams", () => {
     })) {
       events.push(event);
     }
-    expect(mutation.apply).toHaveBeenCalledWith(expect.objectContaining({ logicalKey: "PROFILE.md", toolCallId: "call-patch" }));
+    expect(mutation.apply).toHaveBeenCalledWith(expect.objectContaining({ canonicalKey: "profile.color", toolCallId: "call-patch" }));
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "tool_started", toolName: "memory_patch" }),
       expect.objectContaining({ type: "tool_finished", toolName: "memory_patch", ok: true, output: expect.objectContaining({ status: "applied" }) }),

@@ -182,9 +182,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       memoryRevisionSnapshotPromise,
     ]);
     const [canonicalMemory, memoryChangeHint] = await Promise.all([
-      Promise.all([memoryStore.listDocuments(profileId), Promise.resolve(memoryRevisionSnapshot)])
-        .then(([documents, globalRevision]) => budgetCanonicalMemory(documents, globalRevision, { profileId }))
-        .catch(() => ({ globalRevision: 0, documents: [] })),
+      Promise.all([memoryStore.listItems(profileId), Promise.resolve(memoryRevisionSnapshot)])
+        .then(([items, globalRevision]) => budgetCanonicalMemory(items, globalRevision, { profileId }))
+        .catch(() => ({ globalRevision: 0, items: [] })),
       readMemoryChangeHint({
         store: memoryStore,
         profileId,

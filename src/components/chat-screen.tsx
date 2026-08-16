@@ -13,7 +13,7 @@ import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
 import { useChatSurface } from "@/components/chat-surface-context";
 import { DelayedPagePresence } from "@/components/delayed-page-presence";
-import { buildOpenMessageHref, canonicalMemoryRows, memorySourceRows } from "@/lib/memory-source";
+import { buildOpenMessageHref, memoryItemRows, memorySourceRows } from "@/lib/memory-source";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
 import { isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
@@ -508,7 +508,7 @@ function ToolActivityIcon({ toolName }: Readonly<{ toolName: string }>) {
 function ToolActivityRow({ activity, profileId }: Readonly<{ activity: ToolActivity; profileId: ProfileId }>) {
   const detail = toolDetail(activity);
   const sourceRows = memorySourceRows(activity.toolName, activity.output, profileId);
-  const canonicalRows = canonicalMemoryRows(activity.toolName, activity.output);
+  const memoryRows = memoryItemRows(activity.toolName, activity.output);
   const stateClass = activity.status === "running" ? "text-[#5577d8]" : activity.status === "failed" ? "text-red-500" : "text-slate-500";
   return (
     <div className="tool-activity-row px-1 text-xs text-slate-500" aria-label={`${toolLabel(activity.toolName)} ${activity.status}`} aria-live={activity.status === "running" ? "polite" : "off"}>
@@ -521,8 +521,8 @@ function ToolActivityRow({ activity, profileId }: Readonly<{ activity: ToolActiv
         const href = buildOpenMessageHref(row.action);
         return href ? <Link key={`${row.action.threadId}:${row.action.messageId}`} href={href} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] text-slate-500 transition hover:bg-white/60 hover:text-slate-800"><span className="min-w-0 flex-1 truncate">{row.excerpt}</span><span className="shrink-0 font-semibold text-[#4978ed] opacity-80 group-hover:opacity-100">Open source</span></Link> : null;
       })}</div> : null}
-      {canonicalRows.length > 0 ? <div className="mt-2 space-y-1 pl-6">{canonicalRows.map((row) => <div key={`${row.logicalKey}:${row.documentRevision}`} className="rounded-lg bg-white/35 px-2 py-1.5 text-[11px] text-slate-500"><span className="font-semibold text-slate-700">{row.logicalKey}</span><span className="ml-2 truncate">{row.excerpt}</span></div>)}</div> : null}
-      {sourceRows.length === 0 && canonicalRows.length === 0 && detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
+      {memoryRows.length > 0 ? <div className="mt-2 space-y-1 pl-6">{memoryRows.map((row) => <div key={`${row.canonicalKey}:${row.itemRevision}`} className="rounded-lg bg-white/35 px-2 py-1.5 text-[11px] text-slate-500"><span className="font-semibold text-slate-700">{row.canonicalKey}</span><span className="ml-2 truncate">{row.excerpt}</span></div>)}</div> : null}
+      {sourceRows.length === 0 && memoryRows.length === 0 && detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
     </div>
   );
 }

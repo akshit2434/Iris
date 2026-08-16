@@ -1,40 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
-import type { CanonicalMemoryDocument } from "@/server/memory/types";
+import type { MemoryItem } from "@/server/memory/types";
 
-function document(logicalKey: string, contentMarkdown: string, updatedAt: string, profileId: "profile-a" | "profile-b" = "profile-a", archivedAt: string | null = null): CanonicalMemoryDocument {
-  return {
-    id: `${logicalKey}-id`,
-    profileId,
-    logicalKey,
-    contentMarkdown,
-    documentRevision: 1,
-    contentHash: "a".repeat(64),
-    createdAt: updatedAt,
-    updatedAt,
-    archivedAt,
-  };
+function item(canonicalKey: string, content: string, updatedAt: string, profileId: "profile-a" | "profile-b" = "profile-a", status: MemoryItem["status"] = "active"): MemoryItem {
+  return { id: `${canonicalKey}-id`, profileId, canonicalKey, content, itemRevision: 1, category: canonicalKey.includes("instruction") ? "instruction" : canonicalKey.includes("focus") ? "active_state" : "preference", valueScope: "single", origin: "explicit", confidence: 1, importance: 0.5, sensitivity: "normal", status, validFrom: null, validUntil: null, lastConfirmedAt: null, supersededByItemId: null, createdAt: updatedAt, updatedAt, archivedAt: status === "archived" ? updatedAt : null, deletedAt: status === "deleted" ? updatedAt : null };
 }
 
-describe("canonical memory context budget", () => {
-  it("prioritizes PROFILE/CURRENT and caps documents and characters deterministically", () => {
+describe("structured memory context budget", () => {
+  it("prioritizes instructions and caps items and characters deterministically", () => {
     const memory = budgetCanonicalMemory([
-      document("z.md", "z".repeat(30), "2026-08-03T00:00:00.000Z"),
-      document("CURRENT.md", "current", "2026-08-01T00:00:00.000Z"),
-      document("PROFILE.md", "profile", "2026-08-01T00:00:00.000Z"),
-      document("archived.md", "ignore", "2026-08-04T00:00:00.000Z", "profile-a", "2026-08-04T00:00:00.000Z"),
-    ], 7, { maxDocuments: 3, maxCharacters: 15 });
-    expect(memory.globalRevision).toBe(7);
-    expect(memory.documents.map((item) => item.logicalKey)).toEqual(["PROFILE.md", "CURRENT.md", "z.md"]);
-    expect(memory.documents.map((item) => item.contentMarkdown).join("")).toHaveLength(15);
-    expect(formatCanonicalMemoryPrompt(memory)).toContain('<canonical-memory global-revision="7">');
+      item("z.preference", "z12345", "2026-08-15T00:00:00.000Z"),
+      item("profile.preference", "profile", "2026-08-15T00:00:00.000Z"),
+      item("focus.active", "focus", "2026-08-14T00:00:00.000Z"),
+      item("instruction.style", "style", "2026-08-13T00:00:00.000Z"),
+    ], 7, { maxItems: 3, maxCharacters: 15 });
+    expect(memory.items.map((entry) => entry.canonicalKey)).toEqual(["instruction.style", "profile.preference", "z.preference"]);
+    expect(memory.items.map((entry) => entry.content).join("")).toHaveLength(15);
+    expect(formatCanonicalMemoryPrompt(memory)).toContain("<saved-memory global-revision=\"7\">");
   });
 
-  it("adds no prompt noise when memory is empty and never accepts another profile", () => {
-    const memory = budgetCanonicalMemory([
-      document("foreign.md", "foreign", "2026-08-01T00:00:00.000Z", "profile-b"),
-    ], 0, { maxDocuments: 8, profileId: "profile-a" });
-    expect(memory.documents).toEqual([]);
-    expect(formatCanonicalMemoryPrompt(memory)).toBe("");
+  it("filters other profiles and inactive items", () => {
+    const memory = budgetCanonicalMemory([item("a", "A", "now"), item("b", "B", "now", "profile-b"), item("c", "C", "now", "profile-a", "archived")], 1, { profileId: "profile-a" });
+    expect(memory.items).toHaveLength(1);
+    expect(memory.items[0]?.canonicalKey).toBe("a");
   });
 });
