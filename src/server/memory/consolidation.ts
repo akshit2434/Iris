@@ -4,7 +4,8 @@ import { createProductionChatModel, type AgentModel } from "@/server/agent";
 import { hashMemoryContent } from "@/server/memory/hash";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
-import type { MemoryItem, MemoryConsolidationJob, MemoryGovernanceStore, MemoryMessageForIndex, MemoryMutationProposal, MemoryProposalApplyResult, MemoryStore, MemoryItemCategory, MemoryItemValueScope, MemoryItemOrigin } from "@/server/memory/types";
+import type { MemoryControls, MemoryItem, MemoryConsolidationJob, MemoryGovernanceStore, MemoryMessageForIndex, MemoryMutationProposal, MemoryProposalApplyResult, MemoryStore, MemoryItemCategory, MemoryItemValueScope, MemoryItemOrigin } from "@/server/memory/types";
+import { createSupabaseReferenceHistoryStore } from "@/server/memory/reference-history-repository";
 import { validateCanonicalKey, validateMemoryContent, validateMemoryContentSafety, validateMemoryUuid } from "@/server/memory/validation";
 
 const MAX_PROPOSALS = 3;
@@ -129,7 +130,7 @@ export function createProductionMemoryConsolidator(model: AgentModel = createPro
   });
 }
 
-export type ConsolidationWorkerOptions = { governanceStore: MemoryGovernanceStore; memoryStore: MemoryStore; consolidator: MemoryConsolidator; workerId?: string; limit?: number; leaseSeconds?: number; indexDerived?: (messages: readonly MemoryMessageForIndex[]) => Promise<void>; maxDurationMs?: number };
+export type ConsolidationWorkerOptions = { governanceStore: MemoryGovernanceStore; memoryStore: MemoryStore; consolidator: MemoryConsolidator; workerId?: string; limit?: number; leaseSeconds?: number; indexDerived?: (messages: readonly MemoryMessageForIndex[]) => Promise<void>; maxDurationMs?: number; controlsReader?: (profileId: MemoryControls["profileId"]) => Promise<Pick<MemoryControls, "savedMemoryEnabled">> };
 export type ConsolidationWorkerResult = { claimed: number; completed: number; skipped: number; failed: number; conflicts: number; indexingErrors: number };
 
 function safeWorkerError(error: unknown) { const message = error instanceof Error ? error.message : ""; return /stale|conflict|foreign|invalid|proposal/i.test(message) ? message.slice(0, 500) : "Consolidation processing failed."; }
@@ -143,6 +144,14 @@ export async function processConsolidationJobs(options: ConsolidationWorkerOptio
   for (const job of jobs) {
     try {
       if (Date.now() - startedAt >= maxDurationMs) throw new Error("Consolidation worker time bound reached.");
+      if (options.controlsReader) {
+        const controls = await options.controlsReader(job.profileId);
+        if (!controls.savedMemoryEnabled) {
+          await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: "skipped", errorCode: "SAVED_MEMORY_DISABLED", errorMessage: "Saved memory is disabled for this profile." });
+          result.skipped += 1;
+          continue;
+        }
+      }
       const [messages, items] = await Promise.all([options.governanceStore.listJobMessages(job.profileId, job.threadId, job.sourceRunId, MAX_SOURCE_MESSAGES), options.memoryStore.listItems(job.profileId)]);
       if (messages.length === 0) { await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: "skipped", errorCode: "NO_SOURCE_MESSAGES", errorMessage: "No user-authored source messages were available." }); result.skipped += 1; continue; }
       const proposals = await withTimeout(options.consolidator.propose({ job, messages, items }), Math.max(1_000, maxDurationMs - (Date.now() - startedAt)));
@@ -170,5 +179,5 @@ export async function processConsolidationJobs(options: ConsolidationWorkerOptio
   return result;
 }
 
-export function createProductionConsolidationWorker(options: Omit<ConsolidationWorkerOptions, "governanceStore" | "memoryStore" | "consolidator"> = {}) { return processConsolidationJobs({ governanceStore: createSupabaseMemoryGovernanceStore(), memoryStore: createSupabaseMemoryStore(), consolidator: createProductionMemoryConsolidator(), ...options }); }
+export function createProductionConsolidationWorker(options: Omit<ConsolidationWorkerOptions, "governanceStore" | "memoryStore" | "consolidator"> = {}) { return processConsolidationJobs({ governanceStore: createSupabaseMemoryGovernanceStore(), memoryStore: createSupabaseMemoryStore(), consolidator: createProductionMemoryConsolidator(), controlsReader: async (profileId) => createSupabaseReferenceHistoryStore().getControls(profileId), ...options }); }
 export type { MemoryMutationProposal, MemoryProposalApplyResult };

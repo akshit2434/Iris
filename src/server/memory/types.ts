@@ -193,6 +193,7 @@ export type ReferenceHistoryStore = {
   applyReferenceHistorySnapshot: (input: { profileId: ProfileId; jobId: string; workerId: string; snapshot: Omit<ReferenceHistorySnapshot, "id" | "createdAt" | "revision" | "status">; expectedSnapshotId: string | null; expectedSnapshotRevision: number }) => Promise<"applied" | "conflict" | "invalidated">;
   finishReferenceHistoryJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Exclude<ReferenceHistoryJobStatus, "pending" | "running">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<ReferenceHistoryJob>;
   invalidateReferenceHistorySnapshot?: (profileId: ProfileId, reason: string) => Promise<void>;
+  clearReferenceHistoryData?: (profileId: ProfileId) => Promise<void>;
 };
 
 export type MemoryItemAudit = {

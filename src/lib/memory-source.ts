@@ -95,7 +95,7 @@ function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceR
 }
 
 export function memorySourceRows(toolName: string, output: SafeToolJson | undefined, expectedProfileId?: ProfileId): MemorySourceRow[] {
-  if (toolName === "search_messages" || toolName === "history_preflight") return getRows(output).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
+  if (toolName === "search_messages" || toolName === "history_preflight" || toolName === "memory_context") return getRows(output).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
   if (toolName === "read_messages") {
     const object = objectOutput(output);
     const target = object?.target;
@@ -116,6 +116,20 @@ export function memoryItemRows(toolName: string, output: SafeToolJson | undefine
     const updatedAt = boundedText(item.updatedAt, 80);
     const category = boundedText(item.category, 80) ?? undefined;
     return canonicalKey && excerpt && itemRevision !== null && updatedAt ? [{ canonicalKey, excerpt, itemRevision, updatedAt, ...(category ? { category } : {}) }] : [];
+  }
+  if (toolName === "memory_context") {
+    const object = objectOutput(output);
+    if (!object || !Array.isArray(object.items)) return [];
+    return object.items.flatMap((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const candidate = value as Record<string, SafeToolJson>;
+      const canonicalKey = boundedText(candidate.canonicalKey, 200);
+      const excerpt = boundedText(candidate.excerpt ?? candidate.content, MAX_EXCERPT_LENGTH);
+      const itemRevision = typeof candidate.itemRevision === "number" && Number.isSafeInteger(candidate.itemRevision) ? candidate.itemRevision : null;
+      const updatedAt = boundedText(candidate.updatedAt, 80);
+      const category = boundedText(candidate.category, 80) ?? undefined;
+      return canonicalKey && excerpt && itemRevision !== null && updatedAt ? [{ canonicalKey, excerpt, itemRevision, updatedAt, ...(category ? { category } : {}) }] : [];
+    }).slice(0, 8);
   }
   if (toolName !== "memory_list" && toolName !== "memory_search") return [];
   return getRows(output).flatMap((value) => {

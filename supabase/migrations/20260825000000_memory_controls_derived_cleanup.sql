@@ -1,0 +1,70 @@
+-- Milestone 3, Slice 7: clear replaceable derived memory layers as well as
+-- governed saved-memory items. Raw chats remain the source transcript.
+
+create or replace function public.clear_reference_history_data(p_profile_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (select 1 from public.profiles where id = p_profile_id) then
+    raise exception 'Unknown profile scope';
+  end if;
+
+  update public.reference_history_jobs
+  set status = 'skipped',
+      last_error_code = 'REFERENCE_HISTORY_CLEARED',
+      last_error_message = 'Derived reference history was cleared by the user.',
+      lease_expires_at = null,
+      locked_at = null,
+      locked_by = null,
+      completed_at = coalesce(completed_at, now()),
+      updated_at = now()
+  where profile_id = p_profile_id
+    and status in ('pending', 'running');
+
+  update public.profile_reference_history_snapshots
+  set status = 'invalidated'
+  where profile_id = p_profile_id
+    and status = 'active';
+
+  update public.profile_reference_history_state
+  set active_snapshot_id = null,
+      active_snapshot_revision = 0,
+      last_processed_token_watermark = 0,
+      last_enqueued_token_watermark = 0,
+      last_enqueued_at = null,
+      last_source_at = null,
+      updated_at = now()
+  where profile_id = p_profile_id;
+
+  -- These are replaceable indexes/checkpoints, not source transcripts. Clear
+  -- them with the profile's memory so a later rebuild starts from raw chats.
+  if to_regclass('public.message_semantic_index') is not null then
+    delete from public.message_semantic_index
+    where profile_id = p_profile_id;
+  end if;
+
+  if to_regclass('public.thread_continuity_jobs') is not null then
+    execute format('delete from %I.%I where profile_id = $1', 'public', 'thread_continuity_jobs') using p_profile_id;
+  end if;
+
+  if to_regclass('public.thread_continuity_checkpoints') is not null then
+    execute format('delete from %I.%I where profile_id = $1', 'public', 'thread_continuity_checkpoints') using p_profile_id;
+  end if;
+
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'thread_context'
+      and column_name = 'active_continuity_checkpoint_id'
+  ) then
+    execute 'update public.thread_context set active_continuity_checkpoint_id = null, continuity_revision = 0, updated_at = now() where profile_id = $1' using p_profile_id;
+  elsif to_regclass('public.thread_context') is not null then
+    execute 'update public.thread_context set continuity_revision = 0, updated_at = now() where profile_id = $1' using p_profile_id;
+  end if;
+end;
+$$;
+
+revoke all on function public.clear_reference_history_data(text) from public, anon, authenticated;
+grant execute on function public.clear_reference_history_data(text) to service_role;

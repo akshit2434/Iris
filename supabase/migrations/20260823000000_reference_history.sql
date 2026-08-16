@@ -4,8 +4,14 @@
 -- only authorities. A snapshot is a bounded profile synthesis with explicit
 -- source ranges, token watermarks, version metadata, and an immutable revision.
 
-create type public.reference_history_status as enum ('active', 'superseded', 'invalidated');
-create type public.reference_history_job_status as enum ('pending', 'running', 'completed', 'failed', 'conflict', 'skipped');
+do $$ begin
+  create type public.reference_history_status as enum ('active', 'superseded', 'invalidated');
+exception when duplicate_object then null;
+end $$;
+do $$ begin
+  create type public.reference_history_job_status as enum ('pending', 'running', 'completed', 'failed', 'conflict', 'skipped');
+exception when duplicate_object then null;
+end $$;
 
 create table if not exists public.profile_memory_settings (
   profile_id text primary key references public.profiles(id) on delete cascade,
@@ -65,11 +71,19 @@ create index if not exists profile_reference_history_revision_idx
 create index if not exists profile_reference_history_watermark_idx
   on public.profile_reference_history_snapshots(profile_id, covered_token_watermark desc);
 
-alter table public.profile_reference_history_state
-  add constraint profile_reference_history_state_active_fkey
-  foreign key (active_snapshot_id, profile_id)
-  references public.profile_reference_history_snapshots(id, profile_id)
-  on delete set null;
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'profile_reference_history_state_active_fkey'
+      and conrelid = 'public.profile_reference_history_state'::regclass
+  ) then
+    alter table public.profile_reference_history_state
+      add constraint profile_reference_history_state_active_fkey
+      foreign key (active_snapshot_id, profile_id)
+      references public.profile_reference_history_snapshots(id, profile_id)
+      on delete set null;
+  end if;
+end $$;
 
 -- The agent runtime already scopes every run by profile. This composite
 -- uniqueness lets derived jobs enforce the same ownership at the FK boundary.

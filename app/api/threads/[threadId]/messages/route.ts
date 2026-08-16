@@ -35,6 +35,7 @@ import { createMemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
 import { createSupabaseReferenceHistoryStore } from "@/server/memory/reference-history-repository";
+import { createDisabledMemoryArchive, createDisabledMemoryMutation, createDisabledMemoryRetrieval } from "@/server/memory/disabled";
 import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
 import { formatReferenceHistoryPrompt, referenceHistoryPromptIsFresh } from "@/server/memory/reference-history";
 import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
@@ -43,6 +44,7 @@ import { createSupabaseThreadContinuityStore } from "@/server/memory/compaction-
 import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/reconciliation";
 import { runHistoryPreflight } from "@/server/memory/history-preflight";
 import { planAssistantPersistence } from "@/server/agent/persistence";
+import { createTemporaryAgentResponse, sanitizeTemporaryHistory, validateTemporaryId } from "@/server/agent/temporary";
 import {
   AGENT_STREAM_PROTOCOL,
   sanitizeForEvent,
@@ -55,6 +57,9 @@ type MessageRequest = {
   content?: unknown;
   requestId?: unknown;
   timezone?: unknown;
+  temporary?: unknown;
+  temporaryId?: unknown;
+  history?: unknown;
 };
 
 type OutgoingStreamEvent = {
@@ -106,6 +111,18 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const profile = await getProfile(profileId);
     if (!profile) {
       return NextResponse.json({ error: "Profile not found." }, { status: 404 });
+    }
+
+    if (isNewThread && body.temporary === true) {
+      return createTemporaryAgentResponse({
+        profileId,
+        profileLabel: profile.displayName,
+        temporaryId: validateTemporaryId(body.temporaryId),
+        requestId,
+        content,
+        timezone: body.timezone,
+        history: sanitizeTemporaryHistory(body.history),
+      });
     }
 
     const runId = crypto.randomUUID();
@@ -188,32 +205,41 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
 
     const memoryStore = createSupabaseMemoryStore();
     const referenceHistoryStore = createSupabaseReferenceHistoryStore();
-    const memoryRetrieval = createProductionMemoryRetrievalService();
+    const productionMemoryRetrieval = createProductionMemoryRetrievalService();
     const memoryRevisionSnapshotPromise = memoryStore.getCurrentRevision(profileId).catch(() => 0);
     const memoryControlsPromise = referenceHistoryStore.getControls(profileId).catch(() => ({
       profileId,
-      savedMemoryEnabled: true,
-      referenceHistoryEnabled: true,
+      // Fail closed when the profile controls cannot be read. A settings
+      // outage must never silently re-enable memory use or writes.
+      savedMemoryEnabled: false,
+      referenceHistoryEnabled: false,
       updatedAt: new Date(0).toISOString(),
     }));
-    const [history, threadContextRow, memoryRevisionSnapshot, memoryControls, referenceHistorySnapshot] = await Promise.all([
+    const [history, threadContextRow, memoryRevisionSnapshot, memoryControls] = await Promise.all([
       getThreadMessages(profileId, threadId),
       getThreadContext(profileId, threadId),
       memoryRevisionSnapshotPromise,
       memoryControlsPromise,
-      referenceHistoryStore.getLatestSnapshot(profileId).catch(() => null),
     ]);
-    const historicalPreflight = await runHistoryPreflight({
-      profileId,
-      query: content,
-      retrieval: memoryRetrieval,
-      now: requestNow,
-      maxResults: 3,
-    });
-    const [memoryItems, memorySuppressions] = await Promise.all([
-      memoryStore.listItems(profileId).catch(() => []),
-      memoryStore.listActiveSuppressions ? memoryStore.listActiveSuppressions(profileId).catch(() => []) : Promise.resolve([]),
-    ]);
+    const referenceHistorySnapshot = memoryControls.referenceHistoryEnabled
+      ? await referenceHistoryStore.getLatestSnapshot(profileId).catch(() => null)
+      : null;
+    const historicalPreflight = memoryControls.referenceHistoryEnabled
+      ? await runHistoryPreflight({
+          profileId,
+          query: content,
+          retrieval: productionMemoryRetrieval,
+          now: requestNow,
+          maxResults: 3,
+        })
+      : { triggered: false, intent: null, status: "skipped" as const, sources: [], prompt: "" };
+    const [memoryItems, memorySuppressions] = memoryControls.savedMemoryEnabled
+      ? await Promise.all([
+          memoryStore.listItems(profileId).catch(() => []),
+          memoryStore.listActiveSuppressions ? memoryStore.listActiveSuppressions(profileId).catch(() => []) : Promise.resolve([]),
+        ])
+      : [[], []] as const;
+    const memoryRetrieval = memoryControls.savedMemoryEnabled ? productionMemoryRetrieval : createDisabledMemoryRetrieval();
     const [canonicalMemory, memoryChangeHint] = await Promise.all([
       Promise.resolve(memoryControls.savedMemoryEnabled
         ? budgetCanonicalMemory(memoryItems, memoryRevisionSnapshot, { profileId })
@@ -231,6 +257,31 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       && referenceHistorySnapshot
       ? formatReferenceHistoryPrompt(referenceHistorySnapshot, { savedItems: memoryItems, suppressions: memorySuppressions })
       : "";
+    const memoryDisclosure = (memoryControls.savedMemoryEnabled && canonicalMemory.items.length > 0)
+      || (memoryControls.referenceHistoryEnabled && Boolean(referenceHistoryPrompt))
+      || historicalPreflight.sources.length > 0
+      ? {
+          kind: "memory_context",
+          items: canonicalMemory.items.slice(0, 8).map((item) => ({
+            canonicalKey: item.canonicalKey,
+            excerpt: item.content.slice(0, 280),
+            category: item.category,
+            itemRevision: item.itemRevision,
+            updatedAt: item.updatedAt,
+          })),
+          sources: historicalPreflight.sources.slice(0, 3).map((source) => ({
+            profileId: source.profileId,
+            threadId: source.threadId,
+            messageId: source.messageId,
+            excerpt: source.excerpt,
+            createdAt: source.createdAt,
+            role: source.role,
+            threadTitle: source.threadTitle,
+            action: source.action,
+          })),
+          ...(referenceHistoryPrompt && referenceHistorySnapshot ? { referenceRevision: referenceHistorySnapshot.revision } : {}),
+        }
+      : null;
     const baseAgentContext = createAgentContext({
       profileId,
       profileLabel: profile.displayName,
@@ -337,8 +388,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     } catch {
       // Telemetry must not make a valid model run fail.
     }
-    const memoryMutation = createMemoryMutationService(memoryStore);
-    const memoryArchive = createMemoryArchiveService(memoryStore);
+    const memoryMutation = memoryControls.savedMemoryEnabled ? createMemoryMutationService(memoryStore) : createDisabledMemoryMutation();
+    const memoryArchive = memoryControls.savedMemoryEnabled ? createMemoryArchiveService(memoryStore) : createDisabledMemoryArchive();
     const memoryGovernance = createSupabaseMemoryGovernanceStore();
     const continuityStore = process.env.MEMORY_CONTINUITY_ENABLED === "true"
       ? createSupabaseThreadContinuityStore()
@@ -418,6 +469,30 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             at: new Date().toISOString(),
           });
 
+          if (memoryDisclosure) {
+            const toolCallId = `memory-context:${run.id}`;
+            const statusMessage = "Using memory";
+            const output = sanitizeForEvent(memoryDisclosure);
+            await appendAgentEvent({
+              profileId,
+              threadId,
+              runId: run.id,
+              sequence: ++persistedSequence,
+              type: "tool_call",
+              payload: { toolCallId, toolName: "memory_context", input: {}, statusMessage },
+            });
+            send({ type: "tool_started", runId: run.id, toolCallId, toolName: "memory_context", input: {}, statusMessage });
+            await appendAgentEvent({
+              profileId,
+              threadId,
+              runId: run.id,
+              sequence: ++persistedSequence,
+              type: "tool_result",
+              payload: { toolCallId, toolName: "memory_context", output, ok: true, statusMessage: "Used memory" },
+            });
+            send({ type: "tool_finished", runId: run.id, toolCallId, toolName: "memory_context", output, ok: true, statusMessage: "Used memory" });
+          }
+
           if (historicalPreflight.triggered) {
             const toolCallId = `history-preflight:${run.id}`;
             const statusMessage = "Searching chats";
@@ -460,7 +535,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             memoryRetrieval,
             memoryMutation,
             memoryArchive,
-            disableHistoricalSearch: historicalPreflight.triggered,
+            disableHistoricalSearch: historicalPreflight.triggered || !memoryControls.referenceHistoryEnabled,
           })) {
             if (event.type === "usage_observed") {
               actualUsage = event.usage;
@@ -570,7 +645,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             assistantTokenEstimate,
           );
           const idleSignal = Date.now() - new Date(thread.thread.updatedAt).getTime() >= 30_000;
-          if (shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted, sourceTokenTotal, idleSignal })) {
+          if (memoryControls.savedMemoryEnabled && shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted, sourceTokenTotal, idleSignal })) {
             try {
               await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id, {
                 sourceTokenTotal,

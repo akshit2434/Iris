@@ -240,5 +240,11 @@ export function createSupabaseReferenceHistoryStore(database: MemoryDatabase = g
       });
       if (error) throw error;
     },
+
+    async clearReferenceHistoryData(profileId) {
+      assertMemoryProfileId(profileId);
+      const { error } = await database.rpc("clear_reference_history_data", { p_profile_id: profileId });
+      if (error) throw error;
+    },
   };
 }

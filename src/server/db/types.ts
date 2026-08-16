@@ -1091,6 +1091,10 @@ export type Database = {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_status: "completed" | "failed" | "conflict" | "skipped"; p_error_code?: string | null; p_error_message?: string | null; p_retry?: boolean; p_available_at?: string | null };
         Returns: Array<Database["public"]["Tables"]["thread_continuity_jobs"]["Row"]>;
       };
+      clear_reference_history_data: {
+        Args: { p_profile_id: "profile-a" | "profile-b" };
+        Returns: undefined;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

@@ -47,6 +47,21 @@ describe("durable structured memory consolidation", () => {
     expect(governance.insertMutationProposal).not.toHaveBeenCalled();
     expect(governance.applyMutationProposal).not.toHaveBeenCalled();
   });
+  it("skips queued writes after saved memory is disabled", async () => {
+    const governance = governanceStore();
+    const producer = vi.fn(async () => [{ canonicalKey: "profile.communication", proposedContent: "The user prefers concise answers.", category: "preference", confidence: 0.8, expectedItemRevision: null, mutationKind: "create" as const, sourceMessageIds: [messages[0].messageId] }]);
+    const result = await processConsolidationJobs({
+      governanceStore: governance,
+      memoryStore: memoryStore(),
+      consolidator: createInjectedMemoryConsolidator(producer),
+      controlsReader: vi.fn(async () => ({ savedMemoryEnabled: false })),
+      workerId: "worker",
+    });
+    expect(result).toMatchObject({ claimed: 1, skipped: 1, completed: 0 });
+    expect(producer).not.toHaveBeenCalled();
+    expect(governance.insertMutationProposal).not.toHaveBeenCalled();
+    expect(governance.finishConsolidationJob).toHaveBeenCalledWith(expect.objectContaining({ status: "skipped", errorCode: "SAVED_MEMORY_DISABLED" }));
+  });
   it("marks a job skipped when no source messages exist", async () => {
     const governance = governanceStore(); vi.mocked(governance.listJobMessages).mockResolvedValue([]);
     const result = await processConsolidationJobs({ governanceStore: governance, memoryStore: memoryStore(), consolidator: { propose: vi.fn() }, workerId: "worker" });
