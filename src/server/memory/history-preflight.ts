@@ -199,6 +199,7 @@ export async function runHistoryPreflight(input: {
   retrieval: MemoryRetrieval;
   now?: Date;
   maxResults?: number;
+  excludeMessageId?: string;
 }): Promise<HistoryPreflightResult> {
   const intent = detectHistoryPreflightIntent(input.query, input.now);
   if (!intent) return { triggered: false, intent: null, status: "skipped", sources: [], prompt: "" };
@@ -222,6 +223,11 @@ export async function runHistoryPreflight(input: {
 
   const sources: HistoricalSourceHit[] = [];
   for (const result of results.slice(0, limit)) {
+    // The current request is already persisted before preflight runs. It can
+    // contain every query term and outrank the retained source the user is
+    // asking for, but it is not historical evidence and must never become a
+    // clickable source action.
+    if (result.messageId === input.excludeMessageId) continue;
     if (!validResult(result, input.profileId) || sources.some((source) => source.messageId === result.messageId)) continue;
     let window: MessageContextWindow | null;
     try {

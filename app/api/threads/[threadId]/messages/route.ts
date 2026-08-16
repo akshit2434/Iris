@@ -230,7 +230,11 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           query: content,
           retrieval: productionMemoryRetrieval,
           now: requestNow,
-          maxResults: 3,
+          // The current user request is inserted before preflight and often
+          // outranks the older source lexically. Search a slightly wider
+          // bounded set, then exclude that current message from evidence.
+          maxResults: 8,
+          excludeMessageId: userMessageId,
         })
       : { triggered: false, intent: null, status: "skipped" as const, sources: [], prompt: "" };
     const [memoryItems, memorySuppressions] = memoryControls.savedMemoryEnabled

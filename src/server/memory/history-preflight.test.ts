@@ -64,6 +64,25 @@ describe("deterministic historical preflight", () => {
     expect(output.prompt).toContain(ids.message);
   });
 
+  it("does not turn the current request into its own historical source", async () => {
+    const currentMessage = "00000000-0000-0000-0000-000000000099";
+    const sourceMessage = ids.message;
+    const store = retrieval([
+      result({ messageId: currentMessage, content: "Where did I decide Project Ember?" }),
+      result({ messageId: sourceMessage }),
+    ]);
+    const read = store.readMessages as ReturnType<typeof vi.fn>;
+    read.mockImplementation(async (_profile: string, messageId: string) => window({
+      target: { ...window().target, messageId, content: messageId === sourceMessage ? window().target.content : "Where did I decide Project Ember?" },
+    }));
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "Where did I decide Project Ember?", retrieval: store, excludeMessageId: currentMessage });
+    expect(output.status).toBe("found");
+    expect(output.sources).toHaveLength(1);
+    expect(output.sources[0]?.messageId).toBe(sourceMessage);
+    expect(read).toHaveBeenCalledWith("profile-a", sourceMessage, 2);
+    expect(read).not.toHaveBeenCalledWith("profile-a", currentMessage, 2);
+  });
+
   it("honestly distinguishes no match from unavailable search", async () => {
     const noMatch = await runHistoryPreflight({ profileId: "profile-a", query: "Find the exact source of a missing decision.", retrieval: retrieval([], null) });
     expect(noMatch.status).toBe("no_match");
