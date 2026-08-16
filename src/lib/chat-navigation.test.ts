@@ -14,4 +14,12 @@ describe("chat back navigation affordance", () => {
     const source = readFileSync(new URL("../components/app-shell.tsx", import.meta.url), "utf8");
     expect(source).toContain("{inChat ? <ChatScreen /> : children}");
   });
+
+  it("invalidates old stream state when the persistent chat surface changes route", () => {
+    const source = readFileSync(new URL("../components/chat-screen.tsx", import.meta.url), "utf8");
+    expect(source).toContain("activeRequestRef.current?.abort()");
+    expect(source).toContain("streamGenerationRef.current += 1");
+    expect(source).toContain("streamBufferRef.current?.cancel()");
+    expect(source).toContain("isConfirmedNewChatPromotion");
+  });
 });

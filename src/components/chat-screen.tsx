@@ -16,7 +16,7 @@ import { DelayedPagePresence } from "@/components/delayed-page-presence";
 import { buildOpenMessageHref, memoryItemRows, memorySourceRows } from "@/lib/memory-source";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
-import { isNewChatPromotion, isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
+import { isConfirmedNewChatPromotion, isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
 import { createBottomScrollScheduler, INITIAL_SCROLL_FOLLOW_STATE, measureScrollFollowState, returnToBottomState, type ScrollFollowState } from "@/lib/chat-scroll";
 import {
   AgentStreamParser,
@@ -83,6 +83,8 @@ export function ChatScreen() {
   const resolvedHashRef = useRef<string | null>(null);
   const persistedThreadIdRef = useRef<string | null>(null);
   const previousThreadIdRef = useRef(threadId);
+  const activeRequestRef = useRef<AbortController | null>(null);
+  const streamGenerationRef = useRef(0);
   const temporaryIdRef = useRef<string | null>(null);
   const [isTemporary, setIsTemporary] = useState(false);
 
@@ -108,6 +110,28 @@ export function ChatScreen() {
     setIsTemporary(false);
     temporaryIdRef.current = null;
   }, [threadId]);
+
+  // AppShell keeps one chat surface mounted during route transitions so the
+  // first-message promotion can stay visually continuous. That also means a
+  // route/profile change must explicitly invalidate the old request and its
+  // presentation state; otherwise a late stream can write into the next chat.
+  useEffect(() => {
+    const previousThreadId = previousThreadIdRef.current;
+    const promotedFromNewChat = isConfirmedNewChatPromotion(previousThreadId, threadId, persistedThreadIdRef.current)
+      && hasMessagesRef.current;
+
+    if (!promotedFromNewChat) {
+      streamGenerationRef.current += 1;
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
+      streamBufferRef.current?.cancel();
+      streamBufferRef.current = null;
+      persistedThreadIdRef.current = null;
+      setSending(false);
+      setPresentationActive(false);
+      setComposer("");
+    }
+  }, [profileId, threadId]);
 
   useEffect(() => {
     setSurface({
@@ -139,7 +163,8 @@ export function ChatScreen() {
       return;
     }
     let cancelled = false;
-    const promotedFromNewChat = isNewChatPromotion(previousThreadId, threadId) && hasMessagesRef.current;
+    const promotedFromNewChat = isConfirmedNewChatPromotion(previousThreadId, threadId, persistedThreadIdRef.current)
+      && hasMessagesRef.current;
     // The first-message transaction has already committed before the route
     // handoff. Keep the live presentation and composer mounted while the
     // persisted thread metadata is reconciled in the background.
@@ -253,6 +278,9 @@ export function ChatScreen() {
   }, [messages, threadId]);
 
   useEffect(() => () => {
+    streamGenerationRef.current += 1;
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
     streamBufferRef.current?.cancel();
     scrollSchedulerRef.current.cancel();
     if (scrollStateFrameRef.current !== null) window.cancelAnimationFrame(scrollStateFrameRef.current);
@@ -311,7 +339,12 @@ export function ChatScreen() {
     const userMessage: Message = { id: optimisticUserId, presentationId: optimisticUserId, threadId: optimisticThreadId, profileId: optimisticProfileId, role: "user", content, createdAt: now };
     const assistantMessage: Message = { id: optimisticAssistantId, presentationId: optimisticAssistantId, threadId: optimisticThreadId, profileId: optimisticProfileId, role: "assistant", content: "", createdAt: now, isComplete: false };
     updateStreamState((current) => startOptimisticRun(current, { userMessage, assistantMessage }));
+    const requestController = new AbortController();
+    const requestGeneration = streamGenerationRef.current;
+    activeRequestRef.current = requestController;
+    const isCurrentRequest = () => activeRequestRef.current === requestController && streamGenerationRef.current === requestGeneration;
     const streamBuffer = createStreamEventBuffer((events) => {
+      if (!isCurrentRequest()) return;
       updateStreamState((current) => events.reduce(reduceAgentStream, current));
     });
     streamBufferRef.current = streamBuffer;
@@ -330,6 +363,7 @@ export function ChatScreen() {
       const response = await fetch(messageEndpointForThread(threadId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: requestController.signal,
         body: JSON.stringify({ content, requestId, timezone, ...(isTemporary ? { temporary: true, temporaryId, history: temporaryHistory } : {}) }),
       });
       if (response.status === 409) {
@@ -358,6 +392,7 @@ export function ChatScreen() {
       const parser = new AgentStreamParser();
       let terminalEventReceived = false;
       const consumeEvents = (events: Parameters<typeof reduceAgentStream>[1][]) => {
+        if (!isCurrentRequest()) return;
         if (isNewChat) {
           const started = events.find((streamEvent) => streamEvent.type === "run_started" && streamEvent.threadId);
           const startedThreadId = started?.type === "run_started" ? started.threadId ?? null : null;
@@ -385,6 +420,7 @@ export function ChatScreen() {
         updateStreamState((current) => failStreamState(current, streamError));
       }
     } catch (sendError) {
+      if (requestController.signal.aborted || !isCurrentRequest()) return;
       const message = sendError instanceof Error ? sendError.message : "Could not send that message.";
       streamBuffer.flush();
       setError(message);
@@ -393,9 +429,13 @@ export function ChatScreen() {
       streamBuffer.flush();
       streamBuffer.cancel();
       if (streamBufferRef.current === streamBuffer) streamBufferRef.current = null;
-      setSending(false);
-      if (isNewChat && persistedThreadIdRef.current) {
-        router.replace(`/chat/${persistedThreadIdRef.current}`, { scroll: false });
+      const ownsRequest = isCurrentRequest();
+      if (ownsRequest) {
+        activeRequestRef.current = null;
+        setSending(false);
+        if (isNewChat && persistedThreadIdRef.current) {
+          router.replace(`/chat/${persistedThreadIdRef.current}`, { scroll: false });
+        }
       }
     }
   }

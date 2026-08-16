@@ -8,6 +8,12 @@ export function isNewChatPromotion(previousThreadId: string, nextThreadId: strin
   return previousThreadId === UNSAVED_CHAT_ID && isPersistedThreadId(nextThreadId);
 }
 
+/** A route-shaped ID is not enough to preserve the provisional chat state.
+ * Confirm that it is the thread created by this first-message request. */
+export function isConfirmedNewChatPromotion(previousThreadId: string, nextThreadId: string, createdThreadId: string | null) {
+  return isNewChatPromotion(previousThreadId, nextThreadId) && createdThreadId === nextThreadId;
+}
+
 export function messageEndpointForThread(threadId: string) {
   return threadId === UNSAVED_CHAT_ID
     ? "/api/threads/new/messages"

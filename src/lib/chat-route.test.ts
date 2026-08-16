@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isNewChatPromotion, isPersistedThreadId, isUnsavedChatPath, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
+import { isConfirmedNewChatPromotion, isNewChatPromotion, isPersistedThreadId, isUnsavedChatPath, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
 
 describe("lazy chat routes", () => {
   it("recognizes the unsaved route without treating a persisted chat as new", () => {
@@ -23,5 +23,13 @@ describe("lazy chat routes", () => {
     expect(isNewChatPromotion("new", "00000000-0000-4000-8000-000000000001")).toBe(true);
     expect(isNewChatPromotion("00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002")).toBe(false);
     expect(isNewChatPromotion("new", "not-a-thread")).toBe(false);
+  });
+
+  it("only preserves provisional state for the thread created by the request", () => {
+    const created = "00000000-0000-4000-8000-000000000001";
+    const unrelated = "00000000-0000-4000-8000-000000000002";
+    expect(isConfirmedNewChatPromotion("new", created, created)).toBe(true);
+    expect(isConfirmedNewChatPromotion("new", unrelated, created)).toBe(false);
+    expect(isConfirmedNewChatPromotion("new", created, null)).toBe(false);
   });
 });
