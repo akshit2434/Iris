@@ -33,11 +33,13 @@ if (!process.env.OPENROUTER_API_KEY) {
 const resultFile = path.join(root, `.iris-live-acceptance-${process.pid}.json`);
 const vitestEntry = path.join(root, "node_modules", "vitest", "vitest.mjs");
 const childEnv = { ...process.env, IRIS_LIVE_ACCEPTANCE_RESULT_FILE: resultFile };
-const result = spawnSync(process.execPath, [vitestEntry, "run", "scripts/live-memory-acceptance.test.ts", "--reporter=dot", "--testTimeout=120000", "--hookTimeout=120000"], {
+const result = spawnSync(process.execPath, [vitestEntry, "run", "scripts/live-memory-acceptance.test.ts", "--reporter=dot", "--testTimeout=60000", "--hookTimeout=60000"], {
   cwd: root,
   env: childEnv,
   encoding: "utf8",
   maxBuffer: 1_000_000,
+  timeout: 300_000,
+  killSignal: "SIGTERM",
 });
 
 let report = null;

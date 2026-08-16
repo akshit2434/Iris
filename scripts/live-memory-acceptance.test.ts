@@ -52,6 +52,7 @@ function writeReport(value: Record<string, unknown>) {
 function errorCode(error: unknown) {
   const message = error instanceof Error ? error.message.toLocaleLowerCase() : "";
   if (message.includes("request_budget")) return "request_budget_exceeded";
+  if (message.includes("abort") || message.includes("timeout") || message.includes("timed out")) return "turn_timeout";
   if (message.includes("openrouter") || message.includes("fetch")) return "provider_error";
   if (message.includes("profile") || message.includes("thread") || message.includes("message")) return "local_data_error";
   return "acceptance_failed";
@@ -162,14 +163,24 @@ async function createExistingTurn(ledger: Ledger, threadId: string, tag: string,
   return { messageId, runId: run.id };
 }
 
+const TURN_DEADLINE_MS = 45_000;
+
 async function collectTurn(input: Parameters<typeof streamAgentEvents>[0]): Promise<TurnResult> {
   const events: AgentRuntimeEvent[] = [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TURN_DEADLINE_MS);
   try {
-    for await (const event of streamAgentEvents(input)) events.push(event);
+    for await (const event of streamAgentEvents({ ...input, signal: controller.signal })) events.push(event);
     return { events };
   } catch (error) {
     return { events, errorCode: errorCode(error) };
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+function requireHealthyTurn(result: TurnResult) {
+  if (result.errorCode) throw new Error(result.errorCode);
 }
 
 async function cleanup(ledgerPath: string, ledger: Ledger) {
@@ -250,6 +261,7 @@ describe("guarded live memory acceptance", () => {
         messages: [{ role: "user", content: `I explicitly want you to remember one durable synthetic fact now. Use memory_patch immediately with logicalKey ${logicalKey}, mutationKind create, expectedDocumentRevision null, and a full replacement Markdown document saying the fictional Project Ember launch date is 2026-09-30 and supersedes earlier plans. Make the tool call your only action.` }],
       });
       observedEvents.push(...chatAResult.events);
+      requireHealthyTurn(chatAResult);
 
       const documentAfterPatch = await store.getDocument(PROFILE_ID, logicalKey, { includeArchived: true });
       if (documentAfterPatch) ledger.documentIds.push(documentAfterPatch.id);
@@ -266,6 +278,7 @@ describe("guarded live memory acceptance", () => {
         messages: [{ role: "user", content: "What is the current fictional Project Ember launch date? Answer briefly from the canonical context and do not call a tool." }],
       });
       observedEvents.push(...chatBResult.events);
+      requireHealthyTurn(chatBResult);
 
       const chatC = await createFreshTurn(ledger, tag, `Synthetic ${tag}: find the exact source of a prior decision.`);
       const chatCResult = await collectTurn({
@@ -276,6 +289,7 @@ describe("guarded live memory acceptance", () => {
         messages: [{ role: "user", content: "Where did I decide that? Search prior chats for the exact source of the fictional Project Ember launch decision and return a validated internal open source action. Do not guess and do not use an external URL." }],
       });
       observedEvents.push(...chatCResult.events);
+      requireHealthyTurn(chatCResult);
 
       const oldTurn = await createExistingTurn(ledger, oldThreads[0].threadId, tag, `Synthetic ${tag}: what is the current fictional Project Ember launch date? Use the latest memory correction, not stale history.`);
       const throughRevision = await store.getCurrentRevision(PROFILE_ID);
@@ -284,6 +298,7 @@ describe("guarded live memory acceptance", () => {
       const oldContext = createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: oldThreads[0].threadId, threadTitle: `Synthetic ${tag} old`, browserTimezone: "UTC", currentUserMessageId: oldTurn.messageId, agentRunId: oldTurn.runId, canonicalMemory: oldCanonical, memoryChangeHint: changeHint, now: new Date("2026-08-16T00:03:00.000Z") });
       const oldResult = await collectTurn({ model, context: oldContext, messages: [{ role: "user", content: "What is the current fictional Project Ember launch date? Use the latest correction." }] });
       observedEvents.push(...oldResult.events);
+      requireHealthyTurn(oldResult);
 
       const patchFinished = chatAResult.events.find((event): event is Extract<AgentRuntimeEvent, { type: "tool_finished" }> => event.type === "tool_finished" && event.toolName === "memory_patch");
       const sourceRows = chatCResult.events.flatMap((event) => event.type === "tool_finished" && (event.toolName === "search_messages" || event.toolName === "read_messages") ? memorySourceRows(event.toolName, event.output, PROFILE_ID) : []);

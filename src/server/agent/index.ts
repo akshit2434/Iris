@@ -228,6 +228,7 @@ export async function* streamAgentEvents(input: {
   context: AgentContext;
   messages: AgentMessage[];
   model?: AgentModel;
+  signal?: AbortSignal;
   threadOverviewReader?: ThreadOverviewReader;
   memoryRetrieval?: MemoryRetrieval;
   memoryMutation?: MemoryMutationService;
@@ -240,7 +241,7 @@ export async function* streamAgentEvents(input: {
     : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, forceToolName: input.forceToolName });
   const stream = await agent.stream(
     { messages: input.messages },
-    { context: input.context, streamMode: "messages" },
+    { context: input.context, signal: input.signal, streamMode: "messages" },
   );
   const startedTools = new Set<string>();
 
@@ -271,6 +272,7 @@ export async function* streamAssistantReply(input: {
   context: AgentContext;
   messages: AgentMessage[];
   model?: AgentModel;
+  signal?: AbortSignal;
   threadOverviewReader?: ThreadOverviewReader;
   memoryRetrieval?: MemoryRetrieval;
   memoryMutation?: MemoryMutationService;

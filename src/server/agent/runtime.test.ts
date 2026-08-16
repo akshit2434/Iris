@@ -316,6 +316,22 @@ describe("runtime seams", () => {
     expect((events[0] as { text: string }).text).toContain("hello");
   });
 
+  it("propagates an aborted execution signal through the agent stream", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const consume = async () => {
+      for await (const _event of streamAgentEvents({
+        model: new FakeToolCallingModel({ toolCalls: [[]] }),
+        context,
+        signal: controller.signal,
+        messages: [{ role: "user", content: "abort this deterministic run" }],
+      })) {
+        // The aborted signal should prevent any model output from being consumed.
+      }
+    };
+    await expect(consume()).rejects.toThrow();
+  });
+
   it("projects deterministic tool calls and results into semantic events", async () => {
     const events = [];
     for await (const event of streamAgentEvents({
