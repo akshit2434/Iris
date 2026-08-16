@@ -3,6 +3,8 @@ import { createProductionConsolidationWorker } from "@/server/memory/consolidati
 import { createProductionThreadContinuityWorker } from "@/server/memory/compaction";
 import { createProductionReferenceHistoryWorker } from "@/server/memory/reference-history";
 import { hasWorkerSecret as compareWorkerSecret } from "@/server/memory/worker-auth";
+import { appendAgentEvent, getAgentRunScope, getNextAgentEventSequence } from "@/server/db/queries";
+import { createAgentTraceRecorder } from "@/server/agent/observability";
 
 export const runtime = "nodejs";
 
@@ -24,7 +26,30 @@ export async function POST(request: Request) {
       ? await createProductionThreadContinuityWorker({ limit, maxDurationMs: 25_000, workerId })
       : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
     const referenceHistory = process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "true"
-      ? await createProductionReferenceHistoryWorker({ limit, maxDurationMs: 25_000, workerId })
+      ? await createProductionReferenceHistoryWorker({
+          limit,
+          maxDurationMs: 25_000,
+          workerId,
+          observabilityFactory: async ({ job, threadId }) => {
+            if (!job.sourceRunId || !threadId) return undefined;
+            const scope = await getAgentRunScope(job.profileId, job.sourceRunId);
+            if (!scope || scope.threadId !== threadId) return undefined;
+            let sequence = await getNextAgentEventSequence(job.profileId, threadId, job.sourceRunId);
+            return createAgentTraceRecorder({
+              model: job.model,
+              provider: "openrouter",
+              executionKind: "background_reference_history",
+              append: (type, payload) => appendAgentEvent({
+                profileId: job.profileId,
+                threadId,
+                runId: job.sourceRunId as string,
+                sequence: sequence++,
+                type,
+                payload,
+              }).then(() => undefined),
+            });
+          },
+        })
       : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
     return NextResponse.json({
       enabled: process.env.MEMORY_CONSOLIDATION_ENABLED === "true" || process.env.MEMORY_CONTINUITY_ENABLED === "true" || process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "true",

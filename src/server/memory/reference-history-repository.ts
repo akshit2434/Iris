@@ -13,6 +13,7 @@ import {
   type ReferenceHistorySourceRange,
   type ReferenceHistoryStore,
   type ReferenceHistoryDocument,
+  type ReferenceHistoryClaim,
 } from "@/server/memory/types";
 import { assertMemoryProfileId, normalizeMemoryLimit, validateMemoryUuid } from "@/server/memory/validation";
 
@@ -55,13 +56,49 @@ function toJob(row: Database["public"]["Tables"]["reference_history_jobs"]["Row"
   };
 }
 
+/**
+ * Snapshots are JSON documents and older rows predate claim-level metadata.
+ * Normalize their optional fields on read so the runtime can safely overlay
+ * current memory and rebuild exact source actions without a destructive data
+ * migration. The next Dreaming job writes the richer shape.
+ */
+function normalizeStoredDocument(value: unknown): ReferenceHistoryDocument {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const sections = ["ongoingWork", "recurringPreferences", "relationshipsContext", "recentChanges", "boundedPatterns"] as const;
+  const normalized = Object.fromEntries(sections.map((section) => {
+    const claims = Array.isArray(record[section]) ? record[section] : [];
+    return [section, claims.flatMap((claim): ReferenceHistoryClaim[] => {
+      if (!claim || typeof claim !== "object" || Array.isArray(claim)) return [];
+      const item = claim as Record<string, unknown>;
+      if (typeof item.text !== "string" || item.text.trim().length === 0) return [];
+      const sourceMessageIds = Array.isArray(item.sourceMessageIds)
+        ? item.sourceMessageIds.filter((source): source is string => typeof source === "string").slice(0, 12)
+        : [];
+      return [{
+        text: item.text.replace(/\s+/g, " ").trim().slice(0, 1_200),
+        confidence: typeof item.confidence === "number" && Number.isFinite(item.confidence) ? Math.max(0, Math.min(1, item.confidence)) : 0.5,
+        temporalQualifier: typeof item.temporalQualifier === "string" ? item.temporalQualifier.slice(0, 240) : null,
+        uncertainty: typeof item.uncertainty === "string" ? item.uncertainty.slice(0, 240) : null,
+        sourceMessageIds,
+        sourceRanges: Array.isArray(item.sourceRanges) ? item.sourceRanges.slice(0, 200) as ReferenceHistorySourceRange[] : [],
+        memoryKeys: Array.isArray(item.memoryKeys) ? item.memoryKeys.filter((key): key is string => typeof key === "string").slice(0, 8) : [],
+        ...(item.stale === true ? { stale: true } : {}),
+        ...(typeof item.memoryOverlay === "string" ? { memoryOverlay: item.memoryOverlay.slice(0, 1_200) } : {}),
+      }];
+    })];
+  })) as Pick<ReferenceHistoryDocument, typeof sections[number]>;
+  const base = { version: "iris-reference-history-v1" as const, ...normalized };
+  const renderedText = typeof record.renderedText === "string" ? record.renderedText.slice(0, 16_000) : "";
+  return { ...base, renderedText };
+}
+
 function toSnapshot(row: Database["public"]["Tables"]["profile_reference_history_snapshots"]["Row"]): ReferenceHistorySnapshot {
   return {
     id: row.id,
     profileId: row.profile_id,
     revision: row.revision,
     status: row.status,
-    document: row.document as unknown as ReferenceHistoryDocument,
+    document: normalizeStoredDocument(row.document),
     renderedText: row.rendered_text,
     sourceRanges: row.source_ranges as unknown as ReferenceHistorySourceRange[],
     coveredTokenWatermark: row.covered_token_watermark,

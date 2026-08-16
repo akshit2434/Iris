@@ -517,6 +517,32 @@ export async function findAgentRun(
   return data ? toAgentRun(data) : null;
 }
 
+/** Resolve an existing run's profile/thread ownership for background traces. */
+export async function getAgentRunScope(profileId: ProfileId, runId: string): Promise<{ threadId: string } | null> {
+  const { data, error } = await getDatabase()
+    .from("agent_runs")
+    .select("thread_id")
+    .eq("id", runId)
+    .eq("profile_id", profileId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? { threadId: data.thread_id } : null;
+}
+
+export async function getNextAgentEventSequence(profileId: ProfileId, threadId: string, runId: string) {
+  const { data, error } = await getDatabase()
+    .from("agent_events")
+    .select("sequence")
+    .eq("profile_id", profileId)
+    .eq("thread_id", threadId)
+    .eq("run_id", runId)
+    .order("sequence", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.sequence ?? 0) + 1;
+}
+
 export async function createAgentRun(input: {
   id: string;
   profileId: ProfileId;

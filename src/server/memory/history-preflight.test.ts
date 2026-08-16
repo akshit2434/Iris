@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { detectHistoryPreflightIntent, formatHistoryPreflightPrompt, runHistoryPreflight } from "@/server/memory/history-preflight";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
-import type { MessageContextWindow, MessageSearchResult } from "@/server/memory/types";
+import type { MessageContextWindow, MessageSearchResult, ReferenceHistorySnapshot } from "@/server/memory/types";
 
 const ids = {
   thread: "00000000-0000-4000-8000-000000000011",
@@ -62,6 +62,35 @@ describe("deterministic historical preflight", () => {
     expect(output.sources[0]?.action).toEqual({ type: "open_message", threadId: ids.thread, messageId: ids.message, label: "Open source" });
     expect(output.prompt).toContain("Historical preflight status: found");
     expect(output.prompt).toContain(ids.message);
+  });
+
+  it("resolves explicit source requests from Dreaming claim provenance before raw search", async () => {
+    const store = retrieval();
+    const snapshot = {
+      id: "00000000-0000-4000-8000-000000000031",
+      profileId: "profile-a",
+      revision: 2,
+      status: "active",
+      document: {
+        version: "iris-reference-history-v1",
+        ongoingWork: [{ text: "The blue-awning bookshop has a reading corner.", confidence: 0.9, temporalQualifier: "tentative", sourceMessageIds: [ids.message], memoryKeys: [] }],
+        recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [], renderedText: "",
+      },
+      renderedText: "",
+      sourceRanges: [],
+      coveredTokenWatermark: 200,
+      coveredThroughAt: "2026-08-14T12:00:00.000Z",
+      sourceHash: "hash",
+      memoryRevision: 0,
+      model: "openai/test-model",
+      synthesizerVersion: "iris-reference-history-v1",
+      previousSnapshotId: null,
+      createdAt: "2026-08-14T12:00:00.000Z",
+    } satisfies ReferenceHistorySnapshot;
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "where did we talk about the blue-awning bookshop?", retrieval: store, referenceHistorySnapshot: snapshot });
+    expect(output.status).toBe("found");
+    expect(output.sources[0]?.action).toEqual({ type: "open_message", threadId: ids.thread, messageId: ids.message, label: "Open source" });
+    expect(store.searchMessages).not.toHaveBeenCalled();
   });
 
   it("does not turn the current request into its own historical source", async () => {

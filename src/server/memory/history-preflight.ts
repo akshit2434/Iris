@@ -4,7 +4,7 @@ import { buildOpenMessageAction, type OpenMessageAction } from "@/lib/memory-sou
 import type { ProfileId } from "@/lib/profiles";
 import type { MessageRole } from "@/lib/types";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
-import type { MessageContextWindow, MessageMatchType, MessageSearchResult, MessageSearchRole } from "@/server/memory/types";
+import type { MessageContextWindow, MessageMatchType, MessageSearchResult, MessageSearchRole, ReferenceHistorySnapshot } from "@/server/memory/types";
 import { normalizeMemoryDate, normalizeMemoryExactPhrase, normalizeMemoryLimit, normalizeMemoryQuery, validateMemoryUuid } from "@/server/memory/validation";
 
 const MAX_RESULTS = 3;
@@ -70,11 +70,21 @@ function queryRemainder(value: string, exactPhrase: string | null) {
     .replace(/^\s*(?:where|when|what)\s+(?:did\s+(?:i|we)|have\s+i|was\s+it)\s+(?:say|said|mention|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\s*/i, "")
     .replace(/^\s*(?:show|find|open|locate|search|look\s+up)\s+(?:me\s+)?(?:the\s+)?(?:exact\s+)?(?:source|message|chat|conversation|thread|discussion)?\s*(?:where|about|for|on|with)?\s*/i, "")
     .replace(/^\s*(?:continue|resume|pick\s+up|go\s+back\s+to)\s+(?:the\s+)?(?:old|previous|earlier|last|that|our)?\s*(?:chat|conversation|thread|discussion)?\s*/i, "")
+    .replace(/^\s*(?:where|what)\s+(?:was|is)\s+(?:that|the)?\s*/i, "")
+    .replace(/\b(?:chat|conversation|thread|discussion|message|source)\b/gi, " ")
+    .replace(/\b(?:we|i|you|did|do|talked?|mentioned?|said|say|decided?|discussed?|about|again|that|the|our|my)\b/gi, " ")
+    .replace(/[-–—]/g, " ")
     .replace(/\b(?:last|this)\s+(?:month|week)\b/gi, " ")
     .replace(/\b(?:between|from|through|until|on)\s+20\d{2}-\d{2}-\d{2}\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
   return remainder.length >= 3 ? remainder : value.trim();
+}
+
+function meaningfulTokens(value: string) {
+  return value.toLocaleLowerCase().replace(/[-–—]/g, " ").split(/[^a-z0-9]+/).filter((token) => token.length >= 3 && !new Set([
+    "what", "where", "when", "which", "did", "does", "that", "this", "those", "these", "with", "about", "from", "into", "have", "has", "had", "were", "was", "are", "the", "our", "my", "and", "for", "again",
+  ]).has(token));
 }
 
 function startOfUtcMonth(year: number, month: number) {
@@ -200,12 +210,49 @@ export async function runHistoryPreflight(input: {
   now?: Date;
   maxResults?: number;
   excludeMessageId?: string;
+  referenceHistorySnapshot?: ReferenceHistorySnapshot | null;
 }): Promise<HistoryPreflightResult> {
   const intent = detectHistoryPreflightIntent(input.query, input.now);
   if (!intent) return { triggered: false, intent: null, status: "skipped", sources: [], prompt: "" };
   const limit = normalizeMemoryLimit(input.maxResults ?? MAX_RESULTS, MAX_RESULTS);
-  let results: MessageSearchResult[];
-  try {
+  let results: MessageSearchResult[] = [];
+  const queryTokens = meaningfulTokens(intent.query);
+  const claimCandidates = input.referenceHistorySnapshot
+    ? Object.values(input.referenceHistorySnapshot.document)
+      .flatMap((section) => Array.isArray(section) ? section : [])
+      .filter((claim): claim is ReferenceHistorySnapshot["document"]["ongoingWork"][number] => {
+        const claimTokens = meaningfulTokens(`${claim.text} ${claim.memoryOverlay ?? ""}`);
+        return queryTokens.length === 0 || queryTokens.some((token) => claimTokens.includes(token));
+      })
+      .flatMap((claim) => claim.sourceMessageIds)
+    : [];
+  const claimMessageIds = [...new Set(claimCandidates)].filter((messageId) => messageId !== input.excludeMessageId);
+  if (claimMessageIds.length > 0) {
+    // The synthesized snapshot is a fast, bounded index for ordinary human
+    // references. Re-read each source inside the active profile before making
+    // it evidence or an exact navigation action.
+    for (const messageId of claimMessageIds.slice(0, limit * 4)) {
+      try {
+        const window = await input.retrieval.readMessages(input.profileId, messageId, 2);
+        if (!window || window.target.profileId !== input.profileId || window.target.messageId !== messageId) continue;
+        results.push({
+          messageId,
+          threadId: window.target.threadId,
+          profileId: input.profileId,
+          role: window.target.role,
+          content: window.target.content,
+          createdAt: window.target.createdAt,
+          lexicalScore: 1,
+          semanticScore: null,
+          combinedScore: 1,
+          matchType: "hybrid",
+        });
+      } catch {
+        // Stale/foreign claim sources fall through to the raw message index.
+      }
+    }
+  }
+  if (results.length === 0) try {
     results = await input.retrieval.searchMessages({
       profileId: input.profileId,
       query: intent.query,
@@ -214,7 +261,10 @@ export async function runHistoryPreflight(input: {
       roles: intent.roles,
       from: intent.from,
       to: intent.to,
-      limit,
+      // Search a wider bounded candidate set before excluding the current
+      // request. The request is persisted first and can otherwise consume the
+      // entire lexical top-k for an explicit source question.
+      limit: Math.min(100, Math.max(limit * 8, 20)),
     });
   } catch {
     const unavailable: HistoryPreflightResult = { triggered: true, intent, status: "unavailable", sources: [], prompt: "", errorCode: "search_unavailable" };
@@ -222,12 +272,14 @@ export async function runHistoryPreflight(input: {
   }
 
   const sources: HistoricalSourceHit[] = [];
-  for (const result of results.slice(0, limit)) {
+  const orderedResults = [...results]
+    .filter((result) => result.messageId !== input.excludeMessageId)
+    .sort((left, right) => right.combinedScore - left.combinedScore || left.createdAt.localeCompare(right.createdAt) || left.messageId.localeCompare(right.messageId));
+  for (const result of orderedResults.slice(0, limit)) {
     // The current request is already persisted before preflight runs. It can
     // contain every query term and outrank the retained source the user is
     // asking for, but it is not historical evidence and must never become a
     // clickable source action.
-    if (result.messageId === input.excludeMessageId) continue;
     if (!validResult(result, input.profileId) || sources.some((source) => source.messageId === result.messageId)) continue;
     let window: MessageContextWindow | null;
     try {

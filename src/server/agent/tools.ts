@@ -31,6 +31,8 @@ export type InternalToolOptions = {
   returnDirectTools?: readonly string[];
   /** The trusted server preflight already searched/read historical sources. */
   disableHistoricalSearch?: boolean;
+  /** The server supplied enough profile context for this turn. */
+  disableContextLookup?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -343,8 +345,11 @@ export function createInternalTools(
     },
   );
 
-  const historicalTools = options.disableHistoricalSearch ? [] : [searchMessagesTool, readMessagesTool];
-  return [threadOverview, ...historicalTools, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool] as const;
+  const contextLookupDisabled = options.disableContextLookup === true;
+  const historicalTools = options.disableHistoricalSearch || contextLookupDisabled ? [] : [searchMessagesTool, readMessagesTool];
+  const contextTools = contextLookupDisabled ? [] : [threadOverview];
+  const memorySearchTools = contextLookupDisabled ? [] : [memorySearchTool];
+  return [...contextTools, ...historicalTools, memoryListTool, memoryReadTool, ...memorySearchTools, memoryPatchTool, memoryArchiveTool] as const;
 }
 
 /**
@@ -352,8 +357,8 @@ export function createInternalTools(
  * intentionally separate from model invocation; it performs no I/O and keeps
  * raw tool schemas out of telemetry while still counting their JSON overhead.
  */
-export function getInternalToolSchemaDescriptors(): InternalToolSchemaDescriptor[] {
-  return createInternalTools().map((internalTool) => {
+export function getInternalToolSchemaDescriptors(options: InternalToolOptions = {}): InternalToolSchemaDescriptor[] {
+  return createInternalTools(undefined, undefined, undefined, undefined, options).map((internalTool) => {
     let parameters: Record<string, unknown> = { type: "object" };
     try {
       parameters = z.toJSONSchema(internalTool.schema) as Record<string, unknown>;

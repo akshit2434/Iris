@@ -240,6 +240,21 @@ describe("internal tools", () => {
     ]);
   });
 
+  it("removes all model-selected context lookups when the server supplied enough memory", () => {
+    expect(createInternalTools(undefined, undefined, undefined, undefined, { disableContextLookup: true }).map((internalTool) => internalTool.name)).toEqual([
+      "memory_list",
+      "memory_read",
+      "memory_patch",
+      "memory_archive",
+    ]);
+    expect(getInternalToolSchemaDescriptors({ disableContextLookup: true }).map((schema) => schema.name)).toEqual([
+      "memory_list",
+      "memory_read",
+      "memory_patch",
+      "memory_archive",
+    ]);
+  });
+
   it("serializes tool schemas for token accounting without invoking a tool", () => {
     const schemas = getInternalToolSchemaDescriptors();
     expect(schemas).toHaveLength(8);

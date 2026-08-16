@@ -107,12 +107,23 @@ export type ReferenceHistorySourceRange = {
   estimatedTokens: number;
 };
 
+/** Exact source span supporting one derived claim. */
+export type ReferenceHistoryClaimSourceRange = ReferenceHistorySourceRange;
+
 export type ReferenceHistoryClaim = {
   text: string;
   confidence: number;
   temporalQualifier: string | null;
+  /** Optional plain-language uncertainty note from the synthesizer. */
+  uncertainty?: string | null;
   sourceMessageIds: string[];
+  /** Derived from sourceMessageIds when the model only returns message IDs. */
+  sourceRanges?: ReferenceHistoryClaimSourceRange[];
   memoryKeys: string[];
+  /** True when the claim is retained for provenance but no longer current. */
+  stale?: boolean;
+  /** Current saved-memory wording for a stale keyed claim. */
+  memoryOverlay?: string | null;
 };
 
 export type ReferenceHistoryDocument = {

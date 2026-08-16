@@ -236,6 +236,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           // bounded set, then exclude that current message from evidence.
           maxResults: 8,
           excludeMessageId: userMessageId,
+          referenceHistorySnapshot,
         })
       : { triggered: false, intent: null, status: "skipped" as const, sources: [], prompt: "" };
     const [memoryItems, memorySuppressions] = memoryControls.savedMemoryEnabled
@@ -260,8 +261,15 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const referenceHistoryPrompt = memoryControls.referenceHistoryEnabled
       && referenceHistoryPromptIsFresh(referenceHistorySnapshot, memoryRevisionSnapshot)
       && referenceHistorySnapshot
-      ? formatReferenceHistoryPrompt(referenceHistorySnapshot, { savedItems: memoryItems, suppressions: memorySuppressions })
+      ? formatReferenceHistoryPrompt(referenceHistorySnapshot, { savedItems: memoryItems, suppressions: memorySuppressions, currentMemoryRevision: memoryRevisionSnapshot, query: content })
       : "";
+    // ChatGPT-style ordinary recall is a direct context path. Once the server
+    // has a usable saved/reference snapshot, do not give the model lookup
+    // tools that invite redundant multi-turn searching. Explicit evidence
+    // requests remain server-controlled by the preflight above.
+    const memoryContextSufficient = !historicalPreflight.triggered
+      && (referenceHistoryPrompt.length > 0 || canonicalMemory.items.length > 0);
+    const disableContextLookup = memoryContextSufficient || historicalPreflight.triggered;
     const memoryDisclosure = (memoryControls.savedMemoryEnabled && canonicalMemory.items.length > 0)
       || (memoryControls.referenceHistoryEnabled && Boolean(referenceHistoryPrompt))
       || historicalPreflight.sources.length > 0
@@ -303,6 +311,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
+      memoryContextSufficient: disableContextLookup,
       now: requestNow,
       // State slots are supplied by the token assembler below. Keeping them
       // empty here ensures the ledger measures each component exactly once.
@@ -331,7 +340,10 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         provider: "openrouter",
         model,
         systemPrompt: buildDynamicSystemPrompt(baseAgentContext),
-        toolSchemas: getInternalToolSchemaDescriptors(),
+        toolSchemas: getInternalToolSchemaDescriptors({
+          disableHistoricalSearch: historicalPreflight.triggered || !memoryControls.referenceHistoryEnabled,
+          disableContextLookup,
+        }),
         currentUser: currentUserMessage,
         messages: history,
         continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
@@ -371,6 +383,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
+      memoryContextSufficient: disableContextLookup,
       now: requestNow,
       budgetedContext: contextAssembly.prompt,
     });
@@ -554,6 +567,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             memoryMutation,
             memoryArchive,
             disableHistoricalSearch: historicalPreflight.triggered || !memoryControls.referenceHistoryEnabled,
+            disableContextLookup,
             observability: trace,
             executionKind: "interactive_agent",
           })) {

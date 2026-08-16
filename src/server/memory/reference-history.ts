@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createProductionChatModel, type AgentModel } from "@/server/agent";
+import type { AgentTraceRecorder } from "@/server/agent/observability";
 import { hashMemoryContent } from "@/server/memory/hash";
 import { createSupabaseReferenceHistoryStore } from "@/server/memory/reference-history-repository";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
@@ -8,6 +9,7 @@ import { validateConsolidationProposals, type ConsolidationProposalInput } from 
 import type {
   MemoryItem,
   MemorySuppression,
+  ReferenceHistoryClaimSourceRange,
   MemoryStore,
   ReferenceHistoryClaim,
   ReferenceHistoryDocument,
@@ -27,6 +29,7 @@ const MAX_SOURCE_IDS_PER_CLAIM = 12;
 const MAX_TEXT_PER_CLAIM = 1_200;
 const MAX_RENDERED_TEXT = 16_000;
 const MAX_SOURCE_RANGES = 200;
+const MAX_UNCERTAINTY_TEXT = 240;
 
 type ReferenceHistorySections = Exclude<keyof ReferenceHistoryDocument, "version" | "renderedText">;
 
@@ -51,6 +54,10 @@ export type ReferenceHistoryWorkerOptions = {
   store: ReferenceHistoryStore;
   memoryStore: MemoryStore;
   synthesizer: ReferenceHistorySynthesizer;
+  synthesizerFactory?: (observability?: AgentTraceRecorder) => ReferenceHistorySynthesizer;
+  observabilityFactory?: (input: { job: ReferenceHistoryJob; threadId: string | null }) => Promise<AgentTraceRecorder | undefined>;
+  /** Optional durable usage recorder. Prompt content is never passed to it. */
+  observability?: AgentTraceRecorder;
   workerId?: string;
   limit?: number;
   leaseSeconds?: number;
@@ -97,6 +104,11 @@ function normalizeTemporalQualifier(value: unknown) {
   return normalized || null;
 }
 
+function normalizeUncertainty(value: unknown) {
+  const normalized = compactText(value, MAX_UNCERTAINTY_TEXT);
+  return normalized || null;
+}
+
 function normalizeSourceIds(value: unknown, available: ReadonlySet<string>) {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SOURCE_IDS_PER_CLAIM) {
     throw new Error("Reference history claim source IDs are invalid.");
@@ -118,7 +130,40 @@ function normalizeMemoryKeys(value: unknown) {
   }))];
 }
 
-function normalizeClaim(value: unknown, available: ReadonlySet<string>): ReferenceHistoryClaim | null {
+function sourceRangesForMessages(sourceMessages: ReadonlyMap<string, ReferenceHistoryMessage>, sourceMessageIds: readonly string[]) {
+  const ranges = new Map<string, ReferenceHistoryClaimSourceRange>();
+  for (const messageId of sourceMessageIds) {
+    const message = sourceMessages.get(messageId);
+    if (!message) continue;
+    const current = ranges.get(message.threadId);
+    if (!current) {
+      ranges.set(message.threadId, {
+        threadId: message.threadId,
+        startMessageId: message.messageId,
+        endMessageId: message.messageId,
+        startAt: message.createdAt,
+        endAt: message.createdAt,
+        estimatedTokens: message.estimatedTokens,
+      });
+      continue;
+    }
+    const currentStart = new Date(current.startAt).valueOf();
+    const currentEnd = new Date(current.endAt).valueOf();
+    const messageAt = new Date(message.createdAt).valueOf();
+    if (messageAt < currentStart || (messageAt === currentStart && message.messageId < current.startMessageId)) {
+      current.startMessageId = message.messageId;
+      current.startAt = message.createdAt;
+    }
+    if (messageAt > currentEnd || (messageAt === currentEnd && message.messageId > current.endMessageId)) {
+      current.endMessageId = message.messageId;
+      current.endAt = message.createdAt;
+    }
+    current.estimatedTokens += message.estimatedTokens;
+  }
+  return [...ranges.values()].slice(0, MAX_SOURCE_RANGES);
+}
+
+function normalizeClaim(value: unknown, sourceMessages: ReadonlyMap<string, ReferenceHistoryMessage>): ReferenceHistoryClaim | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Reference history claim is invalid.");
   const record = value as Record<string, unknown>;
   const text = compactText(record.text);
@@ -141,17 +186,86 @@ function normalizeClaim(value: unknown, available: ReadonlySet<string>): Referen
   const confidence = typeof record.confidence === "number" && Number.isFinite(record.confidence)
     ? Math.max(0, Math.min(1, record.confidence))
     : 0.5;
+  const sourceMessageIds = normalizeSourceIds(record.sourceMessageIds, new Set(sourceMessages.keys()));
+  const suppliedRanges = Array.isArray(record.sourceRanges) ? record.sourceRanges : null;
   return {
     text: safeText,
     confidence,
     temporalQualifier: normalizeTemporalQualifier(record.temporalQualifier),
-    sourceMessageIds: normalizeSourceIds(record.sourceMessageIds, available),
+    uncertainty: normalizeUncertainty(record.uncertainty),
+    sourceMessageIds,
+    // Old snapshots only carried message IDs. Reconstruct bounded ranges from
+    // the source messages when available; malformed supplied ranges are
+    // ignored so a legacy snapshot can still be read safely.
+    sourceRanges: suppliedRanges ? normalizeSourceRanges(suppliedRanges, sourceMessages, sourceMessageIds) : sourceRangesForMessages(sourceMessages, sourceMessageIds),
     memoryKeys: normalizeMemoryKeys(record.memoryKeys),
+    ...(record.stale === true ? { stale: true } : {}),
+    ...(typeof record.memoryOverlay === "string" ? { memoryOverlay: compactText(record.memoryOverlay) } : {}),
   };
 }
 
+function normalizeSourceRanges(value: unknown[], sourceMessages: ReadonlyMap<string, ReferenceHistoryMessage>, sourceMessageIds: readonly string[]) {
+  const availableThreads = new Set([...sourceMessages.values()].filter((message): message is ReferenceHistoryMessage => Boolean(message)).map((message) => message.threadId));
+  const ranges: ReferenceHistoryClaimSourceRange[] = [];
+  for (const entry of value.slice(0, MAX_SOURCE_RANGES)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.threadId !== "string" || !availableThreads.has(record.threadId)) continue;
+    const startMessageId = typeof record.startMessageId === "string" && sourceMessages.has(record.startMessageId) ? record.startMessageId : null;
+    const endMessageId = typeof record.endMessageId === "string" && sourceMessages.has(record.endMessageId) ? record.endMessageId : null;
+    if (!startMessageId || !endMessageId) continue;
+    const start = sourceMessages.get(startMessageId);
+    const end = sourceMessages.get(endMessageId);
+    if (!start || !end || start.threadId !== record.threadId || end.threadId !== record.threadId) continue;
+    ranges.push({
+      threadId: record.threadId,
+      startMessageId,
+      endMessageId,
+      startAt: typeof record.startAt === "string" ? record.startAt : start.createdAt,
+      endAt: typeof record.endAt === "string" ? record.endAt : end.createdAt,
+      estimatedTokens: typeof record.estimatedTokens === "number" && Number.isSafeInteger(record.estimatedTokens) && record.estimatedTokens >= 0
+        ? record.estimatedTokens
+        : start.estimatedTokens + end.estimatedTokens,
+    });
+  }
+  return ranges.length > 0 ? ranges : sourceRangesForMessages(sourceMessages, sourceMessageIds);
+}
+
 function renderClaim(claim: ReferenceHistoryClaim) {
-  return `- ${claim.text}${claim.temporalQualifier ? ` (${claim.temporalQualifier})` : ""}`;
+  const text = claim.memoryOverlay ?? claim.text;
+  const uncertainty = claim.uncertainty ? ` (${claim.uncertainty})` : "";
+  const temporal = claim.temporalQualifier ? ` (${claim.temporalQualifier})` : "";
+  return `- ${text}${temporal}${uncertainty}`;
+}
+
+function referenceQueryTokens(value: string) {
+  return value.toLocaleLowerCase().replace(/[-–—]/g, " ").split(/[^a-z0-9]+/).filter((token) => token.length >= 3 && !new Set([
+    "what", "where", "when", "which", "did", "does", "that", "this", "those", "these", "with", "about", "from", "into", "have", "has", "had", "were", "was", "are", "the", "our", "my", "and", "for", "again",
+  ]).has(token));
+}
+
+function narrowReferenceHistoryToQuery(document: ReferenceHistoryDocument, query: string | null | undefined) {
+  const tokens = typeof query === "string" ? referenceQueryTokens(query) : [];
+  if (tokens.length === 0) return document;
+  const sections = [document.ongoingWork, document.recurringPreferences, document.relationshipsContext, document.recentChanges, document.boundedPatterns];
+  const score = (claim: ReferenceHistoryClaim) => {
+    const haystack = `${claim.text} ${claim.memoryOverlay ?? ""}`.toLocaleLowerCase();
+    return tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
+  };
+  const maxScore = Math.max(0, ...sections.flatMap((section) => section.map(score)));
+  // If the user is referring to something obliquely and no claim shares a
+  // literal token, keep the bounded snapshot; the model can still use its
+  // temporal/uncertainty context. Literal matches get a compact relevant view.
+  if (maxScore === 0) return document;
+  const filter = (claims: readonly ReferenceHistoryClaim[]) => claims.filter((claim) => score(claim) > 0);
+  const narrowed = {
+    ongoingWork: filter(document.ongoingWork),
+    recurringPreferences: filter(document.recurringPreferences),
+    relationshipsContext: filter(document.relationshipsContext),
+    recentChanges: filter(document.recentChanges),
+    boundedPatterns: filter(document.boundedPatterns),
+  };
+  return { version: "iris-reference-history-v1" as const, ...narrowed, renderedText: renderReferenceHistoryText(narrowed) };
 }
 
 export function renderReferenceHistoryText(document: Omit<ReferenceHistoryDocument, "version" | "renderedText">) {
@@ -165,10 +279,17 @@ export function renderReferenceHistoryText(document: Omit<ReferenceHistoryDocume
   return sections.flatMap(([heading, claims]) => claims.length > 0 ? [`## ${heading}`, ...claims.map(renderClaim)] : []).join("\n").slice(0, MAX_RENDERED_TEXT);
 }
 
-export function validateReferenceHistoryDocument(value: unknown, sourceMessages: readonly ReferenceHistoryMessage[] = []): ReferenceHistoryDocument {
+export function validateReferenceHistoryDocument(
+  value: unknown,
+  sourceMessages: readonly ReferenceHistoryMessage[] = [],
+  additionalSourceMessageIds: readonly string[] = [],
+): ReferenceHistoryDocument {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Reference history synthesizer output was not an object.");
   const record = value as Record<string, unknown>;
-  const available = new Set(sourceMessages.map((message) => message.messageId));
+  const available = new Map(sourceMessages.map((message) => [message.messageId, message] as const));
+  for (const messageId of additionalSourceMessageIds) {
+    if (typeof messageId === "string") available.set(messageId, undefined as unknown as ReferenceHistoryMessage);
+  }
   const sections = {} as Record<ReferenceHistorySections, ReferenceHistoryClaim[]>;
   for (const section of ["ongoingWork", "recurringPreferences", "relationshipsContext", "recentChanges", "boundedPatterns"] as const) {
     const raw = record[section] ?? [];
@@ -195,17 +316,20 @@ export function applyReferenceHistoryConstraints(
   input: { savedItems?: readonly MemoryItem[]; suppressions?: readonly MemorySuppression[]; changedMemoryRevision?: boolean } = {},
 ): ReferenceHistoryDocument {
   const suppressions = input.suppressions ?? [];
-  const activeKeys = new Set((input.savedItems ?? []).filter((item) => item.status === "active").map((item) => item.canonicalKey));
-  const filter = (claims: readonly ReferenceHistoryClaim[]) => claims.filter((claim) => {
-    if (suppressions.some((suppression) => claimMentionsSuppression(claim, suppression))) return false;
-    // A correction may supersede the wording behind a keyed claim. Do not
-    // carry the old derived wording across that memory revision; the next
-    // synthesis can reintroduce a fresh claim from current evidence.
-    if (input.changedMemoryRevision === true && claim.memoryKeys.length > 0) return false;
+  const activeItems = new Map((input.savedItems ?? []).filter((item) => item.status === "active").map((item) => [item.canonicalKey, item] as const));
+  const filter = (claims: readonly ReferenceHistoryClaim[]) => claims.flatMap((claim) => {
+    if (suppressions.some((suppression) => claimMentionsSuppression(claim, suppression))) return [];
     // A key no longer represented by active saved memory is not allowed to
     // keep an old canonical fact alive inside a derived synthesis.
-    if (claim.memoryKeys.some((key) => !activeKeys.has(key)) && claim.memoryKeys.length > 0) return false;
-    return true;
+    if (claim.memoryKeys.some((key) => !activeItems.has(key)) && claim.memoryKeys.length > 0) return [];
+    if (input.changedMemoryRevision !== true || claim.memoryKeys.length === 0) return [claim];
+    const overlays = claim.memoryKeys.flatMap((key) => {
+      const item = activeItems.get(key);
+      if (!item) return [];
+      return [item];
+    });
+    const changed = overlays.find((item) => item.content.trim() !== claim.text.trim());
+    return changed ? [{ ...claim, stale: true, memoryOverlay: changed.content }] : [claim];
   });
   const constrained = {
     ongoingWork: filter(document.ongoingWork),
@@ -219,9 +343,12 @@ export function applyReferenceHistoryConstraints(
 
 export function formatReferenceHistoryPrompt(
   snapshot: ReferenceHistorySnapshot,
-  input: { savedItems?: readonly MemoryItem[]; suppressions?: readonly MemorySuppression[] } = {},
+  input: { savedItems?: readonly MemoryItem[]; suppressions?: readonly MemorySuppression[]; currentMemoryRevision?: number; query?: string | null } = {},
 ) {
-  const document = applyReferenceHistoryConstraints(snapshot.document, input);
+  const document = narrowReferenceHistoryToQuery(applyReferenceHistoryConstraints(snapshot.document, {
+    ...input,
+    changedMemoryRevision: input.currentMemoryRevision !== undefined && snapshot.memoryRevision < input.currentMemoryRevision,
+  }), input.query);
   if (!document.renderedText) return "";
   const escaped = document.renderedText.replace(/[<>]/g, (character) => character === "<" ? "&lt;" : "&gt;");
   return `snapshot-revision=${snapshot.revision}; covered-token-watermark=${snapshot.coveredTokenWatermark}; source-hash=${snapshot.sourceHash}\n${escaped}`;
@@ -298,23 +425,37 @@ export function createInjectedReferenceHistorySynthesizer(producer: (input: Refe
       const record = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
       const documentValue = record.document && typeof record.document === "object" ? record.document : raw;
       const memoryCandidates = Array.isArray(record.memoryCandidates) ? record.memoryCandidates as ConsolidationProposalInput[] : [];
-      return { document: validateReferenceHistoryDocument(documentValue, input.messages), memoryCandidates };
+      const previousSourceIds = input.previousSnapshot
+        ? Object.values(input.previousSnapshot.document).flatMap((section) => Array.isArray(section) ? section.flatMap((claim) => claim.sourceMessageIds) : [])
+        : [];
+      return { document: validateReferenceHistoryDocument(documentValue, input.messages, previousSourceIds), memoryCandidates };
     },
   };
 }
 
-export function createProductionReferenceHistorySynthesizer(model: AgentModel = createProductionChatModel()): ReferenceHistorySynthesizer {
+export function createProductionReferenceHistorySynthesizer(
+  model: AgentModel = createProductionChatModel(),
+  observability?: AgentTraceRecorder,
+): ReferenceHistorySynthesizer {
   return createInjectedReferenceHistorySynthesizer(async (input) => {
     const previous = input.job.rebuildFromRaw ? null : input.previousSnapshot?.document ?? null;
     const prompt = `Return JSON only for a derived, rebuildable profile reference-history snapshot.
-Required shape: document={ongoingWork, recurringPreferences, relationshipsContext, recentChanges, boundedPatterns (arrays of {text, confidence, temporalQualifier, sourceMessageIds, memoryKeys}), renderedText} and memoryCandidates (array; usually empty). Memory candidates are only proposals and are never authoritative writes.
+Required shape: document={ongoingWork, recurringPreferences, relationshipsContext, recentChanges, boundedPatterns (arrays of {text, confidence, temporalQualifier, uncertainty, sourceMessageIds, memoryKeys}), renderedText} and memoryCandidates (array; usually empty). Memory candidates are only proposals and are never authoritative writes. The runtime derives exact source ranges from sourceMessageIds; never invent IDs.
 Use only supplied source message IDs. Preserve uncertainty and temporal qualifiers. Keep claims concise. Cover ongoing work, recurring preferences, relationship/context facts, meaningful changes, and repeated patterns only when evidence supports them. Do not convert absence into completion. Do not invent facts. Do not store passwords, API keys, one-time codes, transient location or mood, role-play, sensitive third-party data, speculative diagnoses, personality labels, or risk labels. A saved-memory correction or suppression is a hard constraint: never reintroduce a suppressed or superseded fact. Use memoryKeys only for supplied active saved-memory keys. This is not authoritative saved memory; it is derived context. It may include no durable-memory proposal.
 ${input.job.rebuildFromRaw ? "Rebuild from all supplied raw evidence; ignore the previous snapshot." : "Update the previous snapshot with the new evidence while retaining still-supported context."}
 <previous-snapshot>${JSON.stringify(previous)}</previous-snapshot>
 <active-saved-memory>${JSON.stringify(input.savedItems.filter((item) => item.status === "active").map((item) => ({ canonicalKey: item.canonicalKey, content: item.content, itemRevision: item.itemRevision })))}</active-saved-memory>
 <suppressed-memory>${JSON.stringify(input.suppressions.map((suppression) => ({ canonicalKey: suppression.canonicalKey, contentHash: suppression.contentHash, reason: suppression.reason })))}</suppressed-memory>
 <new-raw-evidence>${JSON.stringify(input.messages.map((message) => ({ messageId: message.messageId, threadId: message.threadId, role: message.role, content: message.content, createdAt: message.createdAt })))}</new-raw-evidence>`;
-    const response = await model.invoke(prompt, { temperature: 0.1, maxTokens: 4_000 } as never);
+    const handle = await observability?.startModelCall({ model: typeof (model as unknown as { model?: unknown }).model === "string" ? (model as unknown as { model: string }).model : undefined, executionKind: "background_reference_history" });
+    let response: unknown;
+    try {
+      response = await model.invoke(prompt, { temperature: 0.1, maxTokens: 4_000 } as never);
+      if (handle) await observability?.completeModelCall({ handle, response });
+    } catch (error) {
+      if (handle) await observability?.failModelCall({ handle, error });
+      throw error;
+    }
     const parsed = parseModelJson(response);
     if (!parsed) throw new Error("Reference history synthesizer returned invalid JSON.");
     return parsed;
@@ -401,6 +542,12 @@ export async function processReferenceHistoryJobs(options: ReferenceHistoryWorke
         options.memoryStore.listActiveSuppressions ? options.memoryStore.listActiveSuppressions(job.profileId) : Promise.resolve([]),
         options.memoryStore.getCurrentRevision(job.profileId),
       ]);
+      const backgroundObservability = options.observabilityFactory
+        ? await options.observabilityFactory({ job, threadId: messages[0]?.threadId ?? null })
+        : options.observability;
+      const jobSynthesizer = backgroundObservability && options.synthesizerFactory
+        ? options.synthesizerFactory(backgroundObservability)
+        : options.synthesizer;
       if (messages.some((message) => message.profileId !== job.profileId)) throw new Error("Reference history source message is outside the profile.");
       const previousSnapshot = rebuildFromRaw ? null : latest;
       if (!job.rebuildFromRaw && latest && latest.id !== job.expectedSnapshotId) {
@@ -426,7 +573,7 @@ export async function processReferenceHistoryJobs(options: ReferenceHistoryWorke
       }
       const synthesis = messages.length === 0 && rebuildFromRaw
         ? emptyDocument()
-        : await withTimeout(options.synthesizer.synthesize({ job, messages, previousSnapshot, savedItems, suppressions }), Math.max(1_000, maxDurationMs - (Date.now() - startedAt)));
+        : await withTimeout(jobSynthesizer.synthesize({ job, messages, previousSnapshot, savedItems, suppressions }), Math.max(1_000, maxDurationMs - (Date.now() - startedAt)));
       const synthesisResult: ReferenceHistorySynthesisResult = "document" in synthesis
         ? synthesis as ReferenceHistorySynthesisResult
         : { document: synthesis as unknown as ReferenceHistoryDocument, memoryCandidates: [] };
@@ -437,10 +584,11 @@ export async function processReferenceHistoryJobs(options: ReferenceHistoryWorke
       const currentMemoryRevision = await options.memoryStore.getCurrentRevision(job.profileId);
       if (currentMemoryRevision !== memoryRevision) throw new Error("Saved memory constraints changed during synthesis.");
       const lastMessage = messages.at(-1);
+      const constrainedDocument = applyReferenceHistoryConstraints(synthesisResult.document, { savedItems, suppressions });
       const snapshot = {
         profileId: job.profileId,
-        document: applyReferenceHistoryConstraints(synthesisResult.document, { savedItems, suppressions, changedMemoryRevision: Boolean(previousSnapshot && previousSnapshot.memoryRevision < memoryRevision) }),
-        renderedText: applyReferenceHistoryConstraints(synthesisResult.document, { savedItems, suppressions, changedMemoryRevision: Boolean(previousSnapshot && previousSnapshot.memoryRevision < memoryRevision) }).renderedText,
+        document: constrainedDocument,
+        renderedText: constrainedDocument.renderedText,
         sourceRanges: mergeSourceRanges(previousSnapshot?.sourceRanges ?? [], sourceRanges(messages)),
         coveredTokenWatermark: Math.max(job.sourceEndTokenWatermark, lastMessage?.tokenEnd ?? 0),
         coveredThroughAt: lastMessage?.createdAt ?? previousSnapshot?.coveredThroughAt ?? null,
@@ -475,12 +623,22 @@ export function createProductionReferenceHistoryWorker(options: Omit<ReferenceHi
   if (process.env.MEMORY_REFERENCE_HISTORY_ENABLED !== "true") {
     return Promise.resolve<ReferenceHistoryWorkerResult>({ claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 });
   }
-  return processReferenceHistoryJobs({ store: createSupabaseReferenceHistoryStore(), memoryStore: createSupabaseMemoryStore(), synthesizer: createProductionReferenceHistorySynthesizer(), ...options });
+  const model = createProductionChatModel();
+  return processReferenceHistoryJobs({
+    store: createSupabaseReferenceHistoryStore(),
+    memoryStore: createSupabaseMemoryStore(),
+    synthesizer: createProductionReferenceHistorySynthesizer(model, options.observability),
+    synthesizerFactory: (observability) => createProductionReferenceHistorySynthesizer(model, observability),
+    ...options,
+  });
 }
 
 export function referenceHistoryPromptIsFresh(snapshot: ReferenceHistorySnapshot | null, currentMemoryRevision: number) {
   return Boolean(snapshot
     && snapshot.status === "active"
     && snapshot.synthesizerVersion === REFERENCE_HISTORY_SYNTHESIZER_VERSION
-    && snapshot.memoryRevision >= currentMemoryRevision);
+    // Saved-memory changes are overlaid at read time while Dreaming refreshes
+    // asynchronously. Do not blank the entire profile in the interim.
+    && snapshot.memoryRevision >= 0
+    && currentMemoryRevision >= 0);
 }

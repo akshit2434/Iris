@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AgentModel } from "@/server/agent";
+import { createAgentTraceRecorder } from "@/server/agent/observability";
 import {
   applyReferenceHistoryConstraints,
   createInjectedReferenceHistorySynthesizer,
+  createProductionReferenceHistorySynthesizer,
   formatReferenceHistoryPrompt,
   hashReferenceHistoryInput,
   processReferenceHistoryJobs,
@@ -156,6 +159,17 @@ describe("reference-history synthesis", () => {
     expect((applied[0] as { snapshot: { renderedText: string } }).snapshot.renderedText).toContain("T1 preparation");
   });
 
+  it("records background Dreaming provider usage without persisting the prompt", async () => {
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const trace = createAgentTraceRecorder({ model: "openai/test-model", executionKind: "background_reference_history", append: async (type, payload) => { events.push({ type, payload }); } });
+    const model = { invoke: vi.fn(async () => ({ content: JSON.stringify({ ongoingWork: [], recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [] }) })) } as unknown as AgentModel;
+    const synthesizer = createProductionReferenceHistorySynthesizer(model, trace);
+    await synthesizer.synthesize({ job: job(), messages: [message({ messageId: ids.messageA, threadId: ids.threadA, content: "A useful detail." })], previousSnapshot: null, savedItems: [], suppressions: [] });
+    expect(events.map((event) => event.type)).toEqual(["model_call_started", "model_call_completed"]);
+    expect(events[0]?.payload).toMatchObject({ executionKind: "background_reference_history" });
+    expect(JSON.stringify(events)).not.toContain("A useful detail.");
+  });
+
   it("refreshes incrementally from the previous validated snapshot", async () => {
     const previous: ReferenceHistorySnapshot = {
       id: ids.snapshot,
@@ -200,6 +214,19 @@ describe("reference-history synthesis", () => {
     expect(document.relationshipsContext).toEqual([]);
   });
 
+  it("derives exact claim source ranges and safely upgrades legacy claim shape", () => {
+    const source = [
+      message({ messageId: ids.messageA, threadId: ids.threadA, createdAt: "2026-08-15T10:00:00.000Z", content: "The blue-awning bookshop has a reading corner." }),
+      message({ messageId: ids.messageB, threadId: ids.threadA, createdAt: "2026-08-15T10:05:00.000Z", content: "That could be a nice date idea." }),
+    ];
+    const document = validateReferenceHistoryDocument({
+      ongoingWork: [{ text: "The bookshop is a nice date idea.", confidence: 0.8, temporalQualifier: "tentative", sourceMessageIds: [ids.messageA, ids.messageB], memoryKeys: [] }],
+      recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [],
+    }, source);
+    expect(document.ongoingWork[0]).toMatchObject({ uncertainty: null, sourceMessageIds: [ids.messageA, ids.messageB] });
+    expect(document.ongoingWork[0]?.sourceRanges).toEqual([expect.objectContaining({ threadId: ids.threadA, startMessageId: ids.messageA, endMessageId: ids.messageB })]);
+  });
+
   it("applies forgotten-memory suppressions as a hard read-time constraint", () => {
     const document: ReferenceHistoryDocument = {
       version: "iris-reference-history-v1",
@@ -214,9 +241,30 @@ describe("reference-history synthesis", () => {
     expect(constrained.renderedText).toBe("");
   });
 
-  it("does not inject disabled or stale history", () => {
-    const snapshot = { memoryRevision: 2, status: "active" as const } as ReferenceHistorySnapshot;
-    expect(referenceHistoryPromptIsFresh(snapshot, 3)).toBe(false);
+  it("overlays only corrected claims while retaining unrelated Dreaming context", () => {
+    const document: ReferenceHistoryDocument = {
+      version: "iris-reference-history-v1",
+      ongoingWork: [
+        { text: "The project date is October 31.", confidence: 0.9, temporalQualifier: null, sourceMessageIds: [ids.messageA], memoryKeys: ["project.launch"] },
+        { text: "The blue-awning bookshop is a gentle date idea.", confidence: 0.8, temporalQualifier: "tentative", sourceMessageIds: [ids.messageB], memoryKeys: [] },
+      ],
+      recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [], renderedText: "old",
+    };
+    const constrained = applyReferenceHistoryConstraints(document, {
+      changedMemoryRevision: true,
+      savedItems: [memoryItem("project.launch", "The project date is November 19.")],
+    });
+    expect(constrained.ongoingWork).toHaveLength(2);
+    expect(constrained.ongoingWork[0]).toMatchObject({ stale: true, memoryOverlay: "The project date is November 19." });
+    expect(constrained.ongoingWork[1]).toMatchObject({ text: "The blue-awning bookshop is a gentle date idea." });
+    expect(constrained.renderedText).toContain("November 19");
+    expect(constrained.renderedText).toContain("blue-awning bookshop");
+    expect(constrained.renderedText).not.toContain("October 31");
+  });
+
+  it("keeps a usable snapshot while an asynchronous memory overlay is pending", () => {
+    const snapshot = { memoryRevision: 2, status: "active" as const, synthesizerVersion: "iris-reference-history-v1" } as ReferenceHistorySnapshot;
+    expect(referenceHistoryPromptIsFresh(snapshot, 3)).toBe(true);
     expect(referenceHistoryPromptIsFresh({ ...snapshot, synthesizerVersion: "old-version" } as ReferenceHistorySnapshot, 2)).toBe(false);
     expect(formatReferenceHistoryPrompt({ ...snapshot, document: { ...emptyDocument(), renderedText: "hidden" }, renderedText: "hidden", revision: 1, sourceHash: "h" } as ReferenceHistorySnapshot)).toBe("");
   });
