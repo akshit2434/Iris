@@ -447,6 +447,138 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      profile_memory_settings: {
+        Row: {
+          profile_id: "profile-a" | "profile-b";
+          saved_memory_enabled: boolean;
+          reference_history_enabled: boolean;
+          updated_at: string;
+        };
+        Insert: {
+          profile_id: "profile-a" | "profile-b";
+          saved_memory_enabled?: boolean;
+          reference_history_enabled?: boolean;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["profile_memory_settings"]["Insert"]>;
+        Relationships: [];
+      };
+      profile_reference_history_state: {
+        Row: {
+          profile_id: "profile-a" | "profile-b";
+          last_enqueued_token_watermark: number;
+          last_processed_token_watermark: number;
+          last_enqueued_at: string | null;
+          last_source_at: string | null;
+          active_snapshot_id: string | null;
+          active_snapshot_revision: number;
+          updated_at: string;
+        };
+        Insert: {
+          profile_id: "profile-a" | "profile-b";
+          last_enqueued_token_watermark?: number;
+          last_processed_token_watermark?: number;
+          last_enqueued_at?: string | null;
+          last_source_at?: string | null;
+          active_snapshot_id?: string | null;
+          active_snapshot_revision?: number;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["profile_reference_history_state"]["Insert"]>;
+        Relationships: [];
+      };
+      profile_reference_history_snapshots: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          revision: number;
+          status: "active" | "superseded" | "invalidated";
+          document: Json;
+          rendered_text: string;
+          source_ranges: Json;
+          covered_token_watermark: number;
+          covered_through_at: string | null;
+          source_hash: string;
+          memory_revision: number;
+          model: string;
+          synthesizer_version: string;
+          previous_snapshot_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          revision: number;
+          status?: "active" | "superseded" | "invalidated";
+          document: Json;
+          rendered_text: string;
+          source_ranges?: Json;
+          covered_token_watermark: number;
+          covered_through_at?: string | null;
+          source_hash: string;
+          memory_revision?: number;
+          model: string;
+          synthesizer_version: string;
+          previous_snapshot_id?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["profile_reference_history_snapshots"]["Insert"]>;
+        Relationships: [];
+      };
+      reference_history_jobs: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          source_run_id: string | null;
+          status: "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+          attempts: number;
+          idempotency_key: string;
+          expected_snapshot_id: string | null;
+          expected_snapshot_revision: number;
+          source_start_token_watermark: number;
+          source_end_token_watermark: number;
+          rebuild_from_raw: boolean;
+          idle_signal: boolean;
+          model: string;
+          synthesizer_version: string;
+          available_at: string;
+          lease_expires_at: string | null;
+          locked_at: string | null;
+          locked_by: string | null;
+          last_error_code: string | null;
+          last_error_message: string | null;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          source_run_id?: string | null;
+          status?: "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+          attempts?: number;
+          idempotency_key: string;
+          expected_snapshot_id?: string | null;
+          expected_snapshot_revision?: number;
+          source_start_token_watermark?: number;
+          source_end_token_watermark: number;
+          rebuild_from_raw?: boolean;
+          idle_signal?: boolean;
+          model: string;
+          synthesizer_version: string;
+          available_at?: string;
+          lease_expires_at?: string | null;
+          locked_at?: string | null;
+          locked_by?: string | null;
+          last_error_code?: string | null;
+          last_error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          completed_at?: string | null;
+        };
+        Update: Partial<Database["public"]["Tables"]["reference_history_jobs"]["Insert"]>;
+        Relationships: [];
+      };
       memory_consolidation_jobs: {
         Row: {
           id: string;
@@ -791,6 +923,51 @@ export type Database = {
       lift_memory_suppression: {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_canonical_key: string; p_content_hash?: string | null };
         Returns: number;
+      };
+      enqueue_reference_history_job: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_source_run_id?: string | null;
+          p_source_token_total?: number | null;
+          p_idle_signal?: boolean;
+          p_rebuild_from_raw?: boolean;
+          p_model?: string;
+          p_synthesizer_version?: string;
+          p_debounce_seconds?: number;
+        };
+        Returns: Array<Database["public"]["Tables"]["reference_history_jobs"]["Row"]>;
+      };
+      claim_reference_history_jobs: {
+        Args: { p_worker_id: string; p_limit?: number; p_lease_seconds?: number };
+        Returns: Array<Database["public"]["Tables"]["reference_history_jobs"]["Row"]>;
+      };
+      apply_reference_history_snapshot: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_job_id: string;
+          p_worker_id: string;
+          p_expected_snapshot_id: string | null;
+          p_expected_snapshot_revision: number;
+          p_document: Json;
+          p_rendered_text: string;
+          p_source_ranges: Json;
+          p_covered_token_watermark: number;
+          p_covered_through_at: string | null;
+          p_source_hash: string;
+          p_memory_revision: number;
+          p_model: string;
+          p_synthesizer_version: string;
+          p_previous_snapshot_id: string | null;
+        };
+        Returns: string;
+      };
+      finish_reference_history_job: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_status: "completed" | "failed" | "conflict" | "skipped"; p_error_code?: string | null; p_error_message?: string | null; p_retry?: boolean; p_available_at?: string | null };
+        Returns: Array<Database["public"]["Tables"]["reference_history_jobs"]["Row"]>;
+      };
+      invalidate_reference_history_snapshot: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_reason?: string };
+        Returns: undefined;
       };
       enqueue_memory_consolidation_job: {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string; p_source_token_total?: number; p_idle_signal?: boolean; p_debounce_seconds?: number };

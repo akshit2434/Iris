@@ -19,6 +19,7 @@ import {
   type MessageSemanticIndexStore,
   type ApplyMemoryItemRevisionInput,
   type MemoryProvenanceRelation,
+  type MemorySuppression,
 } from "@/server/memory/types";
 import {
   assertMemoryProfileId,
@@ -324,6 +325,27 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
       const { data, error } = await query.maybeSingle();
       if (error) throw error;
       return Boolean(data);
+    },
+
+    async listActiveSuppressions(profileId) {
+      assertMemoryProfileId(profileId);
+      const { data, error } = await database
+        .from("memory_suppressions")
+        .select("id, profile_id, canonical_key, content_hash, item_id, reason, created_at, lifted_at")
+        .eq("profile_id", profileId)
+        .is("lifted_at", null)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((row) => ({
+        id: row.id,
+        profileId: row.profile_id,
+        canonicalKey: row.canonical_key,
+        contentHash: row.content_hash,
+        itemId: row.item_id,
+        reason: row.reason,
+        createdAt: row.created_at,
+        liftedAt: row.lifted_at,
+      } satisfies MemorySuppression));
     },
 
     async createSuppression(input) {

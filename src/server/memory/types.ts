@@ -89,6 +89,112 @@ export type MemorySource = {
   action?: { type: "open_message"; threadId: string; messageId: string; label: string };
 };
 
+export type MemoryControls = {
+  profileId: ProfileId;
+  savedMemoryEnabled: boolean;
+  referenceHistoryEnabled: boolean;
+  updatedAt: string;
+};
+
+export type ReferenceHistoryStatus = "active" | "superseded" | "invalidated";
+
+export type ReferenceHistorySourceRange = {
+  threadId: string;
+  startMessageId: string;
+  endMessageId: string;
+  startAt: string;
+  endAt: string;
+  estimatedTokens: number;
+};
+
+export type ReferenceHistoryClaim = {
+  text: string;
+  confidence: number;
+  temporalQualifier: string | null;
+  sourceMessageIds: string[];
+  memoryKeys: string[];
+};
+
+export type ReferenceHistoryDocument = {
+  version: "iris-reference-history-v1";
+  ongoingWork: ReferenceHistoryClaim[];
+  recurringPreferences: ReferenceHistoryClaim[];
+  relationshipsContext: ReferenceHistoryClaim[];
+  recentChanges: ReferenceHistoryClaim[];
+  boundedPatterns: ReferenceHistoryClaim[];
+  renderedText: string;
+};
+
+export type ReferenceHistorySnapshot = {
+  id: string;
+  profileId: ProfileId;
+  revision: number;
+  status: ReferenceHistoryStatus;
+  document: ReferenceHistoryDocument;
+  renderedText: string;
+  sourceRanges: ReferenceHistorySourceRange[];
+  coveredTokenWatermark: number;
+  coveredThroughAt: string | null;
+  sourceHash: string;
+  memoryRevision: number;
+  model: string;
+  synthesizerVersion: string;
+  previousSnapshotId: string | null;
+  createdAt: string;
+};
+
+export type ReferenceHistoryJobStatus = "pending" | "running" | "completed" | "failed" | "conflict" | "skipped";
+
+export type ReferenceHistoryJob = {
+  id: string;
+  profileId: ProfileId;
+  sourceRunId: string | null;
+  status: ReferenceHistoryJobStatus;
+  attempts: number;
+  idempotencyKey: string;
+  expectedSnapshotId: string | null;
+  expectedSnapshotRevision: number;
+  sourceStartTokenWatermark: number;
+  sourceEndTokenWatermark: number;
+  rebuildFromRaw: boolean;
+  idleSignal: boolean;
+  model: string;
+  synthesizerVersion: string;
+  availableAt: string;
+  leaseExpiresAt: string | null;
+  lockedAt: string | null;
+  lockedBy: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type ReferenceHistoryMessage = {
+  messageId: string;
+  profileId: ProfileId;
+  threadId: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  createdAt: string;
+  estimatedTokens: number;
+  tokenStart: number;
+  tokenEnd: number;
+};
+
+export type ReferenceHistoryStore = {
+  getControls: (profileId: ProfileId) => Promise<MemoryControls>;
+  updateControls?: (input: { profileId: ProfileId; savedMemoryEnabled?: boolean; referenceHistoryEnabled?: boolean }) => Promise<MemoryControls>;
+  getLatestSnapshot: (profileId: ProfileId) => Promise<ReferenceHistorySnapshot | null>;
+  listSourceMessages: (input: { profileId: ProfileId; afterTokenWatermark: number; rebuildFromRaw?: boolean }) => Promise<ReferenceHistoryMessage[]>;
+  enqueueReferenceHistoryJob: (input: { profileId: ProfileId; sourceRunId?: string | null; sourceTokenTotal?: number; idleSignal?: boolean; rebuildFromRaw?: boolean; model?: string; synthesizerVersion?: string; debounceSeconds?: number }) => Promise<ReferenceHistoryJob | null>;
+  claimReferenceHistoryJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<ReferenceHistoryJob[]>;
+  applyReferenceHistorySnapshot: (input: { profileId: ProfileId; jobId: string; workerId: string; snapshot: Omit<ReferenceHistorySnapshot, "id" | "createdAt" | "revision" | "status">; expectedSnapshotId: string | null; expectedSnapshotRevision: number }) => Promise<"applied" | "conflict" | "invalidated">;
+  finishReferenceHistoryJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Exclude<ReferenceHistoryJobStatus, "pending" | "running">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<ReferenceHistoryJob>;
+  invalidateReferenceHistorySnapshot?: (profileId: ProfileId, reason: string) => Promise<void>;
+};
+
 export type MemoryItemAudit = {
   item: MemoryItem;
   revisions: Array<MemoryItemRevision & { sources: MemorySource[] }>;
@@ -226,6 +332,7 @@ export type MemoryStore = {
   searchItems: (profileId: ProfileId, query: string, limit?: number, options?: MemoryItemListOptions) => Promise<MemoryItemSearchResult[]>;
   listMemoryChanges?: (profileId: ProfileId, afterRevision: number, throughRevision: number, limit?: number) => Promise<MemoryRevisionDelta[]>;
   getItemAudit?: (profileId: ProfileId, canonicalKey: string) => Promise<MemoryItemAudit | null>;
+  listActiveSuppressions?: (profileId: ProfileId) => Promise<MemorySuppression[]>;
   isSuppressed?: (profileId: ProfileId, canonicalKey: string, contentHash?: string | null) => Promise<boolean>;
   createSuppression?: (input: { profileId: ProfileId; canonicalKey: string; contentHash?: string | null; itemId?: string | null; reason?: string | null }) => Promise<string>;
   liftSuppression?: (profileId: ProfileId, canonicalKey: string, contentHash?: string | null) => Promise<number>;

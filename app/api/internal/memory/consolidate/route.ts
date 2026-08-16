@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createProductionConsolidationWorker } from "@/server/memory/consolidation";
 import { createProductionThreadContinuityWorker } from "@/server/memory/compaction";
+import { createProductionReferenceHistoryWorker } from "@/server/memory/reference-history";
 import { hasWorkerSecret as compareWorkerSecret } from "@/server/memory/worker-auth";
 
 export const runtime = "nodejs";
@@ -22,14 +23,18 @@ export async function POST(request: Request) {
     const continuity = process.env.MEMORY_CONTINUITY_ENABLED === "true"
       ? await createProductionThreadContinuityWorker({ limit, maxDurationMs: 25_000, workerId })
       : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
+    const referenceHistory = process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "true"
+      ? await createProductionReferenceHistoryWorker({ limit, maxDurationMs: 25_000, workerId })
+      : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
     return NextResponse.json({
-      enabled: process.env.MEMORY_CONSOLIDATION_ENABLED === "true" || process.env.MEMORY_CONTINUITY_ENABLED === "true",
-      claimed: consolidation.claimed + continuity.claimed,
-      completed: consolidation.completed + continuity.completed,
-      skipped: consolidation.skipped + continuity.skipped,
-      failed: consolidation.failed + continuity.failed,
+      enabled: process.env.MEMORY_CONSOLIDATION_ENABLED === "true" || process.env.MEMORY_CONTINUITY_ENABLED === "true" || process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "true",
+      claimed: consolidation.claimed + continuity.claimed + referenceHistory.claimed,
+      completed: consolidation.completed + continuity.completed + referenceHistory.completed,
+      skipped: consolidation.skipped + continuity.skipped + referenceHistory.skipped,
+      failed: consolidation.failed + continuity.failed + referenceHistory.failed,
       consolidation,
       continuity,
+      referenceHistory,
     }, { status: 200, headers: { "Cache-Control": "no-store" } });
   } catch {
     return NextResponse.json({ error: "Consolidation worker failed." }, { status: 500 });

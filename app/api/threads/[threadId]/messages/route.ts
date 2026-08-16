@@ -34,7 +34,9 @@ import { createMemoryMutationService } from "@/server/memory/mutation";
 import { createMemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
+import { createSupabaseReferenceHistoryStore } from "@/server/memory/reference-history-repository";
 import { budgetCanonicalMemory, formatCanonicalMemoryPrompt } from "@/server/memory/context-budget";
+import { formatReferenceHistoryPrompt, referenceHistoryPromptIsFresh } from "@/server/memory/reference-history";
 import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
 import { DEFAULT_CONTINUITY_TAIL_TOKENS, hashContinuityInput, shouldQueueContinuity } from "@/server/memory/compaction";
 import { createSupabaseThreadContinuityStore } from "@/server/memory/compaction-repository";
@@ -182,24 +184,43 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       : null;
 
     const memoryStore = createSupabaseMemoryStore();
+    const referenceHistoryStore = createSupabaseReferenceHistoryStore();
     const memoryRetrieval = createProductionMemoryRetrievalService();
     const memoryRevisionSnapshotPromise = memoryStore.getCurrentRevision(profileId).catch(() => 0);
-    const [history, threadContextRow, memoryRevisionSnapshot] = await Promise.all([
+    const memoryControlsPromise = referenceHistoryStore.getControls(profileId).catch(() => ({
+      profileId,
+      savedMemoryEnabled: true,
+      referenceHistoryEnabled: true,
+      updatedAt: new Date(0).toISOString(),
+    }));
+    const [history, threadContextRow, memoryRevisionSnapshot, memoryControls, referenceHistorySnapshot] = await Promise.all([
       getThreadMessages(profileId, threadId),
       getThreadContext(profileId, threadId),
       memoryRevisionSnapshotPromise,
+      memoryControlsPromise,
+      referenceHistoryStore.getLatestSnapshot(profileId).catch(() => null),
+    ]);
+    const [memoryItems, memorySuppressions] = await Promise.all([
+      memoryStore.listItems(profileId).catch(() => []),
+      memoryStore.listActiveSuppressions ? memoryStore.listActiveSuppressions(profileId).catch(() => []) : Promise.resolve([]),
     ]);
     const [canonicalMemory, memoryChangeHint] = await Promise.all([
-      Promise.all([memoryStore.listItems(profileId), Promise.resolve(memoryRevisionSnapshot)])
-        .then(([items, globalRevision]) => budgetCanonicalMemory(items, globalRevision, { profileId }))
+      Promise.resolve(memoryControls.savedMemoryEnabled
+        ? budgetCanonicalMemory(memoryItems, memoryRevisionSnapshot, { profileId })
+        : { globalRevision: memoryRevisionSnapshot, items: [] })
         .catch(() => ({ globalRevision: 0, items: [] })),
-      readMemoryChangeHint({
+      memoryControls.savedMemoryEnabled ? readMemoryChangeHint({
         store: memoryStore,
         profileId,
         afterRevision: threadContextRow.memoryRevisionSeen,
         throughRevision: memoryRevisionSnapshot,
-      }).catch(() => ({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] })),
+      }).catch(() => ({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] })) : Promise.resolve({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] }),
     ]);
+    const referenceHistoryPrompt = memoryControls.referenceHistoryEnabled
+      && referenceHistoryPromptIsFresh(referenceHistorySnapshot, memoryRevisionSnapshot)
+      && referenceHistorySnapshot
+      ? formatReferenceHistoryPrompt(referenceHistorySnapshot, { savedItems: memoryItems, suppressions: memorySuppressions })
+      : "";
     const baseAgentContext = createAgentContext({
       profileId,
       profileLabel: profile.displayName,
@@ -215,13 +236,14 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       agentRunId: run.id,
       canonicalMemory,
       memoryChangeHint,
+      memoryControls,
       // State slots are supplied by the token assembler below. Keeping them
       // empty here ensures the ledger measures each component exactly once.
       budgetedContext: {
         threadSummary: null,
         pinnedNotes: [],
         savedMemoryPrompt: "",
-        referenceHistoryPrompt: "",
+        referenceHistoryPrompt,
         targetedRetrievalPrompt: "",
       },
     });
@@ -232,10 +254,10 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       isComplete: true,
     };
     const estimator = createTokenEstimator({ provider: "openrouter", model });
-    const savedMemoryPrompt = [
+    const savedMemoryPrompt = memoryControls.savedMemoryEnabled ? [
       formatCanonicalMemoryPrompt(canonicalMemory),
       formatMemoryChangeHint(memoryChangeHint),
-    ].filter(Boolean).join("\n");
+    ].filter(Boolean).join("\n") : "";
     let contextAssembly;
     try {
       contextAssembly = assembleTokenBudgetedContext({
@@ -249,7 +271,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         threadSummary: threadContextRow.continuitySummary,
         pinnedNotes: threadContextRow.pinnedNotes,
         savedMemoryPrompt,
-        referenceHistoryPrompt: "",
+        referenceHistoryPrompt,
         targetedRetrievalPrompt: "",
         estimator,
       });
@@ -281,6 +303,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       agentRunId: run.id,
       canonicalMemory,
       memoryChangeHint,
+      memoryControls,
       budgetedContext: contextAssembly.prompt,
     });
     const userMessageTokenEstimate = estimator.estimateMessage({ role: "user", content });
@@ -507,6 +530,24 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               });
             } catch {
               // Memory queue availability must not turn a completed chat run into a failure.
+            }
+          }
+          if (memoryControls.referenceHistoryEnabled) {
+            try {
+              // The profile-level RPC recomputes the cumulative token
+              // watermark and applies the meaningful-volume/debounce guard.
+              // This call is a cheap durable enqueue check, not an LLM call.
+              await referenceHistoryStore.enqueueReferenceHistoryJob({
+                profileId,
+                sourceRunId: run.id,
+                sourceTokenTotal,
+                idleSignal,
+                model,
+                synthesizerVersion: "iris-reference-history-v1",
+                debounceSeconds: 30,
+              });
+            } catch {
+              // Reference-history maintenance must never fail a completed run.
             }
           }
           if (continuityStore && continuitySourceSpan && shouldQueueContinuity({

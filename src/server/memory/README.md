@@ -48,6 +48,16 @@ raw history and revisions. Archive also creates a suppression record.
 - `consolidation.ts` retains a bounded leased job seam for a later background
   synthesizer; proposal payloads are structured, suppression-checked, and
   source-validated.
+- `reference-history.ts` implements the derived cross-chat "Dreaming" layer.
+  It produces versioned, rebuildable profile snapshots with structured claims,
+  concise rendered text, source thread/message ranges, token watermarks, source
+  hashes, and synthesizer versions. It never writes authoritative memory.
+  Optional saved-memory candidates pass through the existing consolidation
+  validator and an explicit callback before any later governed persistence.
+- `reference-history-repository.ts` owns profile-scoped controls and the
+  leased reference-history queue. Saved-memory reference and chat-history
+  reference are independent controls; stale snapshots are withheld until they
+  are rebuilt against current saved-memory revisions.
 
 ## Governed lifecycle
 
@@ -68,11 +78,14 @@ raw history and revisions. Archive also creates a suppression record.
   explicit write lifts the suppression. Archived and superseded items never
   enter normal context.
 
-Continuity checkpoints are token-triggered and worker-driven. Dreaming
-synthesis, deterministic historical preflight, temporary chat, and memory
-settings remain later slices. The worker is opt-in through
-`MEMORY_CONTINUITY_ENABLED`; tests inject a summarizer and never call the
-provider.
+Continuity checkpoints and reference-history synthesis are token-triggered and
+worker-driven. Reference-history jobs run after meaningful unprocessed profile
+tokens or an idle/debounce signal, never on every turn and never from a
+message-count threshold. Incremental jobs use the previous validated snapshot;
+rebuild jobs read raw retained history. Failures leave the last valid snapshot
+active and retry through the lease queue. Tests inject synthesizers and never
+call the provider. Production workers are opt-in through
+`MEMORY_CONTINUITY_ENABLED` and `MEMORY_REFERENCE_HISTORY_ENABLED`.
 
 ## Migration/reset
 
