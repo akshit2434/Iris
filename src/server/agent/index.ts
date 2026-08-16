@@ -19,6 +19,11 @@ import type { MemoryRetrieval } from "@/server/memory/retrieval";
 import type { MemoryMutationService } from "@/server/memory/mutation";
 import type { MemoryArchiveService } from "@/server/memory/archive";
 import { sanitizeForEvent, sanitizeStatusMessage, type SafeJson } from "@/server/agent/protocol";
+import {
+  extractTraceUsage,
+  type AgentTraceRecorder,
+  type TraceExecutionKind,
+} from "@/server/agent/observability";
 
 export const DEFAULT_MODEL = "openai/gpt-5.6-luna";
 
@@ -79,6 +84,8 @@ export function createIrisAgent(input: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
+  observability?: AgentTraceRecorder;
+  executionKind?: TraceExecutionKind;
 }): RuntimeAgent {
   const dynamicPrompt = dynamicSystemPromptMiddleware<AgentContext>((_state, runtime) =>
     buildDynamicSystemPrompt(runtime.context),
@@ -95,11 +102,34 @@ export function createIrisAgent(input: {
         }),
       })
     : null;
+  const observabilityMiddleware = input.observability
+    ? createMiddleware({
+        name: "iris-observability",
+        wrapModelCall: async (request, handler) => {
+          const modelRecord = request.model as unknown as Record<string, unknown>;
+          const configuredModel = typeof modelRecord.model === "string" ? modelRecord.model : undefined;
+          const handle = await input.observability!.startModelCall({ model: configuredModel, executionKind: input.executionKind });
+          try {
+            const response = await handler(request);
+            await input.observability!.completeModelCall({ handle, response });
+            return response;
+          } catch (error) {
+            await input.observability!.failModelCall({ handle, error });
+            throw error;
+          }
+        },
+      })
+    : null;
+  const middleware = [
+    dynamicPrompt,
+    ...(acceptanceToolChoice ? [acceptanceToolChoice] : []),
+    ...(observabilityMiddleware ? [observabilityMiddleware] : []),
+  ];
 
   return createAgent({
     model: input.model,
     contextSchema: agentContextSchema,
-    middleware: acceptanceToolChoice ? [dynamicPrompt, acceptanceToolChoice] : [dynamicPrompt],
+    middleware,
     tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive, { returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch })],
   });
 }
@@ -112,6 +142,8 @@ export function createProductionAgent(input?: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
+  observability?: AgentTraceRecorder;
+  executionKind?: TraceExecutionKind;
 }): RuntimeAgent {
   return createIrisAgent({
     model: createProductionChatModel(),
@@ -122,6 +154,8 @@ export function createProductionAgent(input?: {
     returnDirectTools: input?.returnDirectTools,
     disableHistoricalSearch: input?.disableHistoricalSearch,
     forceToolName: input?.forceToolName,
+    observability: input?.observability,
+    executionKind: input?.executionKind,
   });
 }
 
@@ -219,52 +253,9 @@ function getToolResult(message: Record<string, unknown>) {
   };
 }
 
-function nonNegativeInteger(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
-}
-
 /** Extract provider usage without persisting response prompts or raw metadata. */
 export function extractAgentUsage(message: Record<string, unknown>) {
-  const usageMetadata = typeof message.usage_metadata === "object" && message.usage_metadata !== null
-    ? message.usage_metadata as Record<string, unknown>
-    : {};
-  const responseMetadata = typeof message.response_metadata === "object" && message.response_metadata !== null
-    ? message.response_metadata as Record<string, unknown>
-    : {};
-  const responseUsage = typeof responseMetadata.usage === "object" && responseMetadata.usage !== null
-    ? responseMetadata.usage as Record<string, unknown>
-    : {};
-  const tokenUsage = typeof responseMetadata.tokenUsage === "object" && responseMetadata.tokenUsage !== null
-    ? responseMetadata.tokenUsage as Record<string, unknown>
-    : {};
-  const inputTokens = nonNegativeInteger(usageMetadata.input_tokens)
-    ?? nonNegativeInteger(responseUsage.input_tokens)
-    ?? nonNegativeInteger(responseUsage.prompt_tokens)
-    ?? nonNegativeInteger(tokenUsage.inputTokens)
-    ?? nonNegativeInteger(tokenUsage.promptTokens);
-  const outputTokens = nonNegativeInteger(usageMetadata.output_tokens)
-    ?? nonNegativeInteger(responseUsage.output_tokens)
-    ?? nonNegativeInteger(responseUsage.completion_tokens)
-    ?? nonNegativeInteger(tokenUsage.outputTokens)
-    ?? nonNegativeInteger(tokenUsage.completionTokens);
-  const totalTokens = nonNegativeInteger(usageMetadata.total_tokens)
-    ?? nonNegativeInteger(responseUsage.total_tokens)
-    ?? nonNegativeInteger(tokenUsage.totalTokens)
-    ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
-  if (inputTokens === null && outputTokens === null && totalTokens === null) return null;
-  const inputDetails = typeof usageMetadata.input_token_details === "object" && usageMetadata.input_token_details !== null
-    ? usageMetadata.input_token_details as Record<string, unknown>
-    : {};
-  const outputDetails = typeof usageMetadata.output_token_details === "object" && usageMetadata.output_token_details !== null
-    ? usageMetadata.output_token_details as Record<string, unknown>
-    : {};
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    ...(nonNegativeInteger(inputDetails.cache_read) !== null ? { cachedInputTokens: nonNegativeInteger(inputDetails.cache_read) } : {}),
-    ...(nonNegativeInteger(outputDetails.reasoning) !== null ? { reasoningOutputTokens: nonNegativeInteger(outputDetails.reasoning) } : {}),
-  };
+  return extractTraceUsage(message);
 }
 
 /** Project the message shapes emitted by LangChain's `messages` stream. */
@@ -298,10 +289,12 @@ export async function* streamAgentEvents(input: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
+  observability?: AgentTraceRecorder;
+  executionKind?: TraceExecutionKind;
 }): AsyncGenerator<AgentRuntimeEvent> {
   const agent = input.model
-    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch, forceToolName: input.forceToolName })
-    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch, forceToolName: input.forceToolName });
+    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch, forceToolName: input.forceToolName, observability: input.observability, executionKind: input.executionKind })
+    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch, forceToolName: input.forceToolName, observability: input.observability, executionKind: input.executionKind });
   const stream = await agent.stream(
     { messages: input.messages },
     { context: input.context, signal: input.signal, streamMode: "messages" },

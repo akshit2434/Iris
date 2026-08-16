@@ -3,6 +3,7 @@ import "server-only";
 import { ChatOpenRouter } from "@langchain/openrouter";
 import { deriveThreadTitle, normalizeThreadTitle } from "@/lib/thread-title";
 import { getConfiguredModelName } from "@/server/agent";
+import type { AgentTraceRecorder } from "@/server/agent/observability";
 
 export type ThreadTitleGenerator = (request: string, options?: { signal?: AbortSignal }) => Promise<string>;
 
@@ -22,7 +23,7 @@ function messageText(value: unknown) {
 }
 
 /** The only production title model factory; tests inject a generator instead. */
-export function createProductionTitleGenerator(): ThreadTitleGenerator {
+export function createProductionTitleGenerator(input: { observability?: AgentTraceRecorder } = {}): ThreadTitleGenerator {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is required.");
 
@@ -35,15 +36,22 @@ export function createProductionTitleGenerator(): ThreadTitleGenerator {
     modelKwargs: { reasoning: { effort: "none" } },
   });
 
-  return async (request, options) => {
-    const response = await model.invoke([
-      {
-        role: "system",
-        content: "Create one clean 2–6 word chat title from the user's request. Return only the title, without quotes, markdown, labels, or punctuation.",
-      },
-      { role: "user", content: request.slice(0, 12000) },
-    ], options);
-    return messageText(response.content);
+  return async (request, requestOptions) => {
+    const handle = await input.observability?.startModelCall({ model: process.env.OPENROUTER_TITLE_MODEL ?? getConfiguredModelName(), executionKind: "title_generation" });
+    try {
+      const response = await model.invoke([
+        {
+          role: "system",
+          content: "Create one clean 2–6 word chat title from the user's request. Return only the title, without quotes, markdown, labels, or punctuation.",
+        },
+        { role: "user", content: request.slice(0, 12000) },
+      ], requestOptions);
+      if (handle) await input.observability?.completeModelCall({ handle, response });
+      return messageText(response.content);
+    } catch (error) {
+      if (handle) await input.observability?.failModelCall({ handle, error });
+      throw error;
+    }
   };
 }
 
@@ -63,9 +71,10 @@ export async function resolveThreadTitle(input: {
   request: string;
   generator?: ThreadTitleGenerator;
   timeoutMs?: number;
+  observability?: AgentTraceRecorder;
 }) {
   const fallback = deriveThreadTitle(input.request);
-  const generator = input.generator ?? createProductionTitleGenerator();
+  const generator = input.generator ?? createProductionTitleGenerator({ observability: input.observability });
   const controller = new AbortController();
   const generation = Promise.resolve().then(() => generator(input.request, { signal: controller.signal }));
   // Attach a rejection handler immediately so a late provider rejection cannot

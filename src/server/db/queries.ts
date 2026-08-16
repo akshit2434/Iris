@@ -19,7 +19,12 @@ export type AgentEventType =
   | "run_completed"
   | "run_failed"
   | "tool_call"
-  | "tool_result";
+  | "tool_result"
+  | "model_call_started"
+  | "model_call_completed"
+  | "model_call_failed"
+  | "assistant_completed"
+  | "assistant_partial";
 
 export type AgentRun = {
   id: string;
@@ -347,6 +352,31 @@ export async function getThreadToolEvents(profileId: ProfileId, threadId: string
       created_at: string;
     }))
     .filter((event): event is PersistedToolEvent => event !== null);
+}
+
+/** Return the complete bounded trace for one profile-owned agent run. */
+export async function getAgentRunEvents(profileId: ProfileId, threadId: string, runId: string) {
+  const { data, error } = await getDatabase()
+    .from("agent_events")
+    .select("id, profile_id, thread_id, run_id, sequence, type, payload, created_at")
+    .eq("profile_id", profileId)
+    .eq("thread_id", threadId)
+    .eq("run_id", runId)
+    .order("sequence", { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    profileId: row.profile_id,
+    threadId: row.thread_id,
+    runId: row.run_id,
+    sequence: row.sequence,
+    type: row.type as AgentEventType,
+    payload: typeof row.payload === "object" && row.payload !== null && !Array.isArray(row.payload)
+      ? row.payload as Record<string, unknown>
+      : {},
+    createdAt: row.created_at,
+  }));
 }
 
 export async function getThreadContext(profileId: ProfileId, threadId: string) {

@@ -187,7 +187,7 @@ export type Database = {
           thread_id: string;
           run_id: string;
           sequence: number;
-          type: "run_started" | "run_completed" | "run_failed" | "tool_call" | "tool_result";
+          type: "run_started" | "run_completed" | "run_failed" | "tool_call" | "tool_result" | "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial";
           payload: Json;
           created_at: string;
         };
@@ -197,7 +197,7 @@ export type Database = {
           thread_id: string;
           run_id: string;
           sequence: number;
-          type: "run_started" | "run_completed" | "run_failed" | "tool_call" | "tool_result";
+          type: "run_started" | "run_completed" | "run_failed" | "tool_call" | "tool_result" | "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial";
           payload?: Json;
           created_at?: string;
         };
@@ -207,7 +207,7 @@ export type Database = {
           thread_id: string;
           run_id: string;
           sequence: number;
-          type: "run_started" | "run_completed" | "run_failed" | "tool_call" | "tool_result";
+          type: "run_started" | "run_completed" | "run_failed" | "tool_call" | "tool_result" | "model_call_started" | "model_call_completed" | "model_call_failed" | "assistant_completed" | "assistant_partial";
           payload: Json;
           created_at: string;
         }>;

@@ -26,6 +26,7 @@ import {
 } from "@/server/agent/context";
 import { assembleTokenBudgetedContext, attachActualUsage, ContextBudgetError, selectContinuitySourceSpan } from "@/server/agent/context-assembler";
 import { getConfiguredModelName, streamAgentEvents } from "@/server/agent";
+import { createAgentTraceRecorder } from "@/server/agent/observability";
 import { getInternalToolSchemaDescriptors } from "@/server/agent/tools";
 import { createTokenEstimator } from "@/server/agent/token-budget";
 import { resolveThreadTitle } from "@/server/agent/title";
@@ -417,6 +418,19 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           cachedInputTokens?: number | null;
           reasoningOutputTokens?: number | null;
         } | undefined;
+        const trace = createAgentTraceRecorder({
+          model,
+          provider: "openrouter",
+          executionKind: "interactive_agent",
+          append: (type, payload) => appendAgentEvent({
+            profileId,
+            threadId,
+            runId: run.id,
+            sequence: ++persistedSequence,
+            type,
+            payload,
+          }).then(() => undefined),
+        });
         const telemetryLedger = () => actualUsage
           ? attachActualUsage(contextAssembly.ledger, actualUsage)
           : contextAssembly.ledger;
@@ -424,7 +438,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         // Start the tiny title request before the agent iterator. It has its
         // own timeout/fallback and is never allowed to delay first-token work.
         const titlePromise = titleClaim
-          ? resolveThreadTitle({ request: content })
+          ? resolveThreadTitle({ request: content, observability: trace })
           : null;
 
         const send = (event: OutgoingStreamEvent) => {
@@ -540,6 +554,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             memoryMutation,
             memoryArchive,
             disableHistoricalSearch: historicalPreflight.triggered || !memoryControls.referenceHistoryEnabled,
+            observability: trace,
+            executionKind: "interactive_agent",
           })) {
             if (event.type === "usage_observed") {
               actualUsage = event.usage;
@@ -614,6 +630,12 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           });
           assistantPersisted = true;
           await linkAgentRunMessages(profileId, threadId, run.id, { assistantMessageId });
+          await trace.assistantCompleted({
+            assistantMessageId,
+            content: completedAssistant.content,
+            estimatedTokens: assistantTokenEstimate,
+            isComplete: completedAssistant.isComplete,
+          });
           const completedAt = new Date().toISOString();
           await updateAgentRunStatus({
             profileId,
@@ -749,6 +771,14 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             } catch {
               // Keep the run failure response safe even if persistence itself fails.
             }
+          }
+
+          if (assistantContent.length > 0) {
+            await trace.assistantPartial({
+              assistantMessageId,
+              content: assistantContent,
+              estimatedTokens: estimator.estimateMessage({ role: "assistant", content: assistantContent }),
+            });
           }
 
           const failedAt = new Date().toISOString();
