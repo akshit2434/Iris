@@ -93,12 +93,15 @@ active and retry through the lease queue. Tests inject synthesizers and never
 call the provider. Production workers are opt-in through
 `MEMORY_CONTINUITY_ENABLED` and `MEMORY_REFERENCE_HISTORY_ENABLED`.
 
-## Migration/reset
+## Migration/reconciliation
 
-The Milestone 3 migrations are intentionally rewritten for pre-production. A
-local database created from the old memory migrations must be reset before
-applying them. Raw chat history can be preserved separately if needed; old
-canonical document tables are not compatibility authorities.
+Milestone 3 keeps the structured-memory migrations as the current clean-install
+shape. The final `20260826000000_memory_upgrade_reconciliation.sql` migration is
+an idempotent bridge for databases that applied the earlier Markdown-document
+shape before the migration files were rewritten. It preserves the legacy tables,
+copies their documents, revisions, and provenance into structured items, keeps
+raw history intact, and creates the token-continuity/runtime tables and RPCs
+needed by the current server. A local reset is not required for that upgrade.
 
 The default runtime remains low-cost: semantic search/indexing and background
 workers are opt-in. Ordinary chat does not make an embedding or consolidation
