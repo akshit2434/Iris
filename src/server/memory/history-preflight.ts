@@ -31,6 +31,16 @@ const TEMPORAL_CUES = new Set([
   "february", "march", "april", "may", "june",
 ]);
 
+// A continuation request containing only one shared subject does not identify
+// a single chat. Keep all materially relevant sources so recency or a thread
+// title cannot manufacture certainty.
+const BROAD_CONTINUATION_SUBJECTS = new Set([
+  "bookshop", "bookshops", "chat", "chats", "conversation", "conversations", "thread", "threads",
+  "discussion", "discussions", "idea", "ideas", "plan", "plans", "date", "dates", "thing", "things",
+  "place", "places", "shop", "shops", "restaurant", "restaurants", "cinema", "movie", "movies", "film", "films",
+  "trip", "trips", "option", "options", "activity", "activities",
+]);
+
 export type HistoryIntentKind = "evidence" | "exact_source" | "continuation";
 
 export type HistoryPreflightIntent = {
@@ -86,12 +96,12 @@ function queryRemainder(value: string, exactPhrase: string | null) {
   if (exactPhrase) return exactPhrase;
   const withoutQuotes = value.replace(/(?:"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)/g, " ");
   const remainder = withoutQuotes
-    .replace(/^\s*(?:where|when|what)\s+(?:did\s+(?:i|we)|have\s+i|was\s+it)\s+(?:say|said|mention|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\s*/i, "")
+    .replace(/^\s*(?:where|when|what)\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:did\s+(?:i|we)|have\s+i|was\s+it)\s+(?:say|said|mention|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\s*/i, "")
     .replace(/^\s*(?:show|find|open|locate|search|look\s+up)\s+(?:me\s+)?(?:the\s+)?(?:exact\s+)?(?:source|message|chat|conversation|thread|discussion)?\s*(?:where|about|for|on|with)?\s*/i, "")
     .replace(/^\s*(?:continue|resume|pick\s+up|go\s+back\s+to)\s+(?:the\s+)?(?:old|previous|earlier|last|that|our)?\s*(?:chat|conversation|thread|discussion)?\s*/i, "")
     .replace(/^\s*(?:where|what)\s+(?:was|is)\s+(?:that|the)?\s*/i, "")
     .replace(/\b(?:chat|conversation|thread|discussion|message|source)\b/gi, " ")
-    .replace(/\b(?:we|i|you|did|do|talked?|mentioned?|said|say|decided?|discussed?|about|again|that|the|our|my)\b/gi, " ")
+    .replace(/\b(?:which|we|i|you|did|do|was|were|is|are|talked?|mentioned?|said|say|decided?|discussed?|about|again|that|the|our|my|exactly|precisely|specifically)\b/gi, " ")
     .replace(/[-–—]/g, " ")
     .replace(/\b(?:last|this)\s+(?:month|week)\b/gi, " ")
     .replace(/\b(?:between|from|through|until|on)\s+20\d{2}-\d{2}-\d{2}\b/gi, " ")
@@ -211,6 +221,11 @@ function roleFilter(value: string): MessageSearchRole[] | null {
   return null;
 }
 
+function hasBroadContinuationSubject(query: string) {
+  const tokens = meaningfulTokens(query);
+  return tokens.length <= 1 && (tokens.length === 0 || BROAD_CONTINUATION_SUBJECTS.has(tokens[0] ?? ""));
+}
+
 /**
  * A deliberately narrow gate. It only activates when the user explicitly asks
  * for retained historical evidence or continuation; ordinary questions remain
@@ -219,21 +234,26 @@ function roleFilter(value: string): MessageSearchRole[] | null {
 export function detectHistoryPreflightIntent(value: string, now = new Date()): HistoryPreflightIntent | null {
   const text = value.replace(/\s+/g, " ").trim();
   if (!text) return null;
+  // Keep quoted source text intact for extraction, but make conversational
+  // punctuation irrelevant to the deterministic intent gate.
+  const intentText = text.replace(/[,:;!?]+/g, " ").replace(/\s+/g, " ").trim();
 
-  const exact = /\b(?:exact\s+source|exact\s+message|verbatim|word[- ]for[- ]word)\b/i.test(text);
-  const evidence = /\b(?:where|when)\s+(?:did\s+(?:i|we|you)|have\s+i)\s+(?:say|said|mention|mentioned|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\b/i.test(text)
-    || /\b(?:what|which)\s+(?:did\s+(?:i|we)|have\s+i)\s+(?:decide|decided|say|said|agree|agreed|choose|chose)\b/i.test(text)
-    || /\b(?:search|find|look\s+up)\s+(?:my|our|the)?\s*(?:old|past|prior|previous|historical)?\s*(?:chat|conversation|thread|message|source|history)\b/i.test(text)
-    || /\b(?:show|find|locate|open)\b[\s\S]{0,100}\b(?:source|message|chat|conversation|thread)\b/i.test(text)
-    || /\b(?:last\s+month|this\s+month|last\s+week|yesterday|between\s+20\d{2}-\d{2}-\d{2}|from\s+20\d{2}-\d{2}-\d{2})\b/i.test(text) && /\b(?:say|said|decide|decided|discuss|discussed|chat|conversation|thread|message|source|history)\b/i.test(text);
-  const continuation = /\b(?:continue|resume|pick\s+up|go\s+back\s+to)\b[\s\S]{0,100}\b(?:old|previous|earlier|last|that|our|chat|conversation|thread|discussion)\b/i.test(text)
-    || /\bwhich\s+(?:old|previous|earlier|last)?\s*(?:chat|conversation|thread)\b/i.test(text)
-    || /\bwhich\b[\s\S]{0,60}\bchat\b(?:\s*(?:\?|$)|\s+(?:was|had|did|about|should)\b)/i.test(text);
+  const exact = /\b(?:exact\s+source|exact\s+message|verbatim|word[- ]for[- ]word)\b/i.test(intentText);
+  const evidence = /\b(?:where|when)\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:did\s+(?:i|we|you)|have\s+i)\s+(?:say|said|mention|mentioned|decide|decided|discuss|discussed|talk|talked|write|wrote|choose|chose|agree|agreed|commit|committed)\b/i.test(intentText)
+    || /\b(?:where|when)(?:'d)?\s+(?:exactly\s+|precisely\s+|specifically\s+)?(?:did\s+)?(?:i|we|you)\s+(?:talk|talked|discuss|discussed|mention|mentioned|say|said)\b/i.test(intentText)
+    || /\b(?:what|which)\s+(?:did\s+(?:i|we)|have\s+i)\s+(?:decide|decided|say|said|agree|agreed|choose|chose)\b/i.test(intentText)
+    || /\b(?:search|find|look\s+up)\s+(?:my|our|the)?\s*(?:old|past|prior|previous|historical)?\s*(?:chat|conversation|thread|message|source|history)\b/i.test(intentText)
+    || /\b(?:show|find|locate|open)\b[\s\S]{0,100}\b(?:source|message|chat|conversation|thread)\b/i.test(intentText)
+    || /\b(?:last\s+month|this\s+month|last\s+week|yesterday|between\s+20\d{2}-\d{2}-\d{2}|from\s+20\d{2}-\d{2}-\d{2})\b/i.test(intentText) && /\b(?:say|said|decide|decided|discuss|discussed|chat|conversation|thread|message|source|history)\b/i.test(intentText);
+  const continuation = /\b(?:continue|resume|pick\s+up|go\s+back\s+to)\b[\s\S]{0,100}\b(?:old|previous|earlier|last|that|our|chat|conversation|thread|discussion)\b/i.test(intentText)
+    || /\bwhich\s+(?:old|previous|earlier|last)?\s*(?:chat|conversation|thread)\b[\s\S]{0,40}\b(?:should\s+(?:i|we)\s+(?:continue|resume|pick)|was|were|had|did|mentioned|about|for|with|in)\b/i.test(intentText)
+    || /\bwhich\b[\s\S]{0,80}\b(?:chat|conversation|thread)\b[\s\S]{0,40}\b(?:was|were|had|did|mentioned|about|for|with|in)\b/i.test(intentText)
+    || /\bwhich\b[\s\S]{0,60}\b(?:chat|conversation|thread)\b(?:\s*(?:\?|$))/i.test(intentText);
   if (!evidence && !continuation && !exact) return null;
 
   const range = dateRangeForText(text, now);
   const exactPhrase = quotedPhrase(text);
-  const query = queryRemainder(text, exactPhrase);
+  const query = queryRemainder(intentText, exactPhrase);
   const kind: HistoryIntentKind = continuation ? "continuation" : exact ? "exact_source" : "evidence";
   const matchType: MessageMatchType = exactPhrase ? "exact_phrase" : "hybrid";
   const trigger = exact ? "explicit_exact_source" : continuation ? "explicit_continuation" : range.from ? "explicit_history_date" : "explicit_history_evidence";
@@ -299,6 +319,7 @@ export async function runHistoryPreflight(input: {
   if (!intent) return { triggered: false, intent: null, status: "skipped", sources: [], prompt: "" };
   const limit = normalizeMemoryLimit(input.maxResults ?? MAX_RESULTS, MAX_RESULTS);
   const queryTokens = meaningfulTokens(intent.query);
+  const broadContinuation = intent.kind === "continuation" && hasBroadContinuationSubject(intent.query);
   const matchingClaims = input.referenceHistorySnapshot
     ? Object.values(input.referenceHistorySnapshot.document)
       .flatMap((section) => Array.isArray(section) ? section : [])
@@ -350,7 +371,10 @@ export async function runHistoryPreflight(input: {
     }
   }
   let results: MessageSearchResult[] = [];
-  if (prepared.length === 0) try {
+  // Claim provenance is the fast path for precise requests. A broad
+  // continuation may have only one of several distinct chats in the
+  // synthesized snapshot, so supplement it with bounded raw search.
+  if (prepared.length === 0 || broadContinuation) try {
     results = await input.retrieval.searchMessages({
       profileId: input.profileId,
       query: intent.query,
@@ -368,7 +392,7 @@ export async function runHistoryPreflight(input: {
     const unavailable: HistoryPreflightResult = { triggered: true, intent, status: "unavailable", sources: [], prompt: "", errorCode: "search_unavailable" };
     return { ...unavailable, prompt: formatHistoryPreflightPrompt(unavailable) };
   }
-  if (prepared.length === 0) {
+  if (prepared.length === 0 || broadContinuation) {
     const orderedResults = [...results]
       .filter((result) => result.messageId !== input.excludeMessageId)
       .sort((left, right) => right.combinedScore - left.combinedScore || left.createdAt.localeCompare(right.createdAt) || left.messageId.localeCompare(right.messageId));
@@ -405,7 +429,7 @@ export async function runHistoryPreflight(input: {
   const selected = [] as typeof ranked;
   const seenThreads = new Set<string>();
   for (const candidate of ranked) {
-    if (selected.length >= limit || (clearTop && selected.length > 0)) break;
+    if (selected.length >= limit || (clearTop && !broadContinuation && selected.length > 0)) break;
     if (seenThreads.has(candidate.window.thread.id)) continue;
     seenThreads.add(candidate.window.thread.id);
     selected.push(candidate);
@@ -432,7 +456,7 @@ export async function runHistoryPreflight(input: {
       surrounding: surrounding(sourceWindow),
     });
   }
-  const status = sources.length === 0 ? "no_match" : intent.kind === "continuation" && sources.length > 1 && !clearTop ? "ambiguous" : "found";
+  const status = sources.length === 0 ? "no_match" : intent.kind === "continuation" && sources.length > 1 && (broadContinuation || !clearTop) ? "ambiguous" : "found";
   const output: HistoryPreflightResult = { triggered: true, intent, status, sources, prompt: "" };
   return { ...output, prompt: formatHistoryPreflightPrompt(output) };
 }

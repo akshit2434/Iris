@@ -53,6 +53,25 @@ describe("deterministic historical preflight", () => {
     expect(detectHistoryPreflightIntent("Explain what a database index is.")).toBeNull();
   });
 
+  it.each([
+    "where exactly did we talk about the blue-awning bookshop?",
+    "Where, precisely, did we discuss the station bookshop?",
+    "where'd we mention the rainy Sunday plan?",
+    "which conversation was the bookshop idea in?",
+    "which chat mentioned the reading corner?",
+  ])("detects natural historical-source phrasing: %s", (query) => {
+    expect(detectHistoryPreflightIntent(query)).toMatchObject({ kind: expect.stringMatching(/evidence|continuation/) });
+  });
+
+  it.each([
+    "what was that plan?",
+    "which date should we choose?",
+    "where should we go for dinner?",
+    "which chat app should I use?",
+  ])("does not preflight ordinary conversation: %s", (query) => {
+    expect(detectHistoryPreflightIntent(query)).toBeNull();
+  });
+
   it("preflights even when the model would choose a different tool and returns an exact action", async () => {
     const store = retrieval();
     const output = await runHistoryPreflight({ profileId: "profile-a", query: "Where did I decide Project Ember?", retrieval: store, now: new Date("2026-08-16T00:00:00.000Z") });
@@ -167,6 +186,67 @@ describe("deterministic historical preflight", () => {
     expect(vague.status).toBe("ambiguous");
     expect(vague.sources).toHaveLength(2);
     expect(vague.sources.map((source) => source.combinedScore)).toEqual([...vague.sources].sort((left, right) => right.combinedScore - left.combinedScore).map((source) => source.combinedScore));
+  });
+
+  it("supplements incomplete snapshot provenance for broad shared-entity continuation", async () => {
+    const marketMessage = "00000000-0000-4000-8000-000000000301";
+    const marketThread = "00000000-0000-4000-8000-000000000302";
+    const stationMessage = "00000000-0000-4000-8000-000000000303";
+    const stationThread = "00000000-0000-4000-8000-000000000304";
+    const rows = new Map([
+      [marketMessage, { messageId: marketMessage, threadId: marketThread, title: "The bookshop by the market", content: "There is a little bookshop by the market with a blue awning.", createdAt: "2026-05-10T12:00:00.000Z" }],
+      [stationMessage, { messageId: stationMessage, threadId: stationThread, title: "A quieter bookshop", content: "The station bookshop is quieter and has a reading corner.", createdAt: "2026-05-18T12:00:00.000Z" }],
+    ]);
+    const store: MemoryRetrieval = {
+      ...retrieval([], null),
+      searchMessages: vi.fn(async () => [{
+        messageId: marketMessage,
+        threadId: marketThread,
+        profileId: "profile-a" as const,
+        role: "user" as const,
+        content: rows.get(marketMessage)?.content ?? "",
+        createdAt: rows.get(marketMessage)?.createdAt ?? "2026-05-10T12:00:00.000Z",
+        lexicalScore: 1,
+        semanticScore: null,
+        combinedScore: 1,
+        matchType: "hybrid" as const,
+      }]),
+      readMessages: vi.fn(async (_profile: string, messageId: string) => {
+        const row = rows.get(messageId);
+        if (!row) return null;
+        return window({
+          thread: { id: row.threadId, profileId: "profile-a", title: row.title, createdAt: row.createdAt, updatedAt: row.createdAt },
+          target: { messageId: row.messageId, threadId: row.threadId, profileId: "profile-a", role: "user", content: row.content, createdAt: row.createdAt },
+        });
+      }),
+    };
+    const snapshot = {
+      id: "00000000-0000-4000-8000-000000000305",
+      profileId: "profile-a",
+      revision: 1,
+      status: "active",
+      document: {
+        version: "iris-reference-history-v1",
+        ongoingWork: [{ text: "The station bookshop has a reading corner.", confidence: 0.9, temporalQualifier: "tentative", sourceMessageIds: [stationMessage], memoryKeys: [] }],
+        recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [], renderedText: "",
+      },
+      renderedText: "",
+      sourceRanges: [],
+      coveredTokenWatermark: 100,
+      coveredThroughAt: "2026-05-18T12:00:00.000Z",
+      sourceHash: "hash",
+      memoryRevision: 0,
+      model: "test",
+      synthesizerVersion: "iris-reference-history-v1",
+      previousSnapshotId: null,
+      createdAt: "2026-05-18T12:00:00.000Z",
+    } satisfies ReferenceHistorySnapshot;
+
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "which bookshop chat was that?", retrieval: store, referenceHistorySnapshot: snapshot });
+    expect(store.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ query: "bookshop" }));
+    expect(output.status).toBe("ambiguous");
+    expect(output.sources.map((source) => source.threadId)).toEqual([stationThread, marketThread]);
+    expect(output.sources.every((source) => source.action.type === "open_message")).toBe(true);
   });
 
   it("drops cross-profile and deleted claim provenance before creating actions", async () => {
