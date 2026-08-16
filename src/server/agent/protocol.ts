@@ -76,7 +76,10 @@ export type AgentStreamEvent =
     };
 
 export function sanitizeForEvent(value: unknown, depth = 0): SafeJson {
-  if (depth > 4) return "[truncated]";
+  // Canonical-memory provenance nests as result -> sources -> source ->
+  // action. Keep that bounded shape intact so a validated source can survive
+  // streaming and persistence as an actionable UI card.
+  if (depth > 6) return "[truncated]";
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return typeof value === "string" ? value.slice(0, 4000) : value;
   }

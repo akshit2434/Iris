@@ -48,6 +48,13 @@ describe("profile-scoped structured memory repository", () => {
     calls.length = 0; await expect(store.getItem("profile-a", "profile.communication")).resolves.toMatchObject({ profileId: "profile-a", canonicalKey: "profile.communication" }); expect(calls).toContainEqual({ operation: "eq", table: "memory_items", field: "profile_id", value: "profile-a" }); expect(calls).toContainEqual({ operation: "eq", table: "memory_items", field: "canonical_key", value: "profile.communication" });
     calls.length = 0; await expect(store.searchMessages({ profileId: "profile-b", query: "T1" })).resolves.toEqual([]); expect(calls[0]).toMatchObject({ operation: "rpc", table: "search_messages" }); expect((calls[0].params as { p_profile_id: string }).p_profile_id).toBe("profile-b"); expect((calls[0].params as { p_query_embedding: number[] | null }).p_query_embedding).toBeNull();
   });
+  it("does not surface saved memories from stop-word substring matches", async () => {
+    const { database } = fakeDatabase(); const store = createSupabaseMemoryStore(database as never);
+    await expect(store.searchItems("profile-a", "with an answer", 5)).resolves.toEqual([]);
+    await expect(store.searchItems("profile-a", "concise answer", 5)).resolves.toEqual([
+      expect.objectContaining({ canonicalKey: "profile.communication", excerpt: "Prefers concise answers" }),
+    ]);
+  });
   it("maps the atomic item RPC response and validates before the database", async () => {
     const { database, calls } = fakeDatabase(); const store = createSupabaseMemoryStore(database as never);
     await expect(store.applyItemRevision({ profileId: "profile-a", canonicalKey: "profile.communication", content: "Prefers concise answers", status: "active", mutationKind: "update", expectedItemRevision: 1 })).resolves.toEqual({ profileId: "profile-a", itemId: "item-a", canonicalKey: "profile.communication", itemRevision: 2, profileGlobalRevision: 5, revisionId: "rev-a", sourceId: "source-a", contentHash: "a".repeat(64) });

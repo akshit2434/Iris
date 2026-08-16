@@ -224,6 +224,8 @@ export function ChatScreen() {
         target.classList.remove("message-source-highlight");
         void target.offsetWidth;
         target.classList.add("message-source-highlight");
+        target.addEventListener("animationend", () => target.classList.remove("message-source-highlight"), { once: true });
+        window.setTimeout(() => target.classList.remove("message-source-highlight"), reducedMotion ? 0 : 1_600);
       });
       return () => window.cancelAnimationFrame(frame);
     };

@@ -136,6 +136,13 @@ function readProvenanceRelation(metadata: Record<string, unknown>): MemoryProven
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MEMORY_SEARCH_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "i", "in", "is", "it", "me", "my", "of", "on", "or", "that", "the", "this", "to", "user", "was", "with", "you", "your",
+]);
+
+function memorySearchTokens(value: string) {
+  return value.toLocaleLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 2 && !MEMORY_SEARCH_STOP_WORDS.has(token));
+}
 
 function statusFilter(options: { includeArchived?: boolean; includeDeleted?: boolean }) {
   if (options.includeDeleted) return ["active", "superseded", "archived", "deleted"] as const;
@@ -293,11 +300,13 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
         .in("status", [...statusFilter(options)])
         .order("updated_at", { ascending: false });
       if (error) throw error;
-      const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const terms = memorySearchTokens(query);
+      if (terms.length === 0) return [];
       return (data ?? [])
         .map((item) => {
           const haystack = `${item.canonical_key} ${item.content} ${item.category}`.toLocaleLowerCase();
-          const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+          const haystackTokens = new Set(memorySearchTokens(haystack));
+          const score = terms.reduce((total, term) => total + (haystackTokens.has(term) ? 1 : 0), 0);
           const compact = item.content.replace(/\s+/g, " ").trim();
           const matchAt = compact.toLocaleLowerCase().indexOf(terms[0] ?? "");
           const start = matchAt > 0 ? Math.max(0, matchAt - 70) : 0;

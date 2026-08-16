@@ -166,6 +166,13 @@ function scoreSource(input: SourceScoreInput, queryTokens: readonly string[], ex
   const lexicalSignal = Math.min(1, Math.max(0, input.result.lexicalScore));
   const semanticSignal = input.result.semanticScore === null ? 0 : Math.min(1, Math.max(0, input.result.semanticScore));
   const roleQuality = input.result.role === "user" ? 0.08 : input.result.role === "assistant" ? 0.04 : 0;
+  // A later assistant answer that merely cites what the user said is useful
+  // context, but it is not the primary assistant-authored source of a fact.
+  // Keep exact-source searches from recursively citing prior search answers.
+  const sourceNavigationEchoPenalty = input.result.role === "assistant"
+    && /\b(?:(?:you|the user)\s+(?:said|told|wrote|mentioned|shared)|here is the source|open message)\b/i.test(input.content)
+    ? 0.18
+    : 0;
   const score = Math.min(1,
     contentCoverage * 0.30
       + entityActivityCoverage * 0.20
@@ -177,7 +184,7 @@ function scoreSource(input: SourceScoreInput, queryTokens: readonly string[], ex
       + semanticSignal * 0.02
       + roleQuality * 0.02,
   );
-  return { score, contentCoverage, titleCoverage, temporalCoverage, entityActivityCoverage, exactCoverage };
+  return { score, contentCoverage, titleCoverage, temporalCoverage, entityActivityCoverage, exactCoverage, sourceNavigationEchoPenalty };
 }
 
 function isMateriallyStronger(top: number, second: number | undefined) {
@@ -193,7 +200,8 @@ type RankedSourceCandidate = {
 };
 
 function compareRankedSources(left: RankedSourceCandidate, right: RankedSourceCandidate) {
-  return right.relevance.score - left.relevance.score
+  return left.relevance.sourceNavigationEchoPenalty - right.relevance.sourceNavigationEchoPenalty
+    || right.relevance.score - left.relevance.score
     || right.result.combinedScore - left.result.combinedScore
     || left.result.createdAt.localeCompare(right.result.createdAt)
     || left.result.messageId.localeCompare(right.result.messageId);

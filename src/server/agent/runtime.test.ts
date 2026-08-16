@@ -57,6 +57,9 @@ describe("agent context", () => {
     expect(prompt).toContain("Memory lookup order:");
     expect(prompt).toContain("search saved memory with memory_search");
     expect(prompt).toContain("search retained chats with search_messages");
+    expect(prompt).toContain("memory_search is the mandatory first tool");
+    expect(prompt).toContain("canonical provenance is the wrong speaker");
+    expect(prompt).toContain("Never use exact_phrase unless the user supplied quoted wording");
     expect(prompt).toContain("never call a search tool with an empty object");
     expect(prompt).toContain("Stop as soon as evidence is sufficient");
     expect(prompt).toContain("clear stable personal fact with future value");
@@ -389,6 +392,47 @@ describe("runtime seams", () => {
     expect(retrieval.readMessages).toHaveBeenCalledWith("profile-a", "00000000-0000-4000-8000-000000000010", 2);
   });
 
+  it("reuses validated preflight evidence for the visible historical search", async () => {
+    const sourceMessageId = "00000000-0000-4000-8000-000000000010";
+    const sourceThreadId = "00000000-0000-4000-8000-000000000011";
+    const turnContext = createAgentContext({
+      ...context,
+      historicalPreflightSources: [{
+        messageId: sourceMessageId,
+        threadId: sourceThreadId,
+        profileId: "profile-a",
+        role: "user",
+        createdAt: "2026-08-14T12:00:00.000Z",
+        excerpt: "My machine is a LunarBook 14.",
+        threadTitle: "Machine note",
+      }],
+    });
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => []),
+      readMessages: vi.fn(async () => null),
+      listMemory: vi.fn(async () => []),
+      readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => []),
+      currentRevision: vi.fn(async () => 0),
+    };
+
+    await expect(searchMessages(turnContext, { query: "rewritten query", roles: ["user"], limit: 3 }, retrieval)).resolves.toEqual({
+      kind: "message_search",
+      query: "rewritten query",
+      results: [{
+        messageId: sourceMessageId,
+        threadId: sourceThreadId,
+        profileId: "profile-a",
+        role: "user",
+        createdAt: "2026-08-14T12:00:00.000Z",
+        excerpt: "My machine is a LunarBook 14.",
+        threadTitle: "Machine note",
+        action: { type: "open_message", threadId: sourceThreadId, messageId: sourceMessageId, label: "Open message" },
+      }],
+    });
+    expect(retrieval.searchMessages).not.toHaveBeenCalled();
+  });
+
   it("refuses to create an action from an inconsistent message context", async () => {
     const requestedMessageId = "00000000-0000-4000-8000-000000000010";
     const retrieval: MemoryRetrieval = {
@@ -670,6 +714,27 @@ describe("runtime seams", () => {
     expect(AGENT_STREAM_PROTOCOL).toBe("iris.agent.stream.v1");
     expect(sanitizeForEvent({ secret: "x".repeat(5000) })).toEqual({
       secret: "x".repeat(4000),
+    });
+    expect(sanitizeForEvent({
+      kind: "memory_search",
+      results: [{
+        sources: [{
+          profileId: "profile-a",
+          action: {
+            type: "open_message",
+            threadId: "00000000-0000-4000-8000-000000000011",
+            messageId: "00000000-0000-4000-8000-000000000010",
+            label: "Open message",
+          },
+        }],
+      }],
+    })).toMatchObject({
+      results: [{
+        sources: [{
+          profileId: "profile-a",
+          action: { type: "open_message", label: "Open message" },
+        }],
+      }],
     });
   });
 });

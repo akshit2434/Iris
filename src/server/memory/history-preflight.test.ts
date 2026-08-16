@@ -222,6 +222,28 @@ describe("deterministic historical preflight", () => {
     expect(vague.sources.map((source) => source.combinedScore)).toEqual([...vague.sources].sort((left, right) => right.combinedScore - left.combinedScore).map((source) => source.combinedScore));
   });
 
+  it("prefers an assistant's direct statement over a later source-search echo", async () => {
+    const directMessage = "00000000-0000-4000-8000-000000000201";
+    const echoMessage = "00000000-0000-4000-8000-000000000202";
+    const directThread = "00000000-0000-4000-8000-000000000211";
+    const echoThread = "00000000-0000-4000-8000-000000000212";
+    const rows = new Map([
+      [directMessage, { threadId: directThread, title: "Context setup", content: "Got it—you have a MacBook Air M4.", createdAt: "2026-08-14T12:00:00.000Z" }],
+      [echoMessage, { threadId: echoThread, title: "Find MacBook source", content: "You told me your MacBook Air M4. Here is the source—choose Open message.", createdAt: "2026-08-15T12:00:00.000Z" }],
+    ]);
+    const store: MemoryRetrieval = {
+      ...retrieval([], null),
+      searchMessages: vi.fn(async () => [...rows.entries()].map(([messageId, row]) => result({ messageId, threadId: row.threadId, role: "assistant", content: row.content, createdAt: row.createdAt, lexicalScore: 0.8, combinedScore: 0.8 }))),
+      readMessages: vi.fn(async (_profile, messageId) => {
+        const row = rows.get(messageId);
+        return row ? window({ thread: { id: row.threadId, profileId: "profile-a", title: row.title, createdAt: row.createdAt, updatedAt: row.createdAt }, target: { ...window().target, messageId, threadId: row.threadId, role: "assistant", content: row.content, createdAt: row.createdAt } }) : null;
+      }),
+    };
+
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "Show me the exact chat where you told me I have a MacBook Air M4", retrieval: store });
+    expect(output.sources[0]).toMatchObject({ messageId: directMessage, threadId: directThread, role: "assistant" });
+  });
+
   it("supplements incomplete snapshot provenance for broad shared-entity continuation", async () => {
     const marketMessage = "00000000-0000-4000-8000-000000000301";
     const marketThread = "00000000-0000-4000-8000-000000000302";

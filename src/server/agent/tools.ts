@@ -116,6 +116,23 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
   // natural-language sentinels such as "all" despite the JSON schema. A bad
   // optional filter must not break a safe profile-scoped history search.
   const threadId = isMemoryUuid(input.threadId) ? input.threadId : undefined;
+  // Explicit historical requests already have a deterministic, profile-
+  // validated preflight result. Reuse that evidence when the model makes the
+  // required visible tool call instead of letting a rewritten query replace
+  // the exact source with later echoes of the same fact.
+  const preflightResults = context.historicalPreflightSources
+    .filter((source) => source.profileId === context.profileId)
+    .filter((source) => !threadId || source.threadId === threadId)
+    .filter((source) => !input.roles || input.roles.includes(source.role))
+    .slice(0, limit)
+    .map((source) => ({
+      ...source,
+      action: buildOpenMessageAction(source.threadId, source.messageId, "Open message"),
+    }))
+    .filter((source): source is typeof source & { action: NonNullable<typeof source.action> } => source.action !== null);
+  if (preflightResults.length > 0) {
+    return { kind: "message_search" as const, query, results: preflightResults };
+  }
   const results = await retrieval.searchMessages({
     profileId: context.profileId,
     ...input,
@@ -344,7 +361,7 @@ export function createInternalTools(
     async (input: z.infer<typeof searchMessagesInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMessages(runtime.context, input, getMemoryRetrieval()),
     {
       name: "search_messages",
-      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. A concrete non-empty query is required; never call this with an empty object. Omit threadId to search all chats; provide it only to restrict the search to one known UUID. Set roles=['user'] for where-I-told-you requests, roles=['assistant'] for where-you-told-me requests, and omit roles for neutral requests. Use exact_phrase for quoted wording, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise profile-validated hits with source actions; do not use for self-contained requests.",
+      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. For a where-I-told-you or neutral exact-source request about a fact already present in prefilled canonical memory, call memory_search first and use its provenance; use this only if that provenance is unavailable. For where-you-told-me requests, start here with roles=['assistant']. A concrete non-empty query is required; never call this with an empty object. Omit threadId to search all chats; provide it only to restrict the search to one known UUID. Set roles=['user'] for where-I-told-you requests and omit roles for neutral requests. Use exact_phrase only for wording the user actually quoted, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise profile-validated hits with source actions; do not use for self-contained requests.",
       schema: searchMessagesInput,
       returnDirect: isReturnDirect("search_messages"),
     },
@@ -380,7 +397,7 @@ export function createInternalTools(
     async (input: z.infer<typeof memorySearchInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMemory(runtime.context, input, getMemoryRetrieval()),
     {
       name: "memory_search",
-      description: "Search current structured saved memory items when relevant personal context or its canonical provenance is needed. Results include validated original-message sources when available. Keep ordinary self-contained requests tool-free.",
+      description: "Search current structured saved memory items when relevant personal context or canonical user provenance is needed. This is the mandatory first tool for a where-I-told-you or neutral exact-source request whose fact appears in prefilled canonical memory. Do not use it as the source for where-you-told-me requests; search assistant messages instead. Search the stable fact or subject, use a validated original-message source when available, and stop before searching raw chats. Keep ordinary self-contained requests tool-free.",
       schema: memorySearchInput,
       returnDirect: isReturnDirect("memory_search"),
     },

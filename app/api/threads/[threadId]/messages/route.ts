@@ -277,6 +277,15 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       memoryChangeHint,
       memoryControls,
       memoryContextSufficient: false,
+      historicalPreflightSources: historicalPreflight.sources.map((source) => ({
+        messageId: source.messageId,
+        threadId: source.threadId,
+        profileId: source.profileId,
+        role: source.role,
+        createdAt: source.createdAt,
+        excerpt: source.excerpt,
+        threadTitle: source.threadTitle,
+      })),
       now: requestNow,
       // State slots are supplied by the token assembler below. Keeping them
       // empty here ensures the ledger measures each component exactly once.
@@ -349,6 +358,15 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       memoryChangeHint,
       memoryControls,
       memoryContextSufficient: false,
+      historicalPreflightSources: historicalPreflight.sources.map((source) => ({
+        messageId: source.messageId,
+        threadId: source.threadId,
+        profileId: source.profileId,
+        role: source.role,
+        createdAt: source.createdAt,
+        excerpt: source.excerpt,
+        threadTitle: source.threadTitle,
+      })),
       now: requestNow,
       budgetedContext: contextAssembly.prompt,
     });

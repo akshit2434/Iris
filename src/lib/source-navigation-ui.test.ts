@@ -27,6 +27,8 @@ describe("exact historical source UX contract", () => {
   it("keeps automatic retrieval hidden while requiring visible model tools for exact sources", () => {
     expect(prompt).toContain("always use real read-only tools");
     expect(prompt).toContain('set roles=["user"]');
+    expect(prompt).toContain("memory_search is the mandatory first tool");
+    expect(prompt).toContain("a later question, paraphrase, acknowledgment, or answer");
     expect(prompt).toContain('set roles=["assistant"]');
     expect(prompt).toContain("let the user choose Preview or Open message");
     const messageRoute = readFileSync(new URL("../../app/api/threads/[threadId]/messages/route.ts", import.meta.url), "utf8");
