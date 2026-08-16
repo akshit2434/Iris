@@ -28,10 +28,10 @@ export function HistoryScreen() {
   useEffect(() => { if (profileId) void loadThreads(); }, [loadThreads, profileId]);
   const filteredThreads = useMemo(() => { const value = query.trim().toLowerCase(); return value ? threads.filter((thread) => thread.title.toLowerCase().includes(value)) : threads; }, [query, threads]);
 
-  if (!isReady) return <div className="mx-auto max-w-3xl animate-pulse px-5 pt-14"><div className="h-12 w-48 rounded-2xl bg-white/55" /></div>;
+  if (!isReady) return null;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-4xl items-center px-5 py-12"><ProfilePicker /></div>;
 
-  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-4xl overflow-hidden px-5 pb-8 pt-12 sm:px-9 sm:pt-20">
+  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-4xl px-5 pb-8 pt-12 sm:px-9 sm:pt-20">
     <div className="ambient-orb -right-56 -top-40" />
     <div className="relative mx-auto max-w-3xl">
       <div data-reveal className="flex items-center justify-between"><h1 className="text-[clamp(2.8rem,10vw,5.4rem)] font-medium leading-none tracking-[-.06em]">History</h1>{loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#4978ed]" aria-label="Loading history" /> : null}</div>

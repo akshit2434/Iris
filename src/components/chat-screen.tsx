@@ -12,10 +12,12 @@ import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
 import { useChatSurface } from "@/components/chat-surface-context";
+import { DelayedPagePresence } from "@/components/delayed-page-presence";
 import { buildOpenMessageHref, canonicalMemoryRows, memorySourceRows } from "@/lib/memory-source";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
 import { isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
+import { INITIAL_SCROLL_FOLLOW_STATE, measureScrollFollowState, returnToBottomState, type ScrollFollowState } from "@/lib/chat-scroll";
 import {
   AgentStreamParser,
   assistantStreamPhase,
@@ -40,10 +42,6 @@ function formatMessageTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
 
-function isNearScrollEnd(element: HTMLElement, threshold = 120) {
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
-}
-
 export function ChatScreen() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
@@ -64,8 +62,11 @@ export function ChatScreen() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const streamBufferRef = useRef<ReturnType<typeof createStreamEventBuffer> | null>(null);
-  const shouldFollowRef = useRef(true);
+  const scrollFollowRef = useRef<ScrollFollowState>(INITIAL_SCROLL_FOLLOW_STATE);
+  const returningToBottomRef = useRef(false);
   const scrollFrameRef = useRef<number | null>(null);
+  const scrollStateFrameRef = useRef<number | null>(null);
+  const [scrollFollow, setScrollFollow] = useState<ScrollFollowState>(INITIAL_SCROLL_FOLLOW_STATE);
   const entryAnimationRef = useRef(false);
   const [animateEmptyEntry, setAnimateEmptyEntry] = useState(false);
   const resolvedHashRef = useRef<string | null>(null);
@@ -142,21 +143,46 @@ export function ChatScreen() {
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    const publishScrollState = () => {
+      scrollStateFrameRef.current = null;
+      const next = scrollFollowRef.current;
+      setScrollFollow((current) => current.nearBottom === next.nearBottom && current.manual === next.manual && current.follow === next.follow ? current : next);
+    };
     const updateFollowState = () => {
-      shouldFollowRef.current = isNearScrollEnd(container);
+      // Lock the imperative follow ref synchronously so a streamed DOM update
+      // cannot auto-scroll before the batched button state catches up.
+      const measured = measureScrollFollowState(container);
+      if (measured.nearBottom) returningToBottomRef.current = false;
+      scrollFollowRef.current = returningToBottomRef.current && !measured.nearBottom
+        ? { nearBottom: false, manual: false, follow: true }
+        : measured;
+      if (scrollStateFrameRef.current === null) {
+        scrollStateFrameRef.current = window.requestAnimationFrame(publishScrollState);
+      }
     };
     updateFollowState();
     container.addEventListener("scroll", updateFollowState, { passive: true });
-    return () => container.removeEventListener("scroll", updateFollowState);
+    const cancelReturnToBottom = () => { returningToBottomRef.current = false; };
+    container.addEventListener("touchstart", cancelReturnToBottom, { passive: true });
+    container.addEventListener("wheel", cancelReturnToBottom, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", updateFollowState);
+      container.removeEventListener("touchstart", cancelReturnToBottom);
+      container.removeEventListener("wheel", cancelReturnToBottom);
+      if (scrollStateFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollStateFrameRef.current);
+        scrollStateFrameRef.current = null;
+      }
+    };
   }, [threadId]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container || !shouldFollowRef.current) return;
+    if (!container || !scrollFollowRef.current.follow) return;
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
     scrollFrameRef.current = window.requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      if (shouldFollowRef.current) container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
+      if (scrollFollowRef.current.follow) container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
     });
     return () => {
       if (scrollFrameRef.current !== null) {
@@ -175,6 +201,8 @@ export function ChatScreen() {
       const target = document.getElementById(`message-${targetId}`);
       if (!target) return;
       resolvedHashRef.current = `${threadId}:${hash}`;
+      scrollFollowRef.current = { nearBottom: false, manual: true, follow: false };
+      setScrollFollow(scrollFollowRef.current);
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const frame = window.requestAnimationFrame(() => {
         if (!target.isConnected) return;
@@ -200,6 +228,7 @@ export function ChatScreen() {
   useEffect(() => () => {
     streamBufferRef.current?.cancel();
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    if (scrollStateFrameRef.current !== null) window.cancelAnimationFrame(scrollStateFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -359,9 +388,20 @@ export function ChatScreen() {
     }));
   }
 
-  if (!isReady) return <ChatSkeleton />;
+  function returnToBottom() {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const next = returnToBottomState();
+    scrollFollowRef.current = next;
+    setScrollFollow(next);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    returningToBottomRef.current = !reducedMotion;
+    container.scrollTo({ top: container.scrollHeight, behavior: reducedMotion ? "auto" : "smooth" });
+  }
+
+  if (!isReady) return null;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center px-5 py-12 sm:px-8"><ProfilePicker /></div>;
-  if (loading) return <ChatSkeleton />;
+  if (loading) return <DelayedPagePresence active className="min-h-dvh" />;
   if (!thread && !isNewChat) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
@@ -389,6 +429,7 @@ export function ChatScreen() {
       <div className="absolute inset-x-0 bottom-0 z-20 h-40 px-4 pb-[max(14px,env(safe-area-inset-bottom))] sm:h-44 sm:px-8">
         <ProceduralBlur edge="bottom" />
         <div className="relative mx-auto flex h-full max-w-3xl flex-col justify-end">
+          {hasMessages && !scrollFollow.nearBottom ? <button type="button" onClick={returnToBottom} className="soft-press absolute left-1/2 top-1 z-10 flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-white/80 bg-white/72 text-lg text-slate-600 shadow-[0_12px_28px_rgba(81,104,151,.16)] backdrop-blur-xl" aria-label="Jump to latest message">↓</button> : null}
           {error ? <p className="mb-2 rounded-xl bg-red-50/90 px-3 py-2 text-xs font-medium text-red-600 backdrop-blur-xl">{error}</p> : null}
           <form onSubmit={sendMessage} className="chat-composer-focus-cue glass-surface rounded-[28px] p-2 transition focus-within:bg-white/78 focus-within:shadow-[0_26px_70px_rgba(73,98,145,.18)]">
             <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!sending && !presentationActive) event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder="Message Iris" className="max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 placeholder:text-slate-400" />
@@ -484,8 +525,4 @@ function ToolActivityRow({ activity, profileId }: Readonly<{ activity: ToolActiv
       {sourceRows.length === 0 && canonicalRows.length === 0 && detail ? <details className="mt-1 pl-7 text-[11px] text-slate-400"><summary className="cursor-pointer select-none">View details</summary><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white/50 p-2 font-mono text-[10px] leading-4 text-slate-500">{detail}</pre></details> : null}
     </div>
   );
-}
-
-function ChatSkeleton() {
-  return <div className="mx-auto h-dvh max-w-4xl animate-pulse px-5 pt-8"><div className="h-10 w-44 rounded-2xl bg-white/55" /><div className="mt-[52vh] h-24 rounded-[28px] bg-white/55" /></div>;
 }

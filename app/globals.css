@@ -18,6 +18,7 @@
 html {
   min-height: 100%;
   background: var(--iris-background);
+  overflow-x: clip;
   overscroll-behavior-y: none;
 }
 
@@ -128,6 +129,41 @@ button:disabled { cursor: default; }
   animation: ambient-drift 12s ease-in-out infinite alternate;
 }
 
+.page-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(0, 5px, 0) scale(.985);
+  transition: opacity .24s ease, transform .32s cubic-bezier(.2,.8,.2,1);
+}
+.page-loader--visible { opacity: 1; transform: none; }
+.page-loader--exiting { opacity: 0; transform: translate3d(0, -3px, 0) scale(1.015); }
+.page-loader__orb {
+  position: relative;
+  display: block;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255,255,255,.9);
+  border-radius: 999px;
+  background: conic-gradient(from 200deg, rgba(73,120,237,.08), rgba(114,205,255,.7), rgba(159,151,255,.38), rgba(73,120,237,.08));
+  box-shadow: 0 0 0 8px rgba(255,255,255,.18), 0 12px 34px rgba(73,120,237,.18), inset 0 1px 0 rgba(255,255,255,.92);
+  filter: blur(.15px);
+}
+.page-loader__orb::before {
+  position: absolute;
+  inset: 6px;
+  border-radius: inherit;
+  background: rgba(245,247,251,.82);
+  box-shadow: 0 0 16px rgba(114,205,255,.38);
+  content: "";
+}
+.page-loader--visible .page-loader__orb { animation: page-loader-glow 2.4s ease-in-out infinite; }
+
 .iris-scrollbar { scrollbar-color: rgba(122,136,162,.28) transparent; scrollbar-width: thin; }
 .iris-scrollbar::-webkit-scrollbar { width: 6px; }
 .iris-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(122,136,162,.25); }
@@ -144,6 +180,7 @@ button:disabled { cursor: default; }
 @keyframes tool-activity-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 @keyframes tool-pulse { 0%,100% { opacity: .42; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
 @keyframes ambient-drift { from { transform: translate3d(-2%, -2%, 0) scale(.96); } to { transform: translate3d(4%, 3%, 0) scale(1.05); } }
+@keyframes page-loader-glow { 0%,100% { transform: scale(.94); opacity: .72; } 50% { transform: scale(1); opacity: 1; } }
 @keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
 @keyframes message-source-highlight { from { background: rgba(231, 237, 255, .82); box-shadow: 0 0 0 5px rgba(73, 120, 237, .12); } to { background: transparent; box-shadow: 0 0 0 0 transparent; } }
 @keyframes chat-route-exit { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: .04; transform: translate3d(-6px, 0, 0) scale(.996); } }

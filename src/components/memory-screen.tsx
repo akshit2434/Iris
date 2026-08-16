@@ -83,10 +83,10 @@ export function MemoryScreen() {
     }
   }
 
-  if (!isReady) return <div className="mx-auto max-w-3xl animate-pulse px-5 pt-14"><div className="h-12 w-48 rounded-2xl bg-white/55" /><div className="mt-8 h-24 rounded-[26px] bg-white/55" /></div>;
+  if (!isReady) return null;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-4xl items-center px-5 py-12"><ProfilePicker /></div>;
 
-  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl overflow-hidden px-5 pb-10 pt-12 sm:px-9 sm:pt-20">
+  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl px-5 pb-10 pt-12 sm:px-9 sm:pt-20">
     <div className="ambient-orb -right-56 -top-40" />
     <div className="relative mx-auto max-w-4xl">
       <div data-reveal className="flex flex-wrap items-end justify-between gap-5">

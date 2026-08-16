@@ -38,10 +38,10 @@ export function HomeScreen() {
     router.push("/chat/new");
   }
 
-  if (!isReady) return <HomeSkeleton />;
+  if (!isReady) return null;
 
   if (!profileId) {
-    return <FluidReveal className="relative mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-4xl items-center overflow-hidden px-5 py-12 sm:px-9">
+    return <FluidReveal className="relative mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-4xl items-center px-5 py-12 sm:px-9">
       <div className="ambient-orb -right-36 top-10" />
       <div className="relative w-full">
         <div data-reveal className="mb-14 max-w-xl"><IrisMark size={58} priority /><h1 className="mt-7 text-[clamp(2.65rem,11vw,5.4rem)] font-medium leading-[.98] tracking-[-.055em] text-slate-950">Choose your space.</h1></div>
@@ -50,7 +50,7 @@ export function HomeScreen() {
     </FluidReveal>;
   }
 
-  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl overflow-hidden px-5 pb-8 pt-10 sm:px-9 sm:pt-16 lg:min-h-dvh lg:pt-20">
+  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl px-5 pb-8 pt-10 sm:px-9 sm:pt-16 lg:min-h-dvh lg:pt-20">
     <div className="ambient-orb -right-40 -top-20" />
     <section className="relative mx-auto max-w-3xl pt-3 sm:pt-7">
       <div data-reveal className="flex items-start justify-between gap-6">
@@ -73,8 +73,4 @@ export function HomeScreen() {
       </section>
     </section>
   </FluidReveal>;
-}
-
-function HomeSkeleton() {
-  return <div className="mx-auto max-w-3xl animate-pulse px-5 pt-14"><div className="h-12 w-3/4 rounded-2xl bg-white/55" /><div className="mt-10 h-20 rounded-[28px] bg-white/55" /></div>;
 }
