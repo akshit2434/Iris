@@ -11,6 +11,25 @@ const MAX_RESULTS = 3;
 const MAX_PROMPT_CHARS = 10_000;
 const MAX_EXCERPT_CHARS = 320;
 const MAX_SURROUNDING_CHARS = 220;
+const MAX_CLAIM_SOURCE_MESSAGES = 24;
+const MIN_SOURCE_RELEVANCE = 0.2;
+
+const QUERY_STOP_WORDS = new Set([
+  "what", "where", "when", "which", "who", "why", "how", "did", "does", "do", "can", "could", "would", "should",
+  "that", "this", "those", "these", "with", "about", "from", "into", "have", "has", "had", "were", "was", "are", "is",
+  "the", "our", "my", "your", "and", "for", "again", "me", "we", "i", "you", "said", "say", "talk", "talked", "talking",
+  "mentioned", "mention", "decided", "decide", "discussed", "discuss", "open", "opened", "find", "found", "show", "please",
+  "chat", "conversation", "thread", "discussion", "message", "source", "history", "exact", "exactly", "one", "it", "in", "on", "of",
+  "old", "previous", "earlier", "last", "should", "continue", "resume", "pick", "back", "go",
+  "to", "a", "an", "the", "idea", "ideas",
+]);
+
+const TEMPORAL_CUES = new Set([
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow", "yesterday", "weekend",
+  "weekday", "morning", "afternoon", "evening", "night", "rain", "rainy", "cooler", "warmer", "spring", "summer", "autumn",
+  "fall", "winter", "month", "week", "day", "july", "august", "september", "october", "november", "december", "january",
+  "february", "march", "april", "may", "june",
+]);
 
 export type HistoryIntentKind = "evidence" | "exact_source" | "continuation";
 
@@ -82,9 +101,72 @@ function queryRemainder(value: string, exactPhrase: string | null) {
 }
 
 function meaningfulTokens(value: string) {
-  return value.toLocaleLowerCase().replace(/[-–—]/g, " ").split(/[^a-z0-9]+/).filter((token) => token.length >= 3 && !new Set([
-    "what", "where", "when", "which", "did", "does", "that", "this", "those", "these", "with", "about", "from", "into", "have", "has", "had", "were", "was", "are", "the", "our", "my", "and", "for", "again",
-  ]).has(token));
+  return value.toLocaleLowerCase().replace(/[-–—]/g, " ").split(/[^a-z0-9]+/).filter((token) => token.length >= 3 && !QUERY_STOP_WORDS.has(token));
+}
+
+function normalizedSearchText(value: string) {
+  return value.toLocaleLowerCase().replace(/[-–—]/g, " ").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function boundedRatio(numerator: number, denominator: number) {
+  return denominator > 0 ? Math.min(1, numerator / denominator) : 0;
+}
+
+function overlapRatio(queryTokens: readonly string[], sourceTokens: ReadonlySet<string>) {
+  return boundedRatio(queryTokens.filter((token) => sourceTokens.has(token)).length, queryTokens.length);
+}
+
+function phraseCoverage(phrase: string | null, sourceContent: string, sourceTokens: ReadonlySet<string>) {
+  if (!phrase) return 0;
+  const normalizedPhrase = normalizedSearchText(phrase);
+  if (normalizedPhrase && normalizedSearchText(sourceContent).includes(normalizedPhrase)) return 1;
+  return overlapRatio(meaningfulTokens(phrase), sourceTokens);
+}
+
+type SourceScoreInput = {
+  result: MessageSearchResult;
+  content: string;
+  threadTitle: string;
+  claimText?: string;
+};
+
+/**
+ * Claim provenance is an index, not a relevance score. A claim can cite a
+ * clarification, an earlier tentative idea, and a later summary. Score the
+ * re-read message itself so a precise source wins over merely related ones.
+ */
+function scoreSource(input: SourceScoreInput, queryTokens: readonly string[], exactPhrase: string | null) {
+  const contentTokens = new Set(meaningfulTokens(input.content));
+  const titleTokens = new Set(meaningfulTokens(input.threadTitle));
+  const claimTokens = new Set(meaningfulTokens(input.claimText ?? ""));
+  const temporalQueryTokens = queryTokens.filter((token) => TEMPORAL_CUES.has(token));
+  const entityActivityQueryTokens = queryTokens.filter((token) => !TEMPORAL_CUES.has(token));
+  const contentCoverage = overlapRatio(queryTokens, contentTokens);
+  const titleCoverage = overlapRatio(queryTokens, titleTokens);
+  const claimCoverage = overlapRatio(queryTokens, claimTokens);
+  const temporalCoverage = temporalQueryTokens.length > 0 ? overlapRatio(temporalQueryTokens, contentTokens) : contentCoverage;
+  const entityActivityCoverage = entityActivityQueryTokens.length > 0 ? overlapRatio(entityActivityQueryTokens, contentTokens) : contentCoverage;
+  const exactCoverage = phraseCoverage(exactPhrase, input.content, contentTokens);
+  const lexicalSignal = Math.min(1, Math.max(0, input.result.lexicalScore));
+  const semanticSignal = input.result.semanticScore === null ? 0 : Math.min(1, Math.max(0, input.result.semanticScore));
+  const roleQuality = input.result.role === "user" ? 0.08 : input.result.role === "assistant" ? 0.04 : 0;
+  const score = Math.min(1,
+    contentCoverage * 0.30
+      + entityActivityCoverage * 0.20
+      + temporalCoverage * 0.14
+      + titleCoverage * 0.18
+      + claimCoverage * 0.05
+      + exactCoverage * 0.06
+      + lexicalSignal * 0.03
+      + semanticSignal * 0.02
+      + roleQuality * 0.02,
+  );
+  return { score, contentCoverage, titleCoverage, temporalCoverage, entityActivityCoverage, exactCoverage };
+}
+
+function isMateriallyStronger(top: number, second: number | undefined) {
+  if (second === undefined) return true;
+  return top >= 0.58 && (top - second >= 0.06 || top >= second * 1.12);
 }
 
 function startOfUtcMonth(year: number, month: number) {
@@ -145,7 +227,8 @@ export function detectHistoryPreflightIntent(value: string, now = new Date()): H
     || /\b(?:show|find|locate|open)\b[\s\S]{0,100}\b(?:source|message|chat|conversation|thread)\b/i.test(text)
     || /\b(?:last\s+month|this\s+month|last\s+week|yesterday|between\s+20\d{2}-\d{2}-\d{2}|from\s+20\d{2}-\d{2}-\d{2})\b/i.test(text) && /\b(?:say|said|decide|decided|discuss|discussed|chat|conversation|thread|message|source|history)\b/i.test(text);
   const continuation = /\b(?:continue|resume|pick\s+up|go\s+back\s+to)\b[\s\S]{0,100}\b(?:old|previous|earlier|last|that|our|chat|conversation|thread|discussion)\b/i.test(text)
-    || /\bwhich\s+(?:old|previous|earlier|last)?\s*(?:chat|conversation|thread)\b/i.test(text);
+    || /\bwhich\s+(?:old|previous|earlier|last)?\s*(?:chat|conversation|thread)\b/i.test(text)
+    || /\bwhich\b[\s\S]{0,60}\bchat\b(?:\s*(?:\?|$)|\s+(?:was|had|did|about|should)\b)/i.test(text);
   if (!evidence && !continuation && !exact) return null;
 
   const range = dateRangeForText(text, now);
@@ -215,44 +298,59 @@ export async function runHistoryPreflight(input: {
   const intent = detectHistoryPreflightIntent(input.query, input.now);
   if (!intent) return { triggered: false, intent: null, status: "skipped", sources: [], prompt: "" };
   const limit = normalizeMemoryLimit(input.maxResults ?? MAX_RESULTS, MAX_RESULTS);
-  let results: MessageSearchResult[] = [];
   const queryTokens = meaningfulTokens(intent.query);
-  const claimCandidates = input.referenceHistorySnapshot
+  const matchingClaims = input.referenceHistorySnapshot
     ? Object.values(input.referenceHistorySnapshot.document)
       .flatMap((section) => Array.isArray(section) ? section : [])
       .filter((claim): claim is ReferenceHistorySnapshot["document"]["ongoingWork"][number] => {
         const claimTokens = meaningfulTokens(`${claim.text} ${claim.memoryOverlay ?? ""}`);
         return queryTokens.length === 0 || queryTokens.some((token) => claimTokens.includes(token));
       })
-      .flatMap((claim) => claim.sourceMessageIds)
     : [];
-  const claimMessageIds = [...new Set(claimCandidates)].filter((messageId) => messageId !== input.excludeMessageId);
+  const claimTextByMessageId = new Map<string, string>();
+  for (const claim of matchingClaims) {
+    for (const messageId of claim.sourceMessageIds) {
+      if (messageId === input.excludeMessageId) continue;
+      const previous = claimTextByMessageId.get(messageId);
+      const claimText = `${claim.text} ${claim.memoryOverlay ?? ""}`.trim();
+      if (!previous || meaningfulTokens(claimText).length > meaningfulTokens(previous).length) claimTextByMessageId.set(messageId, claimText);
+    }
+  }
+  const claimMessageIds = [...claimTextByMessageId.keys()];
+  const prepared: Array<{ result: MessageSearchResult; window: MessageContextWindow; claimText?: string }> = [];
+  const preparedMessageIds = new Set<string>();
   if (claimMessageIds.length > 0) {
-    // The synthesized snapshot is a fast, bounded index for ordinary human
-    // references. Re-read each source inside the active profile before making
-    // it evidence or an exact navigation action.
-    for (const messageId of claimMessageIds.slice(0, limit * 4)) {
+    // The synthesized snapshot is a bounded index, not a relevance score.
+    // Re-read every cited source inside the active profile and score the raw
+    // message below. Stale or foreign provenance never becomes an action.
+    for (const messageId of claimMessageIds.slice(0, MAX_CLAIM_SOURCE_MESSAGES)) {
       try {
-        const window = await input.retrieval.readMessages(input.profileId, messageId, 2);
-        if (!window || window.target.profileId !== input.profileId || window.target.messageId !== messageId) continue;
-        results.push({
-          messageId,
-          threadId: window.target.threadId,
-          profileId: input.profileId,
-          role: window.target.role,
-          content: window.target.content,
-          createdAt: window.target.createdAt,
-          lexicalScore: 1,
-          semanticScore: null,
-          combinedScore: 1,
-          matchType: "hybrid",
+        const sourceWindow = await input.retrieval.readMessages(input.profileId, messageId, 2);
+        if (!sourceWindow || sourceWindow.target.profileId !== input.profileId || sourceWindow.target.messageId !== messageId) continue;
+        prepared.push({
+          result: {
+            messageId,
+            threadId: sourceWindow.target.threadId,
+            profileId: input.profileId,
+            role: sourceWindow.target.role,
+            content: sourceWindow.target.content,
+            createdAt: sourceWindow.target.createdAt,
+            lexicalScore: 0,
+            semanticScore: null,
+            combinedScore: 0,
+            matchType: "hybrid",
+          },
+          window: sourceWindow,
+          claimText: claimTextByMessageId.get(messageId),
         });
+        preparedMessageIds.add(messageId);
       } catch {
         // Stale/foreign claim sources fall through to the raw message index.
       }
     }
   }
-  if (results.length === 0) try {
+  let results: MessageSearchResult[] = [];
+  if (prepared.length === 0) try {
     results = await input.retrieval.searchMessages({
       profileId: input.profileId,
       query: intent.query,
@@ -270,45 +368,71 @@ export async function runHistoryPreflight(input: {
     const unavailable: HistoryPreflightResult = { triggered: true, intent, status: "unavailable", sources: [], prompt: "", errorCode: "search_unavailable" };
     return { ...unavailable, prompt: formatHistoryPreflightPrompt(unavailable) };
   }
+  if (prepared.length === 0) {
+    const orderedResults = [...results]
+      .filter((result) => result.messageId !== input.excludeMessageId)
+      .sort((left, right) => right.combinedScore - left.combinedScore || left.createdAt.localeCompare(right.createdAt) || left.messageId.localeCompare(right.messageId));
+    for (const result of orderedResults.slice(0, Math.min(100, Math.max(limit * 8, 20)))) {
+      // The current request is already persisted before preflight runs. It can
+      // contain every query term and outrank the retained source the user is
+      // asking for, but it is not historical evidence and must never become a
+      // clickable source action.
+      if (preparedMessageIds.has(result.messageId) || !validResult(result, input.profileId)) continue;
+      let sourceWindow: MessageContextWindow | null;
+      try {
+        sourceWindow = await input.retrieval.readMessages(input.profileId, result.messageId, 2);
+      } catch {
+        sourceWindow = null;
+      }
+      // A search row can race with deletion. Only source rows re-read inside
+      // the active profile are allowed to become clickable actions.
+      if (!sourceWindow || sourceWindow.target.profileId !== input.profileId || sourceWindow.target.threadId !== result.threadId || sourceWindow.target.messageId !== result.messageId) continue;
+      prepared.push({ result, window: sourceWindow });
+      preparedMessageIds.add(result.messageId);
+    }
+  }
+
+  const ranked = prepared
+    .map((candidate) => ({ ...candidate, relevance: scoreSource({ result: candidate.result, content: candidate.window.target.content, threadTitle: candidate.window.thread.title, claimText: candidate.claimText }, queryTokens, intent.exactPhrase) }))
+    .filter((candidate) => queryTokens.length === 0 || candidate.relevance.score >= MIN_SOURCE_RELEVANCE)
+    .sort((left, right) => right.relevance.score - left.relevance.score
+      || right.result.combinedScore - left.result.combinedScore
+      || left.result.createdAt.localeCompare(right.result.createdAt)
+      || left.result.messageId.localeCompare(right.result.messageId));
+  const topScore = ranked[0]?.relevance.score;
+  const secondScore = ranked[1]?.relevance.score;
+  const clearTop = topScore !== undefined && isMateriallyStronger(topScore, secondScore);
+  const selected = [] as typeof ranked;
+  const seenThreads = new Set<string>();
+  for (const candidate of ranked) {
+    if (selected.length >= limit || (clearTop && selected.length > 0)) break;
+    if (seenThreads.has(candidate.window.thread.id)) continue;
+    seenThreads.add(candidate.window.thread.id);
+    selected.push(candidate);
+  }
 
   const sources: HistoricalSourceHit[] = [];
-  const orderedResults = [...results]
-    .filter((result) => result.messageId !== input.excludeMessageId)
-    .sort((left, right) => right.combinedScore - left.combinedScore || left.createdAt.localeCompare(right.createdAt) || left.messageId.localeCompare(right.messageId));
-  for (const result of orderedResults.slice(0, limit)) {
-    // The current request is already persisted before preflight runs. It can
-    // contain every query term and outrank the retained source the user is
-    // asking for, but it is not historical evidence and must never become a
-    // clickable source action.
-    if (!validResult(result, input.profileId) || sources.some((source) => source.messageId === result.messageId)) continue;
-    let window: MessageContextWindow | null;
-    try {
-      window = await input.retrieval.readMessages(input.profileId, result.messageId, 2);
-    } catch {
-      window = null;
-    }
-    // A search row can race with deletion. Only source rows re-read inside the
-    // active profile are allowed to become clickable actions.
-    if (!window || window.target.profileId !== input.profileId || window.target.threadId !== result.threadId || window.target.messageId !== result.messageId) continue;
-    const action = buildOpenMessageAction(window.target.threadId, window.target.messageId, intent.kind === "continuation" ? "Continue from here" : "Open source");
+  for (const candidate of selected) {
+    const { result, window: sourceWindow, relevance } = candidate;
+    const action = buildOpenMessageAction(sourceWindow.target.threadId, sourceWindow.target.messageId, intent.kind === "continuation" ? "Continue from here" : "Open source");
     if (!action) continue;
     sources.push({
-      messageId: window.target.messageId,
-      threadId: window.target.threadId,
+      messageId: sourceWindow.target.messageId,
+      threadId: sourceWindow.target.threadId,
       profileId: input.profileId,
-      role: window.target.role,
-      createdAt: window.target.createdAt,
-      excerpt: compact(window.target.content),
-      threadTitle: compact(window.thread.title, 120),
+      role: sourceWindow.target.role,
+      createdAt: sourceWindow.target.createdAt,
+      excerpt: compact(sourceWindow.target.content),
+      threadTitle: compact(sourceWindow.thread.title, 120),
       action,
       lexicalScore: result.lexicalScore,
       semanticScore: result.semanticScore,
-      combinedScore: result.combinedScore,
+      combinedScore: relevance.score,
       matchType: result.matchType,
-      surrounding: surrounding(window),
+      surrounding: surrounding(sourceWindow),
     });
   }
-  const status = sources.length === 0 ? "no_match" : intent.kind === "continuation" && sources.length > 1 ? "ambiguous" : "found";
+  const status = sources.length === 0 ? "no_match" : intent.kind === "continuation" && sources.length > 1 && !clearTop ? "ambiguous" : "found";
   const output: HistoryPreflightResult = { triggered: true, intent, status, sources, prompt: "" };
   return { ...output, prompt: formatHistoryPreflightPrompt(output) };
 }

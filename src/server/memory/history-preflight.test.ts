@@ -67,7 +67,7 @@ describe("deterministic historical preflight", () => {
   });
 
   it("resolves explicit source requests from Dreaming claim provenance before raw search", async () => {
-    const store = retrieval();
+    const store = retrieval([], window({ target: { ...window().target, content: "The blue-awning bookshop has a reading corner." } }));
     const snapshot = {
       id: "00000000-0000-4000-8000-000000000031",
       profileId: "profile-a",
@@ -93,6 +93,97 @@ describe("deterministic historical preflight", () => {
     expect(output.status).toBe("found");
     expect(output.sources[0]?.action).toEqual({ type: "open_message", threadId: ids.thread, messageId: ids.message, label: "Open source" });
     expect(store.searchMessages).not.toHaveBeenCalled();
+  });
+
+  it("ranks claim provenance by the re-read message instead of treating every source equally", async () => {
+    const sourceIds = {
+      rainy: "00000000-0000-4000-8000-000000000101",
+      rainyRelated: "00000000-0000-4000-8000-000000000102",
+      market: "00000000-0000-4000-8000-000000000103",
+      station: "00000000-0000-4000-8000-000000000104",
+      stationRelated: "00000000-0000-4000-8000-000000000105",
+    };
+    const sourceRows = new Map([
+      [sourceIds.rainy, { threadId: "00000000-0000-4000-8000-000000000111", title: "Rainy Sunday", content: "A rainy Sunday could work for a cinema followed by ramen.", createdAt: "2026-08-07T12:00:00.000Z" }],
+      [sourceIds.rainyRelated, { threadId: "00000000-0000-4000-8000-000000000112", title: "A few gentle options", content: "The bookshops, a picnic, and cinema with ramen all feel better than something loud.", createdAt: "2026-08-14T12:00:00.000Z" }],
+      [sourceIds.market, { threadId: "00000000-0000-4000-8000-000000000113", title: "The bookshop by the market", content: "There is a little bookshop by the market with a blue awning.", createdAt: "2026-05-10T12:00:00.000Z" }],
+      [sourceIds.station, { threadId: "00000000-0000-4000-8000-000000000114", title: "A quieter bookshop", content: "The station bookshop is quieter and has a reading corner.", createdAt: "2026-05-18T12:00:00.000Z" }],
+      [sourceIds.stationRelated, { threadId: "00000000-0000-4000-8000-000000000115", title: "Two different shops", content: "The blue-awning one is by the market, while the station one has a reading corner.", createdAt: "2026-07-22T12:00:00.000Z" }],
+    ]);
+    const sourceStore: MemoryRetrieval = {
+      ...retrieval([], null),
+      searchMessages: vi.fn(async () => []),
+      readMessages: vi.fn(async (_profile: string, messageId: string) => {
+        const row = sourceRows.get(messageId as keyof typeof sourceIds);
+        if (!row) return null;
+        return window({
+          thread: { id: row.threadId, profileId: "profile-a", title: row.title, createdAt: row.createdAt, updatedAt: row.createdAt },
+          target: { messageId, threadId: row.threadId, profileId: "profile-a", role: "user", content: row.content, createdAt: row.createdAt },
+        });
+      }),
+    };
+    const snapshot = {
+      id: "00000000-0000-4000-8000-000000000131",
+      profileId: "profile-a",
+      revision: 2,
+      status: "active",
+      document: {
+        version: "iris-reference-history-v1",
+        ongoingWork: [
+          { text: "A rainy Sunday cinema followed by ramen was one tentative idea.", confidence: 0.9, temporalQualifier: "tentative", sourceMessageIds: [sourceIds.rainy, sourceIds.rainyRelated], memoryKeys: [] },
+          { text: "The market bookshop has a blue awning.", confidence: 0.9, temporalQualifier: "tentative", sourceMessageIds: [sourceIds.market, sourceIds.stationRelated], memoryKeys: [] },
+          { text: "The station bookshop has a reading corner.", confidence: 0.9, temporalQualifier: "tentative", sourceMessageIds: [sourceIds.station], memoryKeys: [] },
+        ],
+        recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [], renderedText: "",
+      },
+      renderedText: "",
+      sourceRanges: [],
+      coveredTokenWatermark: 200,
+      coveredThroughAt: "2026-08-14T12:00:00.000Z",
+      sourceHash: "hash",
+      memoryRevision: 0,
+      model: "openai/test-model",
+      synthesizerVersion: "iris-reference-history-v1",
+      previousSnapshotId: null,
+      createdAt: "2026-08-14T12:00:00.000Z",
+    } satisfies ReferenceHistorySnapshot;
+
+    const rainy = await runHistoryPreflight({ profileId: "profile-a", query: "which chat was the rainy cinema and ramen idea in, and can you open it?", retrieval: sourceStore, referenceHistorySnapshot: snapshot });
+    expect(rainy.status).toBe("found");
+    expect(rainy.sources).toHaveLength(1);
+    expect(rainy.sources[0]).toMatchObject({ messageId: sourceIds.rainy, threadId: "00000000-0000-4000-8000-000000000111", threadTitle: "Rainy Sunday" });
+
+    const market = await runHistoryPreflight({ profileId: "profile-a", query: "where exactly did we talk about the blue-awning bookshop, and can you open that conversation?", retrieval: sourceStore, referenceHistorySnapshot: snapshot });
+    expect(market.status).toBe("found");
+    expect(market.sources).toHaveLength(1);
+    expect(market.sources[0]).toMatchObject({ messageId: sourceIds.market, threadTitle: "The bookshop by the market" });
+
+    const station = await runHistoryPreflight({ profileId: "profile-a", query: "which chat was the bookshop with the reading corner in?", retrieval: sourceStore, referenceHistorySnapshot: snapshot });
+    expect(station.status).toBe("found");
+    expect(station.sources).toHaveLength(1);
+    expect(station.sources[0]).toMatchObject({ messageId: sourceIds.station, threadTitle: "A quieter bookshop" });
+
+    const vague = await runHistoryPreflight({ profileId: "profile-a", query: "which bookshop chat?", retrieval: sourceStore, referenceHistorySnapshot: snapshot });
+    expect(vague.status).toBe("ambiguous");
+    expect(vague.sources).toHaveLength(2);
+    expect(vague.sources.map((source) => source.combinedScore)).toEqual([...vague.sources].sort((left, right) => right.combinedScore - left.combinedScore).map((source) => source.combinedScore));
+  });
+
+  it("drops cross-profile and deleted claim provenance before creating actions", async () => {
+    const foreignId = "00000000-0000-4000-8000-000000000201";
+    const deletedId = "00000000-0000-4000-8000-000000000202";
+    const store: MemoryRetrieval = {
+      ...retrieval([], null),
+      readMessages: vi.fn(async (_profile: string, messageId: string) => messageId === foreignId ? window({ target: { ...window().target, messageId, profileId: "profile-b" } }) : null),
+    };
+    const snapshot = {
+      id: "00000000-0000-4000-8000-000000000231", profileId: "profile-a", revision: 1, status: "active",
+      document: { version: "iris-reference-history-v1", ongoingWork: [{ text: "A bookshop idea.", confidence: 0.9, temporalQualifier: null, sourceMessageIds: [foreignId, deletedId], memoryKeys: [] }], recurringPreferences: [], relationshipsContext: [], recentChanges: [], boundedPatterns: [], renderedText: "" },
+      renderedText: "", sourceRanges: [], coveredTokenWatermark: 20, coveredThroughAt: null, sourceHash: "hash", memoryRevision: 0, model: "test", synthesizerVersion: "iris-reference-history-v1", previousSnapshotId: null, createdAt: "2026-08-14T12:00:00.000Z",
+    } satisfies ReferenceHistorySnapshot;
+    const output = await runHistoryPreflight({ profileId: "profile-a", query: "where did we talk about the bookshop?", retrieval: store, referenceHistorySnapshot: snapshot });
+    expect(output.status).toBe("no_match");
+    expect(output.sources).toEqual([]);
   });
 
   it("does not turn the current request into its own historical source", async () => {
