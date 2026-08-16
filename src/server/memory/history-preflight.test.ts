@@ -372,6 +372,50 @@ describe("deterministic historical preflight", () => {
     expect(output.sources.map((source) => source.threadId)).toEqual([strongThread]);
   });
 
+  it("deduplicates source messages by thread before exact-source strength and ambiguity", async () => {
+    const marketThread = "00000000-0000-4000-8000-000000000431";
+    const marketMessage = "00000000-0000-4000-8000-000000000432";
+    const marketFollowup = "00000000-0000-4000-8000-000000000433";
+    const stationThread = "00000000-0000-4000-8000-000000000434";
+    const stationMessage = "00000000-0000-4000-8000-000000000435";
+    const rows = new Map([
+      [marketMessage, { threadId: marketThread, title: "The bookshop by the market", content: "There is a little bookshop by the market with a blue awning.", createdAt: "2026-04-12T12:00:00.000Z" }],
+      [marketFollowup, { threadId: marketThread, title: "The bookshop by the market", content: "The market bookshop with the blue awning could work for tea afterward.", createdAt: "2026-04-12T12:05:00.000Z" }],
+      [stationMessage, { threadId: stationThread, title: "A quieter station bookshop", content: "The station bookshop is quieter and has a small reading corner.", createdAt: "2026-04-28T12:00:00.000Z" }],
+    ]);
+    const store: MemoryRetrieval = {
+      ...retrieval([], null),
+      searchMessages: vi.fn(async () => [...rows.entries()].map(([messageId, row]) => result({
+        messageId,
+        threadId: row.threadId,
+        content: row.content,
+        createdAt: row.createdAt,
+        lexicalScore: 0.9,
+        combinedScore: 0.8,
+      }))),
+      readMessages: vi.fn(async (_profile: string, messageId: string) => {
+        const row = rows.get(messageId);
+        if (!row) return null;
+        return window({
+          thread: { id: row.threadId, profileId: "profile-a", title: row.title, createdAt: row.createdAt, updatedAt: row.createdAt },
+          target: { ...window().target, messageId, threadId: row.threadId, content: row.content, createdAt: row.createdAt },
+        });
+      }),
+    };
+
+    const exact = await runHistoryPreflight({ profileId: "profile-a", query: "where exactly did we talk about the blue-awning bookshop?", retrieval: store, excludeThreadId: "00000000-0000-4000-8000-000000000499" });
+    expect(exact.status).toBe("found");
+    expect(exact.sources).toHaveLength(1);
+    expect(exact.sources[0]).toMatchObject({ threadId: marketThread, messageId: marketMessage });
+
+    const vague = await runHistoryPreflight({ profileId: "profile-a", query: "which bookshop chat?", retrieval: store, excludeThreadId: "00000000-0000-4000-8000-000000000499" });
+    expect(vague.status).toBe("ambiguous");
+    expect(vague.sources).toHaveLength(2);
+    expect(vague.sources.map((source) => source.threadId)).toEqual([marketThread, stationThread]);
+    expect(vague.sources.map((source) => source.messageId)).toEqual([marketMessage, stationMessage]);
+    expect(new Set(vague.sources.map((source) => source.threadId)).size).toBe(vague.sources.length);
+  });
+
   it("requires an ambiguous response to name candidates and ask for a choice", () => {
     const source = { ...result(), threadTitle: "First bookshop", excerpt: "", action: { type: "open_message" as const, threadId: ids.thread, messageId: ids.message, label: "Open source" }, surrounding: { before: [], after: [] }, profileId: "profile-a" as const, threadId: ids.thread, messageId: ids.message, createdAt: "now", role: "user" as const, lexicalScore: 1, semanticScore: null, combinedScore: 0.8 };
     const second = { ...source, threadTitle: "Second bookshop", threadId: "00000000-0000-4000-8000-000000000421", action: { ...source.action, threadId: "00000000-0000-4000-8000-000000000421" } };

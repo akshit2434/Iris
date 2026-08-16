@@ -185,6 +185,36 @@ function isMateriallyStronger(top: number, second: number | undefined) {
   return top >= 0.58 && (top - second >= 0.06 || top >= second * 1.12);
 }
 
+type RankedSourceCandidate = {
+  result: MessageSearchResult;
+  window: MessageContextWindow;
+  claimText?: string;
+  relevance: ReturnType<typeof scoreSource>;
+};
+
+function compareRankedSources(left: RankedSourceCandidate, right: RankedSourceCandidate) {
+  return right.relevance.score - left.relevance.score
+    || right.result.combinedScore - left.result.combinedScore
+    || left.result.createdAt.localeCompare(right.result.createdAt)
+    || left.result.messageId.localeCompare(right.result.messageId);
+}
+
+/**
+ * A conversation can contribute several source messages to the raw+claim
+ * union. Those messages must not make one conversation look like several
+ * competing historical answers. Keep the strongest exact message per source
+ * thread before comparing candidates, pruning, or creating actions.
+ */
+function deduplicateRankedSources(candidates: readonly RankedSourceCandidate[]) {
+  const strongestByThread = new Map<string, RankedSourceCandidate>();
+  for (const candidate of candidates) {
+    const threadId = candidate.window.thread.id;
+    const previous = strongestByThread.get(threadId);
+    if (!previous || compareRankedSources(candidate, previous) < 0) strongestByThread.set(threadId, candidate);
+  }
+  return [...strongestByThread.values()].sort(compareRankedSources);
+}
+
 function startOfUtcMonth(year: number, month: number) {
   return new Date(Date.UTC(year, month, 1));
 }
@@ -475,19 +505,14 @@ export async function runHistoryPreflight(input: {
     .map((candidate) => ({ ...candidate, relevance: scoreSource({ result: candidate.result, content: candidate.window.target.content, threadTitle: candidate.window.thread.title, claimText: candidate.claimText }, queryTokens, intent.exactPhrase) }))
     .filter((candidate) => (queryTokens.length === 0 || candidate.relevance.score >= MIN_SOURCE_RELEVANCE)
       && (!broadContinuation || queryTokens.length === 0 || candidate.relevance.score >= MIN_BROAD_CONTINUATION_RELEVANCE))
-    .sort((left, right) => right.relevance.score - left.relevance.score
-      || right.result.combinedScore - left.result.combinedScore
-      || left.result.createdAt.localeCompare(right.result.createdAt)
-      || left.result.messageId.localeCompare(right.result.messageId));
-  const topScore = ranked[0]?.relevance.score;
-  const secondScore = ranked[1]?.relevance.score;
+    .sort(compareRankedSources);
+  const deduplicated = deduplicateRankedSources(ranked);
+  const topScore = deduplicated[0]?.relevance.score;
+  const secondScore = deduplicated[1]?.relevance.score;
   const clearTop = topScore !== undefined && isMateriallyStronger(topScore, secondScore);
-  const selected = [] as typeof ranked;
-  const seenThreads = new Set<string>();
-  for (const candidate of ranked) {
+  const selected = [] as typeof deduplicated;
+  for (const candidate of deduplicated) {
     if (selected.length >= limit || (clearTop && !broadContinuation && selected.length > 0)) break;
-    if (seenThreads.has(candidate.window.thread.id)) continue;
-    seenThreads.add(candidate.window.thread.id);
     selected.push(candidate);
   }
 
