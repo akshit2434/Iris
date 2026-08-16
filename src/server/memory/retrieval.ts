@@ -64,14 +64,26 @@ export function createMemoryRetrievalService(options: MemoryRetrievalOptions): M
     },
     async memorySources(profileId, canonicalKey, rawLimit = 3) {
       const audit = options.store.getItemAudit ? await options.store.getItemAudit(profileId, canonicalKey) : null;
-      if (!audit) return [];
+      if (!audit
+        || audit.item.profileId !== profileId
+        || audit.item.canonicalKey !== canonicalKey
+        || audit.item.status !== "active") return [];
       const currentRevision = audit.revisions.find((revision) => revision.itemRevision === audit.item.itemRevision);
-      if (!currentRevision) return [];
+      if (!currentRevision
+        || currentRevision.profileId !== profileId
+        || currentRevision.itemId !== audit.item.id
+        || currentRevision.canonicalKey !== audit.item.canonicalKey
+        || currentRevision.status !== "active") return [];
       const limit = normalizeMemoryLimit(rawLimit, 3);
       const resolved = await Promise.all(currentRevision.sources.map(async (source) => {
-        if (source.sourceKind !== "message" || !source.sourceMessageId) return null;
+        if (source.sourceKind !== "message" || !source.sourceMessageId || !source.sourceThreadId) return null;
         const window = await options.store.readMessageContext(profileId, source.sourceMessageId, 1).catch(() => null);
-        if (!window || window.target.profileId !== profileId || window.thread.profileId !== profileId) return null;
+        if (!window
+          || window.target.profileId !== profileId
+          || window.thread.profileId !== profileId
+          || window.target.messageId !== source.sourceMessageId
+          || window.target.threadId !== source.sourceThreadId
+          || window.thread.id !== source.sourceThreadId) return null;
         return {
           messageId: window.target.messageId,
           threadId: window.target.threadId,

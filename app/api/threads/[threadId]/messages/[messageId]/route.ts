@@ -20,7 +20,14 @@ export async function GET(_request: Request, { params }: SourcePreviewRouteConte
     if (!profileId) return NextResponse.json({ error: "Select a profile first." }, { status: 400 });
     const { threadId, messageId } = await params;
     const context = await createProductionMemoryRetrievalService().readMessages(profileId, messageId, 3);
-    if (!context || context.thread.id !== threadId || context.target.threadId !== threadId) {
+    const contextMessages = context ? [...context.before, context.target, ...context.after] : [];
+    if (!context
+      || context.thread.id !== threadId
+      || context.thread.profileId !== profileId
+      || context.target.messageId !== messageId
+      || context.target.threadId !== threadId
+      || context.target.profileId !== profileId
+      || !contextMessages.every((message) => message.threadId === threadId && message.profileId === profileId)) {
       return NextResponse.json({ error: "Source message is no longer available." }, { status: 404 });
     }
     return NextResponse.json({ source: context });

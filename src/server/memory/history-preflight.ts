@@ -23,7 +23,7 @@ const QUERY_STOP_WORDS = new Set([
   "what", "where", "when", "which", "who", "why", "how", "did", "does", "do", "can", "could", "would", "should",
   "that", "this", "those", "these", "with", "about", "from", "into", "have", "has", "had", "were", "was", "are", "is",
   "the", "our", "my", "your", "and", "for", "again", "me", "we", "i", "you", "said", "say", "talk", "talked", "talking",
-  "mentioned", "mention", "told", "tell", "decided", "decide", "discussed", "discuss", "open", "opened", "find", "found", "show", "please",
+  "mentioned", "mention", "told", "tell", "shared", "share", "sent", "send", "asked", "ask", "gave", "give", "decided", "decide", "discussed", "discuss", "open", "opened", "find", "found", "show", "please",
   "chat", "conversation", "thread", "discussion", "message", "source", "history", "exact", "exactly", "one", "it", "in", "on", "of",
   "old", "previous", "earlier", "last", "should", "continue", "resume", "pick", "back", "go",
   "to", "a", "an", "the", "idea", "ideas",
@@ -107,7 +107,7 @@ function queryRemainder(value: string, exactPhrase: string | null) {
     .replace(/^\s*(?:continue|resume|pick\s+up|go\s+back\s+to)\s+(?:the\s+)?(?:old|previous|earlier|last|that|our)?\s*(?:chat|conversation|thread|discussion)?\s*/i, "")
     .replace(/^\s*(?:where|what)\s+(?:was|is)\s+(?:that|the)?\s*/i, "")
     .replace(/\b(?:chat|conversation|thread|discussion|message|source)\b/gi, " ")
-    .replace(/\b(?:which|we|i|you|me|did|do|was|were|is|are|talked?|mentioned?|told|tell|said|say|decided?|discussed?|about|again|that|the|our|my|exactly|precisely|specifically)\b/gi, " ")
+    .replace(/\b(?:which|we|i|you|me|did|do|was|were|is|are|talked?|mentioned?|told|tell|shared?|sent|send|asked?|gave|give|said|say|decided?|discussed?|about|again|that|the|our|my|exactly|precisely|specifically)\b/gi, " ")
     .replace(/[-–—]/g, " ")
     .replace(/\b(?:last|this)\s+(?:month|week)\b/gi, " ")
     .replace(/\b(?:between|from|through|until|on)\s+20\d{2}-\d{2}-\d{2}\b/gi, " ")
@@ -252,10 +252,10 @@ function dateRangeForText(value: string, now: Date) {
 }
 
 function roleFilter(value: string): MessageSearchRole[] | null {
-  if (/\b(?:did\s+(?:i|we)\s+(?:say|tell|mention|write|decide|choose|agree|commit)|(?:i|we)\s+(?:said|told|mentioned|wrote|decided|chose|agreed|committed))\b/i.test(value)
-    || /\bwhere\s+(?:i|we)\s+(?:told|said|mentioned|wrote)\b/i.test(value)) return ["user"];
-  if (/\b(?:did\s+(?:you|u)\s+(?:say|tell|mention|write)|(?:you|u)\s+(?:said|told|mentioned|wrote))\b/i.test(value)
-    || /\bwhere\s+(?:you|u)\s+(?:told|said|mentioned|wrote)\b/i.test(value)) return ["assistant"];
+  if (/\b(?:did\s+(?:i|we)\s+(?:say|tell|mention|write|share|send|ask|give|decide|choose|agree|commit)|(?:i|we)\s+(?:said|told|mentioned|wrote|shared|sent|asked|gave|decided|chose|agreed|committed))\b/i.test(value)
+    || /\bwhere\s+(?:i|we)\s+(?:told|said|mentioned|wrote|shared|sent|asked|gave)\b/i.test(value)) return ["user"];
+  if (/\b(?:did\s+(?:you|u)\s+(?:say|tell|mention|write|share|send|ask|give)|(?:you|u)\s+(?:said|told|mentioned|wrote|shared|sent|asked|gave))\b/i.test(value)
+    || /\bwhere\s+(?:you|u)\s+(?:told|said|mentioned|wrote|shared|sent|asked|gave)\b/i.test(value)) return ["assistant"];
   return null;
 }
 

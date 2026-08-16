@@ -156,7 +156,13 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
 
 export async function readMessages(context: AgentContext, input: z.infer<typeof readMessagesInput>, retrieval: MemoryRetrieval) {
   const result = await retrieval.readMessages(context.profileId, input.messageId, input.windowSize);
-  if (!result || result.target.profileId !== context.profileId) return { kind: "message_read" as const, found: false as const, target: null, before: [], after: [], action: null };
+  if (!result
+    || result.target.profileId !== context.profileId
+    || result.thread.profileId !== context.profileId
+    || result.target.messageId !== input.messageId
+    || result.target.threadId !== result.thread.id) {
+    return { kind: "message_read" as const, found: false as const, target: null, before: [], after: [], action: null };
+  }
   return {
     kind: "message_read" as const,
     found: true as const,

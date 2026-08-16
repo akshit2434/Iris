@@ -55,6 +55,9 @@ describe("deterministic historical preflight", () => {
     expect(detectHistoryPreflightIntent("Show me the chat where I told you my laptop model")).toMatchObject({ roles: ["user"], query: "laptop model" });
     expect(detectHistoryPreflightIntent("Show me where you told me the deadline")).toMatchObject({ roles: ["assistant"], query: "deadline" });
     expect(detectHistoryPreflightIntent("show me the chat where u told me the deadline")).toMatchObject({ roles: ["assistant"] });
+    expect(detectHistoryPreflightIntent("Show me the chat where I shared the launch date")).toMatchObject({ roles: ["user"], query: "launch date" });
+    expect(detectHistoryPreflightIntent("Show me the chat where you sent the packing list")).toMatchObject({ roles: ["assistant"], query: "packing list" });
+    expect(detectHistoryPreflightIntent("Show me the chat about the launch date")).toMatchObject({ roles: null, query: "launch date" });
     expect(detectHistoryPreflightIntent("Explain what a database index is.")).toBeNull();
   });
 

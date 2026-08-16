@@ -389,6 +389,23 @@ describe("runtime seams", () => {
     expect(retrieval.readMessages).toHaveBeenCalledWith("profile-a", "00000000-0000-4000-8000-000000000010", 2);
   });
 
+  it("refuses to create an action from an inconsistent message context", async () => {
+    const requestedMessageId = "00000000-0000-4000-8000-000000000010";
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => []),
+      readMessages: vi.fn(async (): Promise<MessageContextWindow> => ({
+        thread: { id: context.threadId, profileId: "profile-b", title: "Foreign", createdAt: "2026-08-14T12:00:00.000Z", updatedAt: "2026-08-14T12:00:00.000Z" },
+        target: { messageId: requestedMessageId, threadId: context.threadId, profileId: "profile-a", role: "user", content: "A prior decision", createdAt: "2026-08-14T12:00:00.000Z" },
+        before: [], after: [],
+      })),
+      listMemory: vi.fn(async () => []), readMemory: vi.fn(async () => null), searchMemory: vi.fn(async () => []), currentRevision: vi.fn(async () => 0),
+    };
+
+    await expect(readMessages(context, { messageId: requestedMessageId, windowSize: 2 }, retrieval)).resolves.toEqual({
+      kind: "message_read", found: false, target: null, before: [], after: [], action: null,
+    });
+  });
+
   it("registers only the governed memory patch write and derives its source from context", async () => {
     const mutation: MemoryMutationService = { apply: vi.fn(async (input) => ({ status: "applied" as const, canonicalKey: input.canonicalKey, revision: { profileId: input.profileId, itemId: "doc", canonicalKey: input.canonicalKey, itemRevision: 1, profileGlobalRevision: 1, revisionId: "rev", sourceId: "prov", contentHash: "a".repeat(64) } })) };
     const turnContext = createAgentContext({ ...context, currentUserMessageId: "00000000-0000-4000-8000-000000000010", agentRunId: "00000000-0000-4000-8000-000000000012" });

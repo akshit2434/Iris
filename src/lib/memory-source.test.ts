@@ -42,6 +42,20 @@ describe("memory source actions", () => {
     expect(buildOpenMessageAction("not-a-uuid", action.messageId)).toBeNull();
   });
 
+  it("rejects an action whose destination disagrees with its owning result", () => {
+    expect(memorySourceRows("search_messages", {
+      kind: "message_search",
+      results: [{
+        profileId: "profile-a",
+        threadId: action.threadId,
+        messageId: action.messageId,
+        action: { ...action, messageId: "00000000-0000-4000-8000-000000000099" },
+        excerpt: "A forged destination",
+        createdAt: "2026-08-14T12:00:00.000Z",
+      }],
+    }, "profile-a")).toEqual([]);
+  });
+
   it("replays deterministic preflight sources as internal message actions", () => {
     expect(memorySourceRows("history_preflight", {
       kind: "history_preflight",

@@ -94,8 +94,14 @@ function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceR
   if (!profileId || (expectedProfileId && profileId !== expectedProfileId)) return null;
   // Older persisted/search projections may omit the derived action. Rebuild it
   // only from the hit's own validated IDs; never accept a model-supplied URL.
-  const action = validateOpenMessageAction(candidate.action)
-    ?? buildOpenMessageAction(candidate.threadId, candidate.messageId);
+  const rowThreadId = isUuid(candidate.threadId) ? candidate.threadId : null;
+  const rowMessageId = isUuid(candidate.messageId) ? candidate.messageId : null;
+  const suppliedAction = validateOpenMessageAction(candidate.action);
+  const action = suppliedAction
+    && (!rowThreadId || suppliedAction.threadId === rowThreadId)
+    && (!rowMessageId || suppliedAction.messageId === rowMessageId)
+    ? suppliedAction
+    : suppliedAction ? null : buildOpenMessageAction(rowThreadId, rowMessageId);
   const excerpt = boundedText(candidate.excerpt, MAX_EXCERPT_LENGTH);
   const createdAt = boundedText(candidate.createdAt, 80);
   if (!action || !excerpt || !createdAt) return null;
