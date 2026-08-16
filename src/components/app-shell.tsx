@@ -9,6 +9,7 @@ import { ProceduralBlur } from "@/components/procedural-blur";
 import { ProfileProvider, useProfile } from "@/components/profile-provider";
 import { ChatSurfaceProvider, useChatSurface } from "@/components/chat-surface-context";
 import { DelayedPagePresence } from "@/components/delayed-page-presence";
+import { ChatScreen } from "@/components/chat-screen";
 import { canStartChatCreation, createChatExitCoordinator, type ChatExitCoordinator } from "@/lib/chat-transition";
 import { isUnsavedChatPath } from "@/lib/chat-route";
 
@@ -99,7 +100,7 @@ function ShellContents({ children }: Readonly<{ children: ReactNode }>) {
 
         <main className={`relative overflow-x-clip ${inChat ? "min-h-dvh" : profileId ? "min-h-dvh pb-28 pt-16 lg:pb-8 lg:pt-0" : "min-h-dvh pt-16"}`}>
           <DelayedPagePresence active={!isReady} className="min-h-dvh">
-            <div className={isExiting ? "chat-route-exit" : undefined}>{children}</div>
+            <div className={isExiting ? "chat-route-exit" : undefined}>{inChat ? <ChatScreen /> : children}</div>
           </DelayedPagePresence>
         </main>
 

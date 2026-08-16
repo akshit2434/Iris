@@ -16,8 +16,8 @@ import { DelayedPagePresence } from "@/components/delayed-page-presence";
 import { buildOpenMessageHref, memoryItemRows, memorySourceRows } from "@/lib/memory-source";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
-import { isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
-import { INITIAL_SCROLL_FOLLOW_STATE, measureScrollFollowState, returnToBottomState, type ScrollFollowState } from "@/lib/chat-scroll";
+import { isNewChatPromotion, isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
+import { createBottomScrollScheduler, INITIAL_SCROLL_FOLLOW_STATE, measureScrollFollowState, returnToBottomState, type ScrollFollowState } from "@/lib/chat-scroll";
 import {
   AgentStreamParser,
   assistantStreamPhase,
@@ -69,18 +69,20 @@ export function ChatScreen() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const streamBufferRef = useRef<ReturnType<typeof createStreamEventBuffer> | null>(null);
   const scrollFollowRef = useRef<ScrollFollowState>(INITIAL_SCROLL_FOLLOW_STATE);
   const returningToBottomRef = useRef(false);
-  const scrollFrameRef = useRef<number | null>(null);
+  const scrollSchedulerRef = useRef(createBottomScrollScheduler({
+    reducedMotion: () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  }));
   const scrollStateFrameRef = useRef<number | null>(null);
   const [scrollFollow, setScrollFollow] = useState<ScrollFollowState>(INITIAL_SCROLL_FOLLOW_STATE);
   const entryAnimationRef = useRef(false);
   const [animateEmptyEntry, setAnimateEmptyEntry] = useState(false);
   const resolvedHashRef = useRef<string | null>(null);
   const persistedThreadIdRef = useRef<string | null>(null);
+  const previousThreadIdRef = useRef(threadId);
   const temporaryIdRef = useRef<string | null>(null);
   const [isTemporary, setIsTemporary] = useState(false);
 
@@ -94,6 +96,11 @@ export function ChatScreen() {
   const messages = streamState.messages;
   const toolActivities = streamState.toolActivities;
   const hasMessages = messages.length > 0;
+  const hasMessagesRef = useRef(hasMessages);
+
+  useEffect(() => {
+    hasMessagesRef.current = hasMessages;
+  }, [hasMessages]);
 
   useEffect(() => {
     entryAnimationRef.current = false;
@@ -121,6 +128,8 @@ export function ChatScreen() {
 
   useEffect(() => {
     if (!profileId || !threadId) return;
+    const previousThreadId = previousThreadIdRef.current;
+    previousThreadIdRef.current = threadId;
     if (isNewChat) {
       setThread(null);
       setDraftTitle("New chat");
@@ -130,7 +139,11 @@ export function ChatScreen() {
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    const promotedFromNewChat = isNewChatPromotion(previousThreadId, threadId) && hasMessagesRef.current;
+    // The first-message transaction has already committed before the route
+    // handoff. Keep the live presentation and composer mounted while the
+    // persisted thread metadata is reconciled in the background.
+    if (!promotedFromNewChat) setLoading(true);
     setError(null);
     void fetch(`/api/threads/${threadId}`, { cache: "no-store" })
       .then(async (response) => {
@@ -176,7 +189,10 @@ export function ChatScreen() {
     };
     updateFollowState();
     container.addEventListener("scroll", updateFollowState, { passive: true });
-    const cancelReturnToBottom = () => { returningToBottomRef.current = false; };
+    const cancelReturnToBottom = () => {
+      returningToBottomRef.current = false;
+      scrollSchedulerRef.current.cancel();
+    };
     container.addEventListener("touchstart", cancelReturnToBottom, { passive: true });
     container.addEventListener("wheel", cancelReturnToBottom, { passive: true });
     return () => {
@@ -192,19 +208,14 @@ export function ChatScreen() {
 
   useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container || !scrollFollowRef.current.follow) return;
-    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
-    scrollFrameRef.current = window.requestAnimationFrame(() => {
-      scrollFrameRef.current = null;
-      if (scrollFollowRef.current.follow) container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
-    });
-    return () => {
-      if (scrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(scrollFrameRef.current);
-        scrollFrameRef.current = null;
-      }
-    };
+    if (!container) return;
+    scrollSchedulerRef.current.request(
+      () => scrollFollowRef.current.follow,
+      (motion) => container.scrollTo({ top: container.scrollHeight, behavior: motion }),
+    );
   }, [messages, toolActivities]);
+
+  useEffect(() => () => scrollSchedulerRef.current.cancel(), [threadId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -243,7 +254,7 @@ export function ChatScreen() {
 
   useEffect(() => () => {
     streamBufferRef.current?.cancel();
-    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    scrollSchedulerRef.current.cancel();
     if (scrollStateFrameRef.current !== null) window.cancelAnimationFrame(scrollStateFrameRef.current);
   }, []);
 
@@ -413,6 +424,7 @@ export function ChatScreen() {
   function returnToBottom() {
     const container = scrollContainerRef.current;
     if (!container) return;
+    scrollSchedulerRef.current.cancel();
     const next = returnToBottomState();
     scrollFollowRef.current = next;
     setScrollFollow(next);
@@ -431,7 +443,12 @@ export function ChatScreen() {
       <header className="absolute inset-x-0 top-0 z-40 h-28">
         <ProceduralBlur edge="top" />
         <div className="relative flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
-          <Link href="/history" className="soft-press flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-white/58 text-xl font-light text-slate-700 shadow-[inset_0_0_0_1px_rgba(255,255,255,.8)] backdrop-blur-xl" aria-label="Back to history">←</Link>
+          <Link href="/history" className="soft-press flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-white/58 text-slate-700 shadow-[inset_0_0_0_1px_rgba(255,255,255,.8)] backdrop-blur-xl" aria-label="Back to history">
+            <svg viewBox="0 0 24 24" className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" aria-hidden="true">
+              <path d="M19 12H5" />
+              <path d="m10 6-6 6 6 6" />
+            </svg>
+          </Link>
           <div className="min-w-0 flex-1">
             {editingTitle && thread ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-xl bg-white/65 px-3 py-2 text-sm font-semibold backdrop-blur-xl" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="rounded-xl bg-[#111827] px-3 py-2 text-xs font-semibold text-white">{savingTitle ? "…" : "Save"}</button><button type="button" onClick={() => setEditingTitle(false)} className="px-2 py-2 text-xs font-semibold text-slate-500">Cancel</button></div> : thread ? <button type="button" onClick={() => setEditingTitle(true)} className="max-w-full truncate text-left text-sm font-semibold tracking-tight text-slate-800">{thread.title}</button> : <span className="flex max-w-full items-center gap-2 truncate text-sm font-semibold tracking-tight text-slate-800">New chat{isTemporary ? <span className="rounded-full bg-white/68 px-2 py-0.5 text-[10px] font-semibold tracking-normal text-slate-500">Temporary</span> : null}</span>}
           </div>
@@ -444,7 +461,6 @@ export function ChatScreen() {
         <div className="mx-auto max-w-3xl space-y-7">
           {messages.map((message) => <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
           <UnattachedToolActivities messages={messages} toolActivities={toolActivities} profileId={profileId} />
-          <div ref={messagesEndRef} />
         </div>
       </div>
 

@@ -4,6 +4,10 @@ export function isUnsavedChatPath(pathname: string) {
   return pathname === "/chat/new";
 }
 
+export function isNewChatPromotion(previousThreadId: string, nextThreadId: string) {
+  return previousThreadId === UNSAVED_CHAT_ID && isPersistedThreadId(nextThreadId);
+}
+
 export function messageEndpointForThread(threadId: string) {
   return threadId === UNSAVED_CHAT_ID
     ? "/api/threads/new/messages"
