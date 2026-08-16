@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "streamdown/styles.css";
+@source "../node_modules/streamdown/dist/*.js";
 
 :root {
   --iris-background: #f5f7fb;
@@ -16,6 +18,7 @@
 html {
   min-height: 100%;
   background: var(--iris-background);
+  overflow-x: clip;
   overscroll-behavior-y: none;
 }
 
@@ -43,15 +46,31 @@ body::before {
   pointer-events: none;
 }
 
-button, a, textarea, input { -webkit-tap-highlight-color: transparent; }
+:where(button, a, input, textarea, select, summary, [role="button"], [tabindex]) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:where(button, a, input, textarea, select, summary, [role="button"], [tabindex]):focus {
+  outline: none;
+}
+
+:where(button, a, input, textarea, select, summary, [role="button"], [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .94), 0 0 0 5px rgba(73, 120, 237, .34);
+}
+
+html[data-input-modality="pointer"] :where(button, a, input, textarea, select, summary, [role="button"], [tabindex]):focus-visible {
+  box-shadow: none;
+}
+
+/* The composer already lifts its glass surface on focus-within. */
+.chat-composer-focus-cue :where(textarea):focus-visible {
+  box-shadow: none;
+}
+
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
-
-:focus-visible {
-  outline: 3px solid rgba(73, 120, 237, 0.28);
-  outline-offset: 3px;
-}
 
 ::selection { background: #dce7ff; }
 
@@ -110,18 +129,72 @@ button:disabled { cursor: default; }
   animation: ambient-drift 12s ease-in-out infinite alternate;
 }
 
+.page-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(0, 5px, 0) scale(.985);
+  transition: opacity .24s ease, transform .32s cubic-bezier(.2,.8,.2,1);
+}
+.page-loader--visible { opacity: 1; transform: none; }
+.page-loader--exiting { opacity: 0; transform: translate3d(0, -3px, 0) scale(1.015); }
+.page-loader__orb {
+  position: relative;
+  display: block;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255,255,255,.9);
+  border-radius: 999px;
+  background: conic-gradient(from 200deg, rgba(73,120,237,.08), rgba(114,205,255,.7), rgba(159,151,255,.38), rgba(73,120,237,.08));
+  box-shadow: 0 0 0 8px rgba(255,255,255,.18), 0 12px 34px rgba(73,120,237,.18), inset 0 1px 0 rgba(255,255,255,.92);
+  filter: blur(.15px);
+}
+.page-loader__orb::before {
+  position: absolute;
+  inset: 6px;
+  border-radius: inherit;
+  background: rgba(245,247,251,.82);
+  box-shadow: 0 0 16px rgba(114,205,255,.38);
+  content: "";
+}
+.page-loader--visible .page-loader__orb { animation: page-loader-glow 2.4s ease-in-out infinite; }
+
 .iris-scrollbar { scrollbar-color: rgba(122,136,162,.28) transparent; scrollbar-width: thin; }
 .iris-scrollbar::-webkit-scrollbar { width: 6px; }
 .iris-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(122,136,162,.25); }
 
-.thinking-dot { animation: thinking 1.15s ease-in-out infinite; }
-.thinking-dot:nth-child(2) { animation-delay: .14s; }
-.thinking-dot:nth-child(3) { animation-delay: .28s; }
+.assistant-thinking { animation: assistant-thinking-enter .24s cubic-bezier(.2,.8,.2,1) both; }
+.tool-activity-row { animation: tool-activity-enter .24s cubic-bezier(.2,.8,.2,1) both; transition: background-color .25s ease, border-color .25s ease, box-shadow .25s ease; }
+.tool-pulse { animation: tool-pulse 1.4s ease-in-out infinite; }
 .message-arrive { animation: message-arrive .42s cubic-bezier(.2,.8,.2,1) both; }
+.message-source-highlight { animation: message-source-highlight 1.35s cubic-bezier(.2,.8,.2,1) both; }
+.source-card { animation: source-card-enter .26s cubic-bezier(.2,.8,.2,1) both; }
+.source-preview-dialog[open] { animation: source-preview-enter .22s cubic-bezier(.2,.8,.2,1) both; }
+.source-preview-dialog[open]::backdrop { background: rgba(35, 47, 75, .2); backdrop-filter: blur(8px); animation: source-preview-backdrop-enter .2s ease-out both; }
+.source-preview-dialog--closing[open] { animation: source-preview-exit .16s ease-in both; }
+.source-preview-dialog--closing[open]::backdrop { animation: source-preview-backdrop-exit .16s ease-in both; }
+.chat-route-exit { animation: chat-route-exit .15s cubic-bezier(.22,.8,.24,1) both; pointer-events: none; transform-origin: 50% 42%; }
+.chat-empty-entry { animation: chat-empty-entry .28s cubic-bezier(.2,.8,.2,1) both; transform-origin: 50% 44%; }
 
-@keyframes thinking { 0%,70%,100% { transform: translateY(0); opacity:.32; } 35% { transform: translateY(-4px); opacity:1; } }
+@keyframes assistant-thinking-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes tool-activity-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes tool-pulse { 0%,100% { opacity: .42; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
 @keyframes ambient-drift { from { transform: translate3d(-2%, -2%, 0) scale(.96); } to { transform: translate3d(4%, 3%, 0) scale(1.05); } }
+@keyframes page-loader-glow { 0%,100% { transform: scale(.94); opacity: .72; } 50% { transform: scale(1); opacity: 1; } }
 @keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
+@keyframes message-source-highlight { from { background: rgba(231, 237, 255, .82); box-shadow: 0 0 0 5px rgba(73, 120, 237, .12); } to { background: transparent; box-shadow: 0 0 0 0 transparent; } }
+@keyframes source-card-enter { from { opacity: 0; filter: blur(4px); transform: translateY(4px); } to { opacity: 1; filter: blur(0); transform: none; } }
+@keyframes source-preview-enter { from { opacity: 0; filter: blur(7px); transform: translateY(8px) scale(.985); } to { opacity: 1; filter: blur(0); transform: none; } }
+@keyframes source-preview-exit { from { opacity: 1; filter: blur(0); transform: none; } to { opacity: 0; filter: blur(5px); transform: translateY(4px) scale(.99); } }
+@keyframes source-preview-backdrop-enter { from { opacity: 0; } to { opacity: 1; } }
+@keyframes source-preview-backdrop-exit { from { opacity: 1; } to { opacity: 0; } }
+@keyframes chat-route-exit { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: .04; transform: translate3d(-6px, 0, 0) scale(.996); } }
+@keyframes chat-empty-entry { from { opacity: 0; transform: translate3d(0, 7px, 0) scale(.997); } to { opacity: 1; transform: none; } }
 
 @supports not (backdrop-filter: blur(1px)) {
   .glass-surface { background: rgba(255,255,255,.94); }

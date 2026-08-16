@@ -5,6 +5,7 @@ node_modules/
 !.env.example
 .playwright-cli/
 output-playwright/
+output/
 .DS_Store
 
 # Private product context belongs only in the local checkout.

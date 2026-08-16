@@ -14,7 +14,6 @@ export function HomeScreen() {
   const { profileId, profileLabels, isReady } = useProfile();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadThreads = useCallback(async () => {
@@ -34,24 +33,15 @@ export function HomeScreen() {
 
   useEffect(() => { if (profileId) void loadThreads(); }, [loadThreads, profileId]);
 
-  async function createChat() {
+  function createChat() {
     setError(null);
-    setIsCreating(true);
-    try {
-      const response = await fetch("/api/threads", { method: "POST" });
-      const body = (await response.json()) as { thread?: Thread; error?: string };
-      if (!response.ok || !body.thread) throw new Error(body.error ?? "Could not create a chat.");
-      router.push(`/chat/${body.thread.id}`);
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Could not create a chat.");
-      setIsCreating(false);
-    }
+    router.push("/chat/new");
   }
 
-  if (!isReady) return <HomeSkeleton />;
+  if (!isReady) return null;
 
   if (!profileId) {
-    return <FluidReveal className="relative mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-4xl items-center overflow-hidden px-5 py-12 sm:px-9">
+    return <FluidReveal className="relative mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-4xl items-center px-5 py-12 sm:px-9">
       <div className="ambient-orb -right-36 top-10" />
       <div className="relative w-full">
         <div data-reveal className="mb-14 max-w-xl"><IrisMark size={58} priority /><h1 className="mt-7 text-[clamp(2.65rem,11vw,5.4rem)] font-medium leading-[.98] tracking-[-.055em] text-slate-950">Choose your space.</h1></div>
@@ -60,7 +50,7 @@ export function HomeScreen() {
     </FluidReveal>;
   }
 
-  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl overflow-hidden px-5 pb-8 pt-10 sm:px-9 sm:pt-16 lg:min-h-dvh lg:pt-20">
+  return <FluidReveal className="relative mx-auto min-h-[calc(100dvh-4rem)] w-full max-w-5xl px-5 pb-8 pt-10 sm:px-9 sm:pt-16 lg:min-h-dvh lg:pt-20">
     <div className="ambient-orb -right-40 -top-20" />
     <section className="relative mx-auto max-w-3xl pt-3 sm:pt-7">
       <div data-reveal className="flex items-start justify-between gap-6">
@@ -68,10 +58,10 @@ export function HomeScreen() {
         <IrisMark size={52} priority />
       </div>
 
-      <button data-reveal type="button" onClick={() => void createChat()} disabled={isCreating} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
+      <button data-reveal type="button" onClick={createChat} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
         <span className="flex-1 text-base font-medium text-slate-500 sm:text-lg">Start a conversation</span>
         <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#111827] text-white shadow-[0_10px_24px_rgba(17,24,39,.18)] transition group-hover:translate-x-0.5" aria-hidden="true">
-          {isCreating ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : <span className="text-xl font-light">↗</span>}
+          <span className="text-xl font-light">↗</span>
         </span>
       </button>
 
@@ -83,8 +73,4 @@ export function HomeScreen() {
       </section>
     </section>
   </FluidReveal>;
-}
-
-function HomeSkeleton() {
-  return <div className="mx-auto max-w-3xl animate-pulse px-5 pt-14"><div className="h-12 w-3/4 rounded-2xl bg-white/55" /><div className="mt-10 h-20 rounded-[28px] bg-white/55" /></div>;
 }

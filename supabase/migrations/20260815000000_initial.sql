@@ -34,8 +34,8 @@ create table if not exists public.messages (
 create table if not exists public.thread_context (
   thread_id uuid primary key,
   profile_id text not null references public.profiles(id) on delete cascade,
-  continuity_summary text,
-  pinned_notes text[] not null default '{}',
+  active_continuity_checkpoint_id uuid,
+  continuity_revision bigint not null default 0,
   memory_revision_seen bigint not null default 0,
   updated_at timestamptz not null default now(),
   constraint thread_context_thread_profile_fkey
