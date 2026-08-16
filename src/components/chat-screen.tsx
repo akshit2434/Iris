@@ -496,7 +496,7 @@ export function ChatScreen() {
         </div>
       </header>
 
-      <div ref={scrollContainerRef} className="iris-scrollbar flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
+      <div ref={scrollContainerRef} className="iris-scrollbar min-w-0 w-full flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
           {messages.map((message) => <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
