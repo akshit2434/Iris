@@ -39,4 +39,57 @@ describe("governed structured memory mutation", () => {
     vi.mocked(memoryStore.readMessageContext!).mockResolvedValue(null);
     await expect(createMemoryMutationService(memoryStore).apply(base)).resolves.toMatchObject({ status: "conflict" });
   });
+
+  it("records corrections as superseding provenance while keeping one active canonical item", async () => {
+    const memoryStore = store([makeItem(4)]);
+    memoryStore.liftSuppression = vi.fn(async () => 0);
+    const result = await createMemoryMutationService(memoryStore).apply({
+      ...base,
+      mutationKind: "supersede",
+      expectedItemRevision: 4,
+      content: "The user now prefers concise answers with direct recommendations.",
+    });
+    expect(result).toMatchObject({ status: "applied" });
+    expect(memoryStore.applyItemRevision).toHaveBeenCalledWith(expect.objectContaining({
+      mutationKind: "supersede",
+      expectedItemRevision: 4,
+      provenance: expect.objectContaining({ relation: "corrects" }),
+    }));
+  });
+
+  it("restores an archived item only through an explicit write and lifts suppression", async () => {
+    const archived = { ...makeItem(3), status: "archived" as const, archivedAt: "yesterday" };
+    const memoryStore = store([archived]);
+    memoryStore.liftSuppression = vi.fn(async () => 1);
+    const result = await createMemoryMutationService(memoryStore).apply({
+      ...base,
+      content: "The user prefers concise answers again.",
+    });
+    expect(result).toMatchObject({ status: "applied" });
+    expect(memoryStore.applyItemRevision).toHaveBeenCalledWith(expect.objectContaining({ mutationKind: "restore", expectedItemRevision: 3 }));
+    expect(memoryStore.liftSuppression).toHaveBeenCalledWith("profile-a", "profile.communication");
+  });
+
+  it("does not race two writes past the database revision guard", async () => {
+    const memoryStore = store([makeItem(4)]);
+    let writes = 0;
+    vi.mocked(memoryStore.applyItemRevision).mockImplementation(async () => {
+      writes += 1;
+      if (writes > 1) throw new Error("Stale memory item revision");
+      return { profileId: "profile-a", itemId: "00000000-0000-4000-8000-000000000020", canonicalKey: "profile.communication", itemRevision: 5, profileGlobalRevision: 5, revisionId: "00000000-0000-4000-8000-000000000021", sourceId: "00000000-0000-4000-8000-000000000022", contentHash: "a".repeat(64) };
+    });
+    const service = createMemoryMutationService(memoryStore);
+    const results = await Promise.all([
+      service.apply({ ...base, mutationKind: "supersede", expectedItemRevision: 4, content: "New answer style A." }),
+      service.apply({ ...base, toolCallId: "call-2", mutationKind: "supersede", expectedItemRevision: 4, content: "New answer style B." }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual(["applied", "stale"]);
+  });
+
+  it("rejects a credential before the store is called", async () => {
+    const memoryStore = store();
+    const result = await createMemoryMutationService(memoryStore).apply({ ...base, content: "Remember my password: hunter2" });
+    expect(result).toMatchObject({ status: "conflict" });
+    expect(memoryStore.applyItemRevision).not.toHaveBeenCalled();
+  });
 });

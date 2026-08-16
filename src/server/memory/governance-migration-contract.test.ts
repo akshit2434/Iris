@@ -18,6 +18,7 @@ describe("memory governance migration contract", () => {
       "source_message_ids uuid[]",
       "source_message_ids', to_jsonb(proposal.source_message_ids)",
       "preserve every source message",
+      "'relation', case when proposal.mutation_kind = 'supersede'",
     ]) expect(migration).toContain(required);
   });
 

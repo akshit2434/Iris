@@ -319,6 +319,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         let persistedSequence = 0;
         let assistantContent = "";
         let assistantPersisted = false;
+        let assistantTokenEstimate = 0;
         let actualUsage: {
           inputTokens: number | null;
           outputTokens: number | null;
@@ -448,6 +449,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             throw new Error("The assistant returned an empty response.");
           }
 
+          assistantTokenEstimate = estimator.estimateMessage({ role: "assistant", content: completedAssistant.content });
           await createMessage({
             id: assistantMessageId,
             profileId,
@@ -456,7 +458,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             content: completedAssistant.content,
             agentRunId: run.id,
             isComplete: completedAssistant.isComplete,
-            estimatedTokens: estimator.estimateMessage({ role: "assistant", content: completedAssistant.content }),
+            estimatedTokens: assistantTokenEstimate,
             tokenizer: estimator.metadata,
           });
           assistantPersisted = true;
@@ -491,9 +493,18 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               // A reconciliation update must never turn a completed chat run into a failure.
             }
           }
-          if (shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted })) {
+          const sourceTokenTotal = history.reduce(
+            (total, message) => total + estimator.estimateMessage({ role: message.role, content: message.content }),
+            assistantTokenEstimate,
+          );
+          const idleSignal = Date.now() - new Date(thread.thread.updatedAt).getTime() >= 30_000;
+          if (shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted, sourceTokenTotal, idleSignal })) {
             try {
-              await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id);
+              await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id, {
+                sourceTokenTotal,
+                idleSignal,
+                debounceSeconds: 30,
+              });
             } catch {
               // Memory queue availability must not turn a completed chat run into a failure.
             }

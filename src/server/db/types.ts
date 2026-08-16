@@ -453,6 +453,7 @@ export type Database = {
           profile_id: "profile-a" | "profile-b";
           thread_id: string;
           source_run_id: string;
+          source_token_total: number;
           status: "pending" | "running" | "completed" | "failed" | "skipped";
           attempts: number;
           available_at: string;
@@ -470,6 +471,7 @@ export type Database = {
           profile_id: "profile-a" | "profile-b";
           thread_id: string;
           source_run_id: string;
+          source_token_total?: number;
           status?: "pending" | "running" | "completed" | "failed" | "skipped";
           attempts?: number;
           available_at?: string;
@@ -487,6 +489,7 @@ export type Database = {
           profile_id: "profile-a" | "profile-b";
           thread_id: string;
           source_run_id: string;
+          source_token_total: number;
           status: "pending" | "running" | "completed" | "failed" | "skipped";
           attempts: number;
           available_at: string;
@@ -790,7 +793,7 @@ export type Database = {
         Returns: number;
       };
       enqueue_memory_consolidation_job: {
-        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string };
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_thread_id: string; p_source_run_id: string; p_source_token_total?: number; p_idle_signal?: boolean; p_debounce_seconds?: number };
         Returns: Array<Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]>;
       };
       claim_memory_consolidation_jobs: {

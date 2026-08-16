@@ -161,14 +161,17 @@ begin
     select * into applied from public.apply_memory_item_revision(proposal.profile_id, proposal.canonical_key, proposal.proposed_content,
       proposal.category, proposal.value_scope, proposal.origin, proposal.confidence, proposal.importance, proposal.sensitivity, 'active', proposal.mutation_kind,
       proposal.expected_item_revision, 'message', proposal.thread_id, first_source_message_id, null, null, proposal.rationale,
-      jsonb_build_object('proposal_id', proposal.id, 'job_id', proposal.job_id, 'source_run_id', proposal.source_run_id, 'source_message_ids', to_jsonb(proposal.source_message_ids)), proposal.idempotency_key);
+      jsonb_build_object('proposal_id', proposal.id, 'job_id', proposal.job_id, 'source_run_id', proposal.source_run_id,
+        'source_message_ids', to_jsonb(proposal.source_message_ids),
+        'relation', case when proposal.mutation_kind = 'supersede' then 'corrects' else 'derived' end), proposal.idempotency_key);
     -- The revision RPC records the first source. Preserve every source message
     -- from the governed proposal against the same immutable revision so exact
     -- provenance is never reduced to a summary or a single representative hit.
     foreach first_source_message_id in array proposal.source_message_ids[2:array_length(proposal.source_message_ids, 1)] loop
       insert into public.memory_item_sources(profile_id, item_id, revision_id, source_kind, source_thread_id, source_message_id, metadata)
       values (proposal.profile_id, applied.item_id, applied.revision_id, 'message', proposal.thread_id, first_source_message_id,
-        jsonb_build_object('proposal_id', proposal.id, 'job_id', proposal.job_id, 'source_run_id', proposal.source_run_id));
+        jsonb_build_object('proposal_id', proposal.id, 'job_id', proposal.job_id, 'source_run_id', proposal.source_run_id,
+          'relation', case when proposal.mutation_kind = 'supersede' then 'corrects' else 'derived' end));
     end loop;
   exception when others then
     conflict_reason := left(sqlerrm, 500);

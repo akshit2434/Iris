@@ -49,6 +49,25 @@ raw history and revisions. Archive also creates a suppression record.
   synthesizer; proposal payloads are structured, suppression-checked, and
   source-validated.
 
+## Governed lifecycle
+
+- Explicit `memory_patch` writes are synchronous and profile-scoped. Create,
+  correction, and restore operations are idempotent, optimistic-revision
+  guarded, and linked to the persisted user turn.
+- Corrections use a `supersede` mutation and `corrects` provenance relation;
+  prior revisions and every source remain immutable.
+- Ordinary completed runs enqueue automatic candidates only after a cumulative
+  serialized-token watermark or an idle/debounce flush. The enqueue RPC keeps
+  the per-thread watermark and prevents duplicate extraction jobs under races.
+- Automatic proposals must be inferred, normal-sensitivity, sufficiently
+  confident, source-owned, safe, and non-ambiguous. Credentials, one-time
+  codes, transient observations, role-play, speculative psychology, and
+  sensitive third-party data are rejected before persistence.
+- Forget/archive writes a durable suppression keyed by profile, canonical key,
+  and content fingerprint. Retained history cannot recreate it until an
+  explicit write lifts the suppression. Archived and superseded items never
+  enter normal context.
+
 Continuity checkpoints are token-triggered and worker-driven. Dreaming
 synthesis, deterministic historical preflight, temporary chat, and memory
 settings remain later slices. The worker is opt-in through

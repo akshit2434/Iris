@@ -2,7 +2,7 @@ import "server-only";
 
 import type { ProfileId } from "@/lib/profiles";
 import type { AppliedMemoryItemRevision, MemoryItemCategory, MemoryItemValueScope, MemoryStore } from "@/server/memory/types";
-import { assertMemoryProfileId, validateCanonicalKey, validateMemoryContent, validateMemoryUuid } from "@/server/memory/validation";
+import { assertMemoryProfileId, validateCanonicalKey, validateMemoryContent, validateMemoryContentSafety, validateMemoryUuid } from "@/server/memory/validation";
 
 const MAX_GOVERNED_MEMORY_LENGTH = 20_000;
 
@@ -47,6 +47,16 @@ export function createMemoryMutationService(store: MemoryStore): MemoryMutationS
       if (!input.toolCallId.trim() || input.toolCallId.length > 200) throw new Error("Memory mutation tool identity is invalid.");
       const canonicalKey = validateCanonicalKey(input.canonicalKey);
       const content = validateMemoryContent(input.content.trim());
+      try {
+        validateMemoryContentSafety(content);
+      } catch (error) {
+        return {
+          status: "conflict",
+          canonicalKey,
+          reason: error instanceof Error ? error.message : "This content cannot be saved as memory.",
+          candidates: [],
+        };
+      }
       if (content.length > MAX_GOVERNED_MEMORY_LENGTH) return { status: "conflict", canonicalKey, reason: "Memory patches are limited to 20,000 characters.", candidates: [] };
       if (input.mutationKind === "create" && input.expectedItemRevision !== null) return { status: "stale", canonicalKey, reason: "Create patches must use a null expected revision.", candidates: [] };
       if (input.mutationKind !== "create" && (input.expectedItemRevision === null || !Number.isSafeInteger(input.expectedItemRevision) || input.expectedItemRevision < 0)) return { status: "stale", canonicalKey, reason: "Update and merge patches require the current expected revision.", candidates: [] };
@@ -67,7 +77,14 @@ export function createMemoryMutationService(store: MemoryStore): MemoryMutationS
           profileId: input.profileId, canonicalKey, content, category: input.category ?? "other", valueScope: input.valueScope ?? "single",
           origin: "explicit", confidence: 1, importance: 0.7, sensitivity: "normal", status: "active", mutationKind,
           expectedItemRevision, idempotencyKey: `memory-patch:${input.agentRunId}:${input.toolCallId}`,
-          provenance: { sourceKind: "message", sourceThreadId: input.threadId, sourceMessageId: input.currentUserMessageId, sourceExcerpt: content.slice(0, 2_000) },
+          provenance: {
+            sourceKind: "message",
+            sourceThreadId: input.threadId,
+            sourceMessageId: input.currentUserMessageId,
+            sourceExcerpt: content.slice(0, 2_000),
+            relation: input.mutationKind === "supersede" || input.mutationKind === "update" ? "corrects" : "supports",
+            metadata: { mutationKind: input.mutationKind, explicit: true },
+          },
         });
         if (store.liftSuppression) await store.liftSuppression(input.profileId, canonicalKey);
         return { status: "applied", canonicalKey, revision };

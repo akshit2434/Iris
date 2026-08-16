@@ -5,11 +5,13 @@ import { hashMemoryContent } from "@/server/memory/hash";
 import { createSupabaseMemoryGovernanceStore } from "@/server/memory/governance-repository";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import type { MemoryItem, MemoryConsolidationJob, MemoryGovernanceStore, MemoryMessageForIndex, MemoryMutationProposal, MemoryProposalApplyResult, MemoryStore, MemoryItemCategory, MemoryItemValueScope, MemoryItemOrigin } from "@/server/memory/types";
-import { validateCanonicalKey, validateMemoryContent, validateMemoryUuid } from "@/server/memory/validation";
+import { validateCanonicalKey, validateMemoryContent, validateMemoryContentSafety, validateMemoryUuid } from "@/server/memory/validation";
 
 const MAX_PROPOSALS = 3;
 const MAX_SOURCE_MESSAGES = 10;
 const MAX_PROPOSAL_CONTENT = 20_000;
+export const MIN_AUTOMATIC_CONSOLIDATION_TOKENS = 1_200;
+export const CONSOLIDATION_IDLE_DEBOUNCE_MS = 30_000;
 
 export type ConsolidationProposalInput = {
   canonicalKey: string;
@@ -28,7 +30,30 @@ export type ConsolidationProposalInput = {
 export type ConsolidatorInput = { job: MemoryConsolidationJob; messages: readonly MemoryMessageForIndex[]; items: readonly MemoryItem[] };
 export type MemoryConsolidator = { propose: (input: ConsolidatorInput) => Promise<ConsolidationProposalInput[]> };
 
-export function shouldEnqueueConsolidation(input: { runStatus: "completed" | "failed"; assistantPersisted: boolean }) { return input.runStatus === "completed" && input.assistantPersisted; }
+/**
+ * This is a cheap preflight only. The durable per-thread token watermark and
+ * debounce are checked again in the enqueue RPC, so concurrent requests cannot
+ * accidentally create a second extraction job. `sourceTokenTotal` is the
+ * cumulative serialized source size, not a message count.
+ */
+export function shouldEnqueueConsolidation(input: {
+  runStatus: "completed" | "failed";
+  assistantPersisted: boolean;
+  sourceTokenTotal?: number;
+  idleSignal?: boolean;
+}) {
+  if (input.runStatus !== "completed" || !input.assistantPersisted) return false;
+  if (input.idleSignal === true) return true;
+  // Preserve the old helper's safe default for callers that do not yet have a
+  // token ledger. Production callers always pass the cumulative total.
+  return input.sourceTokenTotal === undefined || input.sourceTokenTotal >= MIN_AUTOMATIC_CONSOLIDATION_TOKENS;
+}
+
+function normalizeMemoryText(value: string) { return value.replace(/\s+/g, " ").trim().toLocaleLowerCase(); }
+
+function sourceContainsCorrectionSignal(messages: readonly MemoryMessageForIndex[]) {
+  return messages.some((message) => /\b(?:actually|correction|correct(?:ion)?|instead|changed|no longer|update|now prefer|not anymore|i meant|used to)\b/i.test(message.content));
+}
 
 export function validateConsolidationProposals(input: ConsolidatorInput, proposals: readonly ConsolidationProposalInput[]) {
   if (proposals.length > MAX_PROPOSALS) throw new Error("Consolidator returned too many proposals.");
@@ -37,6 +62,7 @@ export function validateConsolidationProposals(input: ConsolidatorInput, proposa
   return proposals.map((proposal, index) => {
     const canonicalKey = validateCanonicalKey(proposal.canonicalKey);
     const content = validateMemoryContent(proposal.proposedContent.trim());
+    validateMemoryContentSafety(content);
     if (content.length > MAX_PROPOSAL_CONTENT) throw new Error("Consolidator proposal is too large.");
     if (keys.has(canonicalKey)) throw new Error("Consolidator returned duplicate canonical keys.");
     keys.add(canonicalKey);
@@ -49,13 +75,24 @@ export function validateConsolidationProposals(input: ConsolidatorInput, proposa
     }
     if (proposal.confidence !== undefined && (!Number.isFinite(proposal.confidence) || proposal.confidence < 0 || proposal.confidence > 1)) throw new Error("Consolidator confidence is invalid.");
     if (proposal.importance !== undefined && (!Number.isFinite(proposal.importance) || proposal.importance < 0 || proposal.importance > 1)) throw new Error("Consolidator importance is invalid.");
+    if ((proposal.confidence ?? 0.5) < 0.65) throw new Error("Automatic memory proposals require stronger evidence.");
+    if ((proposal.sensitivity ?? "normal") !== "normal") throw new Error("Automatic consolidation cannot persist sensitive memory.");
+    if ((proposal.origin ?? "inferred") !== "inferred") throw new Error("Automatic consolidation proposals must be inferred, not explicit.");
+    const current = input.items.find((item) => item.canonicalKey === canonicalKey && item.status === "active");
+    if (current && normalizeMemoryText(current.content) === normalizeMemoryText(content)) return null;
+    if (current && proposal.mutationKind !== "supersede" && !sourceContainsCorrectionSignal(input.messages)) {
+      throw new Error("Automatic memory conflict is ambiguous; no winner was selected.");
+    }
+    if (current && proposal.mutationKind === "supersede" && !sourceContainsCorrectionSignal(input.messages)) {
+      throw new Error("Automatic supersession requires an explicit correction signal.");
+    }
     return {
       canonicalKey, proposedContent: content, category: proposal.category ?? "other", valueScope: proposal.valueScope ?? "single", origin: proposal.origin ?? "inferred",
       confidence: proposal.confidence ?? 0.5, importance: proposal.importance ?? 0.5, sensitivity: proposal.sensitivity ?? "normal",
       expectedItemRevision: proposal.expectedItemRevision, mutationKind: proposal.mutationKind, sourceMessageIds: [...new Set(proposal.sourceMessageIds)],
       rationale: typeof proposal.rationale === "string" ? proposal.rationale.replace(/\s+/g, " ").trim().slice(0, 500) : null, proposalIndex: index,
     };
-  });
+  }).filter((proposal): proposal is NonNullable<typeof proposal> => proposal !== null);
 }
 
 function parseModelJson(value: unknown): unknown {
@@ -66,12 +103,27 @@ function parseModelJson(value: unknown): unknown {
 }
 
 export function createInjectedMemoryConsolidator(producer: (input: ConsolidatorInput) => Promise<unknown>): MemoryConsolidator {
-  return { async propose(input) { const raw = await producer(input); if (!Array.isArray(raw)) throw new Error("Consolidator output was not a proposal list."); return validateConsolidationProposals(input, raw as ConsolidationProposalInput[]).map(({ proposalIndex: _proposalIndex, ...proposal }) => proposal); } };
+  return {
+    async propose(input) {
+      const raw = await producer(input);
+      if (!Array.isArray(raw)) throw new Error("Consolidator output was not a proposal list.");
+      try {
+        return validateConsolidationProposals(input, raw as ConsolidationProposalInput[]).map(({ proposalIndex: _proposalIndex, ...proposal }) => proposal);
+      } catch (error) {
+        // Unsafe/weak/ambiguous automatic candidates are a normal rejection,
+        // not a retryable provider failure. Structural contract violations
+        // still fail loudly so a broken producer cannot be hidden.
+        const message = error instanceof Error ? error.message : "";
+        if (/cannot be saved|require stronger evidence|must be inferred|ambiguous|requires an explicit correction/i.test(message)) return [];
+        throw error;
+      }
+    },
+  };
 }
 
 export function createProductionMemoryConsolidator(model: AgentModel = createProductionChatModel()): MemoryConsolidator {
   return createInjectedMemoryConsolidator(async (input) => {
-    const prompt = `Return JSON only: an array of at most ${MAX_PROPOSALS} structured memory proposals. Each proposal must have canonicalKey, proposedContent (plain natural-language content, not a Markdown file), category, valueScope, origin=inferred, confidence, importance, sensitivity, expectedItemRevision (number or null), mutationKind (create/update/supersede/merge), sourceMessageIds (IDs from supplied messages only), and rationale. Do not create memory for transient chatter, secrets, or speculation. Do not invent source IDs.\n<messages>${JSON.stringify(input.messages)}</messages>\n<current-memory>${JSON.stringify(input.items.map((item) => ({ canonicalKey: item.canonicalKey, content: item.content, category: item.category, itemRevision: item.itemRevision })))}</current-memory>`;
+    const prompt = `Return JSON only: an array of at most ${MAX_PROPOSALS} structured memory proposals. Each proposal must have canonicalKey, proposedContent (plain natural-language content, not a Markdown file), category, valueScope, origin=inferred, confidence, importance, sensitivity=normal, expectedItemRevision (number or null), mutationKind (create/update/supersede/merge), sourceMessageIds (IDs from supplied messages only), and rationale. Use supersede only when the source explicitly corrects an existing fact. Do not create memory for transient chatter, credentials, one-time codes, transient moods or locations, role-play, sensitive third-party data, or speculative psychology. Do not invent source IDs. Ambiguous conflicts must produce no proposal.\n<messages>${JSON.stringify(input.messages)}</messages>\n<current-memory>${JSON.stringify(input.items.map((item) => ({ canonicalKey: item.canonicalKey, content: item.content, category: item.category, itemRevision: item.itemRevision })))}</current-memory>`;
     const response = await model.invoke(prompt, { temperature: 0.1, maxTokens: 3_000 } as never);
     return parseModelJson(response);
   });

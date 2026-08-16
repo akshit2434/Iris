@@ -17,6 +17,13 @@ export type MemoryItemOrigin = "explicit" | "inferred" | "system";
 export type MemoryItemStatus = "active" | "superseded" | "archived" | "deleted";
 export type MemoryMutationKind = "create" | "update" | "supersede" | "archive" | "restore" | "delete" | "merge";
 export type MemorySourceKind = "message" | "thread" | "agent_event" | "manual" | "system";
+/**
+ * The relationship between a source event and the memory revision it
+ * supports.  This is kept in source metadata so the source rows remain
+ * backwards compatible with the foundation migration while still exposing a
+ * typed provenance contract to the runtime and UI.
+ */
+export type MemoryProvenanceRelation = "supports" | "corrects" | "supersedes" | "contradicts" | "derived";
 
 export type MemoryItem = {
   id: string;
@@ -77,6 +84,7 @@ export type MemorySource = {
   sourceAgentRunId: string | null;
   sourceExcerpt: string | null;
   metadata: Record<string, unknown>;
+  relation: MemoryProvenanceRelation;
   createdAt: string;
   action?: { type: "open_message"; threadId: string; messageId: string; label: string };
 };
@@ -105,6 +113,7 @@ export type MemoryProvenanceInput = {
   sourceAgentRunId?: string | null;
   sourceExcerpt?: string | null;
   metadata?: Record<string, unknown>;
+  relation?: MemoryProvenanceRelation;
 };
 
 export type ApplyMemoryItemRevisionInput = {
@@ -227,6 +236,7 @@ export type MemoryConsolidationJobStatus = "pending" | "running" | "completed" |
 export type MemoryMutationProposalStatus = "proposed" | "applied" | "rejected" | "conflict";
 export type MemoryConsolidationJob = {
   id: string; profileId: ProfileId; threadId: string; sourceRunId: string; status: MemoryConsolidationJobStatus;
+  sourceTokenTotal: number;
   attempts: number; availableAt: string; leaseExpiresAt: string | null; lockedAt: string | null; lockedBy: string | null;
   lastErrorCode: string | null; lastErrorMessage: string | null; createdAt: string; updatedAt: string; completedAt: string | null;
 };
@@ -244,7 +254,11 @@ export type MemoryProposalApplyResult = {
   profileGlobalRevision: number | null; revisionId: string | null; sourceId: string | null; reason: string | null;
 };
 export type MemoryGovernanceStore = {
-  enqueueConsolidationJob: (profileId: ProfileId, threadId: string, sourceRunId: string) => Promise<MemoryConsolidationJob>;
+  enqueueConsolidationJob: (profileId: ProfileId, threadId: string, sourceRunId: string, options?: {
+    sourceTokenTotal?: number;
+    idleSignal?: boolean;
+    debounceSeconds?: number;
+  }) => Promise<MemoryConsolidationJob | null>;
   claimConsolidationJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<MemoryConsolidationJob[]>;
   finishConsolidationJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Extract<MemoryConsolidationJobStatus, "completed" | "failed" | "skipped">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<MemoryConsolidationJob>;
   listJobMessages: (profileId: ProfileId, threadId: string, sourceRunId: string, limit?: number) => Promise<MemoryMessageForIndex[]>;

@@ -18,6 +18,7 @@ import {
   type MemoryStore,
   type MessageSemanticIndexStore,
   type ApplyMemoryItemRevisionInput,
+  type MemoryProvenanceRelation,
 } from "@/server/memory/types";
 import {
   assertMemoryProfileId,
@@ -110,6 +111,14 @@ function compactExcerpt(value: string, max = 280) {
   return compact.length > max ? `${compact.slice(0, max - 1).trimEnd()}…` : compact;
 }
 
+const provenanceRelations: readonly MemoryProvenanceRelation[] = ["supports", "corrects", "supersedes", "contradicts", "derived"];
+
+function readProvenanceRelation(metadata: Record<string, unknown>): MemoryProvenanceRelation {
+  return typeof metadata.relation === "string" && provenanceRelations.includes(metadata.relation as MemoryProvenanceRelation)
+    ? metadata.relation as MemoryProvenanceRelation
+    : "supports";
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function statusFilter(options: { includeArchived?: boolean; includeDeleted?: boolean }) {
@@ -159,6 +168,10 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
     async applyItemRevision(input: ApplyMemoryItemRevisionInput) {
       const validated = validateApplyMemoryItemRevision(input);
       const source = validated.provenance ?? ({ sourceKind: "manual" } satisfies MemoryProvenanceInput);
+      const sourceMetadata = {
+        ...(source.metadata ?? {}),
+        relation: source.relation ?? "supports",
+      } as Json;
       const { data, error } = await database.rpc("apply_memory_item_revision", {
         p_profile_id: validated.profileId,
         p_canonical_key: validated.canonicalKey,
@@ -178,7 +191,7 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
         p_source_agent_event_id: source.sourceAgentEventId ?? null,
         p_source_agent_run_id: source.sourceAgentRunId ?? null,
         p_source_excerpt: source.sourceExcerpt ?? null,
-        p_source_metadata: (source.metadata ?? {}) as Json,
+        p_source_metadata: sourceMetadata,
         p_idempotency_key: validated.idempotencyKey ?? null,
         p_superseded_by_item_id: validated.supersededByItemId ?? null,
       });
@@ -293,7 +306,8 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
       const sourcesByRevision = new Map<string, MemorySource[]>();
       for (const source of sources ?? []) {
         const action = source.source_thread_id && source.source_message_id && UUID_PATTERN.test(source.source_thread_id) && UUID_PATTERN.test(source.source_message_id) ? { type: "open_message" as const, threadId: source.source_thread_id, messageId: source.source_message_id, label: "Open source" } : undefined;
-        const record: MemorySource = { id: source.id, sourceKind: source.source_kind, sourceThreadId: source.source_thread_id, sourceMessageId: source.source_message_id, sourceAgentEventId: source.source_agent_event_id, sourceAgentRunId: source.source_agent_run_id, sourceExcerpt: source.source_excerpt, metadata: (source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata) ? source.metadata : {}) as Record<string, unknown>, createdAt: source.created_at, ...(action ? { action } : {}) };
+        const metadata = (source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata) ? source.metadata : {}) as Record<string, unknown>;
+        const record: MemorySource = { id: source.id, sourceKind: source.source_kind, sourceThreadId: source.source_thread_id, sourceMessageId: source.source_message_id, sourceAgentEventId: source.source_agent_event_id, sourceAgentRunId: source.source_agent_run_id, sourceExcerpt: source.source_excerpt, metadata, relation: readProvenanceRelation(metadata), createdAt: source.created_at, ...(action ? { action } : {}) };
         sourcesByRevision.set(source.revision_id, [...(sourcesByRevision.get(source.revision_id) ?? []), record]);
       }
       return {

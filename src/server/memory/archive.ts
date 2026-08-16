@@ -39,7 +39,14 @@ export function createMemoryArchiveService(store: MemoryStore): MemoryArchiveSer
           profileId: input.profileId, canonicalKey, content: item.content, category: item.category, valueScope: item.valueScope, origin: item.origin,
           confidence: item.confidence, importance: item.importance, sensitivity: item.sensitivity, status: "archived", mutationKind: "archive",
           expectedItemRevision: input.expectedItemRevision, idempotencyKey: `memory-archive:${input.agentRunId}:${input.toolCallId}`,
-          provenance: { sourceKind: "message", sourceThreadId: input.threadId, sourceMessageId: input.currentUserMessageId, sourceExcerpt: input.reason ?? null },
+          provenance: {
+            sourceKind: "message",
+            sourceThreadId: input.threadId,
+            sourceMessageId: input.currentUserMessageId,
+            sourceExcerpt: input.reason ?? null,
+            relation: "supersedes",
+            metadata: { explicit: true, action: "forget" },
+          },
         });
         if (store.createSuppression) await store.createSuppression({ profileId: input.profileId, canonicalKey, contentHash: revision.contentHash, itemId: revision.itemId, reason: input.reason });
         return { status: "applied", canonicalKey, revision };

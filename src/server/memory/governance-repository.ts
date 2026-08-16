@@ -9,7 +9,7 @@ import { assertMemoryProfileId, normalizeMemoryLimit, validateMemoryUuid } from 
 type MemoryDatabase = SupabaseClient<Database>;
 
 function toJob(row: Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]): MemoryConsolidationJob {
-  return { id: row.id, profileId: row.profile_id, threadId: row.thread_id, sourceRunId: row.source_run_id, status: row.status, attempts: row.attempts, availableAt: row.available_at, leaseExpiresAt: row.lease_expires_at, lockedAt: row.locked_at, lockedBy: row.locked_by, lastErrorCode: row.last_error_code, lastErrorMessage: row.last_error_message, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at };
+  return { id: row.id, profileId: row.profile_id, threadId: row.thread_id, sourceRunId: row.source_run_id, status: row.status, sourceTokenTotal: row.source_token_total, attempts: row.attempts, availableAt: row.available_at, leaseExpiresAt: row.lease_expires_at, lockedAt: row.locked_at, lockedBy: row.locked_by, lastErrorCode: row.last_error_code, lastErrorMessage: row.last_error_message, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at };
 }
 
 function toProposal(row: Database["public"]["Tables"]["memory_mutation_proposals"]["Row"]): MemoryMutationProposal {
@@ -20,10 +20,10 @@ const proposalColumns = "id, profile_id, thread_id, source_run_id, job_id, propo
 
 export function createSupabaseMemoryGovernanceStore(database: MemoryDatabase = getDatabase()): MemoryGovernanceStore {
   return {
-    async enqueueConsolidationJob(profileId, threadId, sourceRunId) {
+    async enqueueConsolidationJob(profileId, threadId, sourceRunId, options = {}) {
       assertMemoryProfileId(profileId); validateMemoryUuid(threadId, "Thread ID"); validateMemoryUuid(sourceRunId, "Run ID");
-      const { data, error } = await database.rpc("enqueue_memory_consolidation_job", { p_profile_id: profileId, p_thread_id: threadId, p_source_run_id: sourceRunId });
-      if (error) throw error; const row = Array.isArray(data) ? data[0] : data; if (!row) throw new Error("Consolidation enqueue returned no job."); return toJob(row);
+      const { data, error } = await database.rpc("enqueue_memory_consolidation_job", { p_profile_id: profileId, p_thread_id: threadId, p_source_run_id: sourceRunId, p_source_token_total: options.sourceTokenTotal ?? 0, p_idle_signal: options.idleSignal ?? false, p_debounce_seconds: options.debounceSeconds ?? 30 });
+      if (error) throw error; const row = Array.isArray(data) ? data[0] : data; return row ? toJob(row) : null;
     },
     async claimConsolidationJobs(workerId, limit = 1, leaseSeconds = 120) {
       const { data, error } = await database.rpc("claim_memory_consolidation_jobs", { p_worker_id: workerId, p_limit: normalizeMemoryLimit(limit, 1), p_lease_seconds: leaseSeconds });

@@ -1,11 +1,31 @@
 import { isProfileId, type ProfileId } from "@/lib/profiles";
-import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryItemRevisionInput, type MemoryProvenanceInput } from "@/server/memory/types";
+import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryItemRevisionInput, type MemoryProvenanceInput, type MemoryProvenanceRelation } from "@/server/memory/types";
 
 const CANONICAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const MAX_CONTENT_LENGTH = 500_000;
 const MAX_EXCERPT_LENGTH = 2_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 240;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PROVENANCE_RELATIONS: readonly MemoryProvenanceRelation[] = ["supports", "corrects", "supersedes", "contradicts", "derived"];
+
+export type MemorySafetyRejectionCode =
+  | "credential_or_secret"
+  | "one_time_code"
+  | "transient_mood"
+  | "transient_location"
+  | "role_play"
+  | "speculative_psychology"
+  | "third_party_sensitive_data";
+
+export class MemorySafetyRejection extends Error {
+  readonly code: MemorySafetyRejectionCode;
+
+  constructor(code: MemorySafetyRejectionCode, message: string) {
+    super(message);
+    this.name = "MemorySafetyRejection";
+    this.code = code;
+  }
+}
 
 export function assertMemoryProfileId(value: unknown): asserts value is ProfileId {
   if (!isProfileId(value)) throw new Error("A valid profile scope is required.");
@@ -26,8 +46,64 @@ export function validateMemoryContent(value: string) {
   return value;
 }
 
+/**
+ * Candidate extraction is deliberately conservative. This is a runtime
+ * safety gate, not a classifier: a candidate that looks like a secret or a
+ * fleeting observation is rejected instead of being guessed into durable
+ * memory. Explicit user writes pass through the same gate.
+ */
+export function validateMemoryContentSafety(value: string): string {
+  const content = value.trim();
+  const compact = content.replace(/\s+/g, " ");
+  const lower = compact.toLocaleLowerCase();
+
+  const secretPatterns: Array<RegExp> = [
+    /-----begin [^-]+private key-----/i,
+    /\b(?:sk-[a-z0-9]{16,}|sk_(?:live|test)_[a-z0-9]{12,}|ghp_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{16,}|AIza[0-9a-z_-]{20,})\b/i,
+    /\b(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret|private[ _-]?key|password|passwd|secret)\s*[:=]\s*\S+/i,
+    /\b(?:my|the)\s+(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret|private[ _-]?key|password|passwd|secret)\b/i,
+    /\bauthorization\s*:\s*bearer\s+\S+/i,
+  ];
+  if (secretPatterns.some((pattern) => pattern.test(compact))) {
+    throw new MemorySafetyRejection("credential_or_secret", "Credentials and secrets cannot be saved to memory.");
+  }
+
+  if (/(?:one[- ]time|verification|authentication|2fa|two[- ]factor|security)\s+(?:code|passcode|otp)\b/i.test(lower)) {
+    throw new MemorySafetyRejection("one_time_code", "One-time codes cannot be saved to memory.");
+  }
+
+  const transientMood = /\b(?:today|right now|currently|at the moment|this morning|tonight)\b[\s\S]{0,80}\b(?:feel|feeling|mood|sad|happy|angry|anxious|tired|stressed|excited|overwhelmed|depressed)\b/i.test(compact)
+    || /\b(?:feel|feeling|mood)\b[\s\S]{0,60}\b(?:today|right now|currently|at the moment)\b/i.test(compact);
+  if (transientMood) {
+    throw new MemorySafetyRejection("transient_mood", "Transient moods are not durable memory.");
+  }
+
+  if (/\b(?:i am|i'm|currently|right now)\s+(?:at|in|near|inside|outside|on my way to)\b/i.test(compact)
+    || /\bcurrently located\b/i.test(lower)) {
+    throw new MemorySafetyRejection("transient_location", "Transient locations are not durable memory.");
+  }
+
+  if (/\b(?:role[- ]?play|pretend|fictional|in this scenario|as a character|let's imagine)\b/i.test(compact)) {
+    throw new MemorySafetyRejection("role_play", "Role-play content is not saved as personal memory.");
+  }
+
+  if (/(?:maybe|perhaps|probably|might be|could be|seems like|sounds like|i suspect|you seem)\b[\s\S]{0,80}\b(?:adhd|autistic|autism|bipolar|depressed|anxious|narcissist|ocd|personality disorder|mental illness|diagnos)/i.test(compact)
+    || /\b(?:you are|you're|i am|i'm)\s+(?:a |an )?(?:narcissist|sociopath|psychopath|mentally ill)\b/i.test(compact)) {
+    throw new MemorySafetyRejection("speculative_psychology", "Speculative diagnoses and psychological labels cannot be saved as memory.");
+  }
+
+  if (/\b(?:my friend|my colleague|my coworker|my neighbor|someone|a third party)\b[\s\S]{0,100}\b(?:phone|email|address|ssn|social security|bank|account number|medical|health|diagnos|passport|date of birth)\b/i.test(compact)
+    || /\b[A-Z][a-z]{2,}\b[\s\S]{0,60}\b(?:phone|email|address|ssn|social security|bank|account number|medical|health|diagnos|passport|date of birth)\b/.test(compact)) {
+    throw new MemorySafetyRejection("third_party_sensitive_data", "Sensitive third-party data cannot be saved to memory.");
+  }
+
+  return content;
+}
+
 export function validateProvenance(provenance: MemoryProvenanceInput | undefined) {
   const source = provenance ?? { sourceKind: "manual" as const };
+  const relation = source.relation ?? "supports";
+  if (!PROVENANCE_RELATIONS.includes(relation)) throw new Error("Memory provenance relation is invalid.");
   if (source.sourceKind === "message" && (!source.sourceMessageId || !source.sourceThreadId)) {
     throw new Error("Message provenance requires message and thread ownership.");
   }
@@ -43,13 +119,14 @@ export function validateProvenance(provenance: MemoryProvenanceInput | undefined
   if (source.sourceExcerpt && source.sourceExcerpt.length > MAX_EXCERPT_LENGTH) {
     throw new Error("Memory provenance excerpts are limited to 2,000 characters.");
   }
-  return source;
+  return source.relation ? { ...source, relation } : source;
 }
 
 export function validateApplyMemoryItemRevision(input: ApplyMemoryItemRevisionInput) {
   assertMemoryProfileId(input.profileId);
   const canonicalKey = validateCanonicalKey(input.canonicalKey);
   const content = validateMemoryContent(input.content);
+  validateMemoryContentSafety(content);
   if (input.expectedItemRevision !== undefined && input.expectedItemRevision !== null && (!Number.isSafeInteger(input.expectedItemRevision) || input.expectedItemRevision < 0)) {
     throw new Error("Expected memory item revision must be a non-negative integer.");
   }
