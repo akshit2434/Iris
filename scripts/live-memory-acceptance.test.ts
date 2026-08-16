@@ -1,271 +1,343 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProfileId } from "@/lib/profiles";
-import { createIrisAgent, createProductionChatModel, streamAgentEvents, type AgentRuntimeEvent } from "@/server/agent";
-import { createAgentContext } from "@/server/agent/context";
+import { buildDynamicSystemPrompt, createAgentContext } from "@/server/agent/context";
+import { createProductionChatModel, getConfiguredModelName, streamAgentEvents, type AgentRuntimeEvent } from "@/server/agent";
+import { createAgentRun, createMessage, createThreadWithFirstMessage, getProfile, linkAgentRunMessages } from "@/server/db/queries";
+import { getDatabase } from "@/server/db/client";
+import { createMemoryArchiveService } from "@/server/memory/archive";
+import { budgetCanonicalMemory } from "@/server/memory/context-budget";
 import { createMemoryMutationService } from "@/server/memory/mutation";
-import { createMemoryRetrievalService } from "@/server/memory/retrieval";
-import type {
-  AppliedMemoryDocumentRevision,
-  CanonicalDocumentSearchResult,
-  CanonicalMemoryDocument,
-  MemoryStore,
-  MessageContextWindow,
-  MessageSearchInput,
-  MessageSearchResult,
-} from "@/server/memory/types";
+import { createSupabaseMemoryStore } from "@/server/memory/repository";
+import { readMemoryChangeHint } from "@/server/memory/reconciliation";
 import { memorySourceRows, validateOpenMessageAction } from "@/lib/memory-source";
 
 const enabled = process.env.IRIS_RUN_LIVE_MEMORY_ACCEPTANCE === "1";
 const PROFILE_ID: ProfileId = "profile-a";
-const THREAD_A_ID = "00000000-0000-4000-8000-000000000011";
-const MESSAGE_A_ID = "00000000-0000-4000-8000-000000000010";
-const RUN_A_ID = "00000000-0000-4000-8000-000000000012";
-const THREAD_B_ID = "00000000-0000-4000-8000-000000000014";
-const MESSAGE_B_ID = "00000000-0000-4000-8000-000000000013";
-const RUN_B_ID = "00000000-0000-4000-8000-000000000015";
-const SOURCE_CREATED_AT = "2026-08-16T00:00:00.000Z";
 const OPENROUTER_CHAT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const MAX_REQUESTS = 6;
 
-type FakeMessage = {
-  id: string;
-  threadId: string;
+type Ledger = {
   profileId: ProfileId;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  createdAt: string;
+  threadIds: string[];
+  messageIds: string[];
+  runIds: string[];
+  documentIds: string[];
+  logicalKeys: string[];
 };
 
-type FakeState = {
-  documents: Map<string, CanonicalMemoryDocument>;
-  messages: Map<string, FakeMessage>;
-  globalRevision: number;
-  mutationApplied: boolean;
+type Aggregate = {
+  threads: number;
+  messages: number;
+  runs: number;
+  events: number;
+  contexts: number;
+  documents: number;
 };
 
-function createFakeStore(state: FakeState): MemoryStore {
-  return {
-    async listDocuments(profileId) {
-      return [...state.documents.values()].filter((document) => document.profileId === profileId && !document.archivedAt);
-    },
-    async getDocument(profileId, logicalKey) {
-      const document = state.documents.get(logicalKey);
-      return document?.profileId === profileId && !document.archivedAt ? document : null;
-    },
-    async getCurrentRevision(profileId) {
-      return profileId === PROFILE_ID ? state.globalRevision : 0;
-    },
-    async applyDocumentRevision(input): Promise<AppliedMemoryDocumentRevision> {
-      const current = state.documents.get(input.logicalKey);
-      if (input.expectedDocumentRevision !== null && input.expectedDocumentRevision !== undefined && current?.documentRevision !== input.expectedDocumentRevision) {
-        throw new Error("stale memory revision");
-      }
-      if (input.mutationKind === "create" && current) throw new Error("memory document already exists");
-      const documentRevision = (current?.documentRevision ?? 0) + 1;
-      state.globalRevision += 1;
-      const document: CanonicalMemoryDocument = {
-        id: current?.id ?? "00000000-0000-4000-8000-000000000020",
-        profileId: input.profileId,
-        logicalKey: input.logicalKey,
-        contentMarkdown: input.contentMarkdown,
-        documentRevision,
-        contentHash: `synthetic-${documentRevision}`,
-        createdAt: current?.createdAt ?? SOURCE_CREATED_AT,
-        updatedAt: SOURCE_CREATED_AT,
-        archivedAt: null,
-      };
-      state.documents.set(input.logicalKey, document);
-      state.mutationApplied = true;
-      return {
-        profileId: input.profileId,
-        documentId: document.id,
-        documentRevision,
-        profileGlobalRevision: state.globalRevision,
-        revisionId: "00000000-0000-4000-8000-000000000021",
-        provenanceId: "00000000-0000-4000-8000-000000000022",
-      };
-    },
-    async searchMessages(input: MessageSearchInput): Promise<MessageSearchResult[]> {
-      if (input.profileId !== PROFILE_ID) return [];
-      const source = state.messages.get(MESSAGE_A_ID);
-      if (!source) return [];
-      const queryTerms = input.query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-      const sourceText = source.content.toLocaleLowerCase();
-      const matches = queryTerms.some((term) => sourceText.includes(term) || term.includes("synthetic") || term.includes("cobalt"));
-      return matches ? [{
-        messageId: source.id,
-        threadId: source.threadId,
-        profileId: source.profileId,
-        role: source.role,
-        content: source.content,
-        createdAt: source.createdAt,
-        lexicalScore: 1,
-        semanticScore: null,
-        combinedScore: 1,
-      }] : [];
-    },
-    async readMessageContext(profileId, messageId): Promise<MessageContextWindow | null> {
-      const source = state.messages.get(messageId);
-      if (!source || source.profileId !== profileId) return null;
-      return {
-        thread: {
-          id: source.threadId,
-          profileId: source.profileId,
-          title: "Synthetic source",
-          createdAt: source.createdAt,
-          updatedAt: source.createdAt,
-        },
-        target: {
-          messageId: source.id,
-          threadId: source.threadId,
-          profileId: source.profileId,
-          role: source.role,
-          content: source.content,
-          createdAt: source.createdAt,
-        },
-        before: [],
-        after: [],
-      };
-    },
-    async searchDocuments(profileId, query, limit = 5): Promise<CanonicalDocumentSearchResult[]> {
-      return [...state.documents.values()]
-        .filter((document) => document.profileId === profileId && document.contentMarkdown.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-        .slice(0, limit)
-        .map((document) => ({
-          documentId: document.id,
-          profileId: document.profileId,
-          logicalKey: document.logicalKey,
-          excerpt: document.contentMarkdown,
-          documentRevision: document.documentRevision,
-          updatedAt: document.updatedAt,
-        }));
-    },
-  };
+type TurnResult = {
+  events: AgentRuntimeEvent[];
+  errorCode?: string;
+};
+
+function writeReport(value: Record<string, unknown>) {
+  const destination = process.env.IRIS_LIVE_ACCEPTANCE_RESULT_FILE;
+  if (!destination) return;
+  writeFileSync(destination, JSON.stringify(value), { encoding: "utf8", mode: 0o600 });
+  chmodSync(destination, 0o600);
+}
+
+function errorCode(error: unknown) {
+  const message = error instanceof Error ? error.message.toLocaleLowerCase() : "";
+  if (message.includes("request_budget")) return "request_budget_exceeded";
+  if (message.includes("openrouter") || message.includes("fetch")) return "provider_error";
+  if (message.includes("profile") || message.includes("thread") || message.includes("message")) return "local_data_error";
+  return "acceptance_failed";
+}
+
+function unique(values: readonly string[]) {
+  return [...new Set(values)];
 }
 
 function toolNames(events: AgentRuntimeEvent[]) {
-  return [...new Set(events.filter((event) => event.type === "tool_started" || event.type === "tool_finished").map((event) => event.toolName))].sort();
+  return unique(events.filter((event) => event.type === "tool_started" || event.type === "tool_finished").map((event) => event.toolName)).sort();
 }
 
-function hasFinishedTool(events: AgentRuntimeEvent[], toolName: string, predicate: (output: unknown) => boolean) {
-  return events.some((event) => event.type === "tool_finished" && event.toolName === toolName && event.ok && predicate(event.output));
+function textOutput(events: AgentRuntimeEvent[]) {
+  return events.filter((event): event is Extract<AgentRuntimeEvent, { type: "text_delta" }> => event.type === "text_delta").map((event) => event.text).join("");
+}
+
+function hasFinishedTool(events: AgentRuntimeEvent[], name: string, predicate: (output: unknown) => boolean) {
+  return events.some((event) => event.type === "tool_finished" && event.toolName === name && event.ok && predicate(event.output));
+}
+
+async function countRows(table: "threads" | "messages" | "agent_runs" | "agent_events" | "thread_context" | "memory_documents") {
+  const column = table === "thread_context" ? "thread_id" : "id";
+  const { count, error } = await getDatabase().from(table).select(column, { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
+
+async function aggregate(): Promise<Aggregate> {
+  const [threads, messages, runs, events, contexts, documents] = await Promise.all([
+    countRows("threads"),
+    countRows("messages"),
+    countRows("agent_runs"),
+    countRows("agent_events"),
+    countRows("thread_context"),
+    countRows("memory_documents"),
+  ]);
+  return { threads, messages, runs, events, contexts, documents };
+}
+
+function sameAggregate(left: Aggregate, right: Aggregate) {
+  return (Object.keys(left) as Array<keyof Aggregate>).every((key) => left[key] === right[key]);
+}
+
+function persistLedger(path: string, ledger: Ledger) {
+  writeFileSync(path, JSON.stringify(ledger), { encoding: "utf8", mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+async function insertHistoricalThread(ledger: Ledger, threadId: string, messageId: string, createdAt: string, content: string, title: string) {
+  const database = getDatabase();
+  const { error: threadError } = await database.from("threads").insert({
+    id: threadId,
+    profile_id: PROFILE_ID,
+    title,
+    created_at: createdAt,
+    updated_at: createdAt,
+  });
+  if (threadError) throw threadError;
+  ledger.threadIds.push(threadId);
+  ledger.messageIds.push(messageId);
+  const { error: messageError } = await database.from("messages").insert({
+    id: messageId,
+    thread_id: threadId,
+    profile_id: PROFILE_ID,
+    role: "user",
+    content,
+    created_at: createdAt,
+  });
+  if (messageError) throw messageError;
+}
+
+async function createFreshTurn(ledger: Ledger, tag: string, content: string) {
+  const threadId = crypto.randomUUID();
+  const messageId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  const assistantMessageId = crypto.randomUUID();
+  const result = await createThreadWithFirstMessage({
+    profileId: PROFILE_ID,
+    threadId,
+    userMessageId: messageId,
+    runId,
+    assistantMessageId,
+    requestId: `acceptance-${tag}-${crypto.randomUUID()}`,
+    content,
+    model: getConfiguredModelName(),
+  });
+  ledger.threadIds.push(result.threadId);
+  ledger.messageIds.push(result.userMessageId);
+  ledger.runIds.push(result.runId);
+  return { threadId: result.threadId, messageId: result.userMessageId, runId: result.runId };
+}
+
+async function createExistingTurn(ledger: Ledger, threadId: string, tag: string, content: string) {
+  const messageId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  const run = await createAgentRun({
+    id: runId,
+    profileId: PROFILE_ID,
+    threadId,
+    requestId: `acceptance-${tag}-${crypto.randomUUID()}`,
+    model: getConfiguredModelName(),
+  });
+  await createMessage({ id: messageId, profileId: PROFILE_ID, threadId, role: "user", content, agentRunId: run.id });
+  await linkAgentRunMessages(PROFILE_ID, threadId, run.id, { userMessageId: messageId });
+  ledger.messageIds.push(messageId);
+  ledger.runIds.push(run.id);
+  return { messageId, runId: run.id };
+}
+
+async function collectTurn(input: Parameters<typeof streamAgentEvents>[0]): Promise<TurnResult> {
+  const events: AgentRuntimeEvent[] = [];
+  try {
+    for await (const event of streamAgentEvents(input)) events.push(event);
+    return { events };
+  } catch (error) {
+    return { events, errorCode: errorCode(error) };
+  }
+}
+
+async function cleanup(ledgerPath: string, ledger: Ledger) {
+  const database = getDatabase();
+  const documentIds = unique(ledger.documentIds);
+  for (const documentId of documentIds) {
+    await database.from("memory_provenance").delete().eq("profile_id", ledger.profileId).eq("document_id", documentId);
+    await database.from("memory_document_revisions").delete().eq("profile_id", ledger.profileId).eq("document_id", documentId);
+    await database.from("memory_documents").delete().eq("profile_id", ledger.profileId).eq("id", documentId);
+  }
+  const threadIds = unique(ledger.threadIds);
+  if (threadIds.length > 0) {
+    const { error } = await database.from("threads").delete().eq("profile_id", ledger.profileId).in("id", threadIds);
+    if (error) throw error;
+  }
+  rmSync(ledgerPath, { force: true });
+  rmSync(join(ledgerPath, ".."), { force: true, recursive: true });
 }
 
 describe("guarded live memory acceptance", () => {
-  it.runIf(enabled)("uses real agent tools with ephemeral synthetic state", async () => {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) throw new Error("acceptance_key_missing");
-
-    const state: FakeState = {
-      documents: new Map(),
-      messages: new Map([
-        [MESSAGE_A_ID, {
-          id: MESSAGE_A_ID,
-          threadId: THREAD_A_ID,
-          profileId: PROFILE_ID,
-          role: "user",
-          content: "Please remember this synthetic acceptance fact: the Iris demo color is cobalt blue.",
-          createdAt: SOURCE_CREATED_AT,
-        }],
-        [MESSAGE_B_ID, {
-          id: MESSAGE_B_ID,
-          threadId: THREAD_B_ID,
-          profileId: PROFILE_ID,
-          role: "user",
-          content: "Where did I originally state the synthetic acceptance fact?",
-          createdAt: "2026-08-16T00:01:00.000Z",
-        }],
-      ]),
-      globalRevision: 0,
-      mutationApplied: false,
-    };
-    const store = createFakeStore(state);
+  it.runIf(enabled)("uses real production tools against disposable local synthetic state", async () => {
+    const ledgerDirectory = mkdtempSync(join(tmpdir(), "iris-memory-acceptance-"));
+    const ledgerPath = join(ledgerDirectory, "ledger.json");
+    const tag = `accept-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const logicalKey = `acceptance-${tag}.md`;
+    const ledger: Ledger = { profileId: PROFILE_ID, threadIds: [], messageIds: [], runIds: [], documentIds: [], logicalKeys: [logicalKey] };
+    persistLedger(ledgerPath, ledger);
+    const database = getDatabase();
+    const store = createSupabaseMemoryStore(database);
     const memoryMutation = createMemoryMutationService(store);
-    const memoryRetrieval = createMemoryRetrievalService({ store, semanticSearchEnabled: false });
-    const originalFetch = globalThis.fetch;
+    const memoryArchive = createMemoryArchiveService(store);
+    const oldMessageIds: string[] = [];
+    const observedEvents: AgentRuntimeEvent[] = [];
+    let acceptanceReport: Record<string, unknown> | null = null;
+    let failureCode: string | undefined;
     let providerCalls = 0;
-    globalThis.fetch = async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url === OPENROUTER_CHAT_ENDPOINT) providerCalls += 1;
-      return originalFetch(input, init);
-    };
+    const originalFetch = globalThis.fetch;
+    let baseline: Aggregate | null = null;
+    let profile: Awaited<ReturnType<typeof getProfile>> = null;
 
     try {
-      const chatAContext = createAgentContext({
-        profileId: PROFILE_ID,
-        profileLabel: "Synthetic profile",
-        threadId: THREAD_A_ID,
-        threadTitle: "Synthetic Chat A",
-        browserTimezone: "UTC",
-        currentUserMessageId: MESSAGE_A_ID,
-        agentRunId: RUN_A_ID,
-        now: new Date(SOURCE_CREATED_AT),
-      });
-      const chatAEvents: AgentRuntimeEvent[] = [];
-      for await (const event of streamAgentEvents({
-        model: createProductionChatModel(),
+      writeReport({ status: "running", model: getConfiguredModelName(), requestCount: 0, observedToolNames: [], assertions: {} });
+      baseline = await aggregate();
+      profile = await getProfile(PROFILE_ID);
+      if (!profile) throw new Error("profile_missing");
+      // Construct the real provider before creating any synthetic rows. A
+      // local configuration failure must leave the database untouched.
+      const model = createProductionChatModel();
+      const baselineRevision = await store.getCurrentRevision(PROFILE_ID);
+      const baselineDocumentIds = new Set((await store.listDocuments(PROFILE_ID, { includeArchived: true })).map((document) => document.id));
+      const oldThreads = [
+        { threadId: crypto.randomUUID(), messageId: crypto.randomUUID(), at: "2026-08-13T10:00:00.000Z", text: `${tag}: Project Ember early launch plan was 2026-08-01.` },
+        { threadId: crypto.randomUUID(), messageId: crypto.randomUUID(), at: "2026-07-05T10:00:00.000Z", text: `${tag}: Project Ember launch decision was 2026-08-15.` },
+        { threadId: crypto.randomUUID(), messageId: crypto.randomUUID(), at: "2026-03-16T10:00:00.000Z", text: `${tag}: Project Ember was a fictional planning exercise with an early target of 2026-07-01.` },
+      ];
+      for (const oldThread of oldThreads) {
+        await insertHistoricalThread(ledger, oldThread.threadId, oldThread.messageId, oldThread.at, oldThread.text, `Synthetic ${tag}`);
+        oldMessageIds.push(oldThread.messageId);
+        await database.from("thread_context").update({ memory_revision_seen: baselineRevision }).eq("profile_id", PROFILE_ID).eq("thread_id", oldThread.threadId);
+      }
+
+      globalThis.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.startsWith(OPENROUTER_CHAT_ENDPOINT)) {
+          providerCalls += 1;
+          if (providerCalls > MAX_REQUESTS) throw new Error("request_budget_exceeded");
+        }
+        return originalFetch(input, init);
+      };
+
+      const chatA = await createFreshTurn(ledger, tag, `Synthetic ${tag}: remember a durable corrected fact about the fictional Project Ember launch date.`);
+      const chatAContext = createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: chatA.threadId, threadTitle: `Synthetic ${tag} A`, browserTimezone: "UTC", currentUserMessageId: chatA.messageId, agentRunId: chatA.runId, now: new Date("2026-08-16T00:00:00.000Z") });
+      const chatAResult = await collectTurn({
+        model,
         context: chatAContext,
         memoryMutation,
         returnDirectTools: ["memory_patch"],
-        forceToolName: "memory_patch",
-        messages: [{
-          role: "user",
-          content: "This is synthetic and contains no personal data. I explicitly want you to remember one durable fact now: the Iris demo color is cobalt blue. Use the memory_patch tool immediately with logicalKey PROFILE.md, mutationKind create, expectedDocumentRevision null, and a full replacement Markdown document. Make the tool call your only action.",
-        }],
-      })) {
-        chatAEvents.push(event);
-      }
-
-      const document = [...state.documents.values()][0];
-      const chatBContext = createAgentContext({
-        profileId: PROFILE_ID,
-        profileLabel: "Synthetic profile",
-        threadId: THREAD_B_ID,
-        threadTitle: "Synthetic Chat B",
-        browserTimezone: "UTC",
-        currentUserMessageId: MESSAGE_B_ID,
-        agentRunId: RUN_B_ID,
-        canonicalMemory: {
-          globalRevision: state.globalRevision,
-          documents: document ? [{
-            logicalKey: document.logicalKey,
-            contentMarkdown: document.contentMarkdown,
-            documentRevision: document.documentRevision,
-            updatedAt: document.updatedAt,
-          }] : [],
-        },
-        now: new Date("2026-08-16T00:02:00.000Z"),
+        messages: [{ role: "user", content: `I explicitly want you to remember one durable synthetic fact now. Use memory_patch immediately with logicalKey ${logicalKey}, mutationKind create, expectedDocumentRevision null, and a full replacement Markdown document saying the fictional Project Ember launch date is 2026-09-30 and supersedes earlier plans. Make the tool call your only action.` }],
       });
-      const chatBEvents: AgentRuntimeEvent[] = [];
-      for await (const event of streamAgentEvents({
-        model: createProductionChatModel(),
-        context: chatBContext,
-        memoryRetrieval,
-        returnDirectTools: ["search_messages", "read_messages"],
-        forceToolName: "search_messages",
-        messages: [{
-          role: "user",
-          content: "This is the second synthetic chat. The canonical memory snapshot contains the fact. I want to know where I originally stated it. Use search_messages now with the query synthetic acceptance fact, then provide the exact source action. Do not guess and do not use memory_search.",
-        }],
-      })) {
-        chatBEvents.push(event);
-      }
+      observedEvents.push(...chatAResult.events);
 
-      const sourceRows = chatBEvents.flatMap((event) => event.type === "tool_finished" && event.toolName === "search_messages" ? memorySourceRows("search_messages", event.output, PROFILE_ID) : []);
-      const action = sourceRows[0]?.action ?? null;
+      const documentAfterPatch = await store.getDocument(PROFILE_ID, logicalKey, { includeArchived: true });
+      if (documentAfterPatch) ledger.documentIds.push(documentAfterPatch.id);
+      for (const document of await store.listDocuments(PROFILE_ID, { includeArchived: true })) {
+        if (!baselineDocumentIds.has(document.id) && document.contentMarkdown.includes(tag)) ledger.documentIds.push(document.id);
+      }
+      const currentDocuments = await store.listDocuments(PROFILE_ID);
+      const canonicalMemory = budgetCanonicalMemory(currentDocuments, await store.getCurrentRevision(PROFILE_ID), { profileId: PROFILE_ID });
+
+      const chatB = await createFreshTurn(ledger, tag, `Synthetic ${tag}: answer a short question about the current fictional Project Ember launch date.`);
+      const chatBResult = await collectTurn({
+        model,
+        context: createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: chatB.threadId, threadTitle: `Synthetic ${tag} B`, browserTimezone: "UTC", currentUserMessageId: chatB.messageId, agentRunId: chatB.runId, canonicalMemory, now: new Date("2026-08-16T00:01:00.000Z") }),
+        messages: [{ role: "user", content: "What is the current fictional Project Ember launch date? Answer briefly from the canonical context and do not call a tool." }],
+      });
+      observedEvents.push(...chatBResult.events);
+
+      const chatC = await createFreshTurn(ledger, tag, `Synthetic ${tag}: find the exact source of a prior decision.`);
+      const chatCResult = await collectTurn({
+        model,
+        context: createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: chatC.threadId, threadTitle: `Synthetic ${tag} C`, browserTimezone: "UTC", currentUserMessageId: chatC.messageId, agentRunId: chatC.runId, canonicalMemory, now: new Date("2026-08-16T00:02:00.000Z") }),
+        memoryRetrieval: { searchMessages: (input) => store.searchMessages(input), readMessages: (profileId, messageId, windowSize) => store.readMessageContext(profileId, messageId, windowSize), listMemory: (profileId) => store.listDocuments(profileId), currentRevision: (profileId) => store.getCurrentRevision(profileId), readMemory: (profileId, key) => store.getDocument(profileId, key), searchMemory: (profileId, query, limit) => store.searchDocuments(profileId, query, limit) },
+        returnDirectTools: ["search_messages", "read_messages"],
+        messages: [{ role: "user", content: "Where did I decide that? Search prior chats for the exact source of the fictional Project Ember launch decision and return a validated internal open source action. Do not guess and do not use an external URL." }],
+      });
+      observedEvents.push(...chatCResult.events);
+
+      const oldTurn = await createExistingTurn(ledger, oldThreads[0].threadId, tag, `Synthetic ${tag}: what is the current fictional Project Ember launch date? Use the latest memory correction, not stale history.`);
+      const throughRevision = await store.getCurrentRevision(PROFILE_ID);
+      const changeHint = await readMemoryChangeHint({ store, profileId: PROFILE_ID, afterRevision: baselineRevision, throughRevision });
+      const oldCanonical = budgetCanonicalMemory(await store.listDocuments(PROFILE_ID), throughRevision, { profileId: PROFILE_ID });
+      const oldContext = createAgentContext({ profileId: PROFILE_ID, profileLabel: profile.displayName, threadId: oldThreads[0].threadId, threadTitle: `Synthetic ${tag} old`, browserTimezone: "UTC", currentUserMessageId: oldTurn.messageId, agentRunId: oldTurn.runId, canonicalMemory: oldCanonical, memoryChangeHint: changeHint, now: new Date("2026-08-16T00:03:00.000Z") });
+      const oldResult = await collectTurn({ model, context: oldContext, messages: [{ role: "user", content: "What is the current fictional Project Ember launch date? Use the latest correction." }] });
+      observedEvents.push(...oldResult.events);
+
+      const patchFinished = chatAResult.events.find((event): event is Extract<AgentRuntimeEvent, { type: "tool_finished" }> => event.type === "tool_finished" && event.toolName === "memory_patch");
+      const sourceRows = chatCResult.events.flatMap((event) => event.type === "tool_finished" && (event.toolName === "search_messages" || event.toolName === "read_messages") ? memorySourceRows(event.toolName, event.output, PROFILE_ID) : []);
+      const sourceRow = sourceRows.find((row) => oldMessageIds.includes(row.action.messageId));
+      const archiveRevision = documentAfterPatch?.documentRevision ?? 0;
+      const archiveResult = documentAfterPatch && archiveRevision > 0
+        ? await memoryArchive.archive({ profileId: PROFILE_ID, threadId: chatC.threadId, currentUserMessageId: chatC.messageId, agentRunId: chatC.runId, toolCallId: `acceptance-archive-${tag}`, logicalKey, expectedDocumentRevision: archiveRevision, reason: "Synthetic acceptance cleanup." })
+        : { status: "not_found" as const, logicalKey, reason: "Synthetic document was not created." };
+      const activeAfterArchive = await store.getDocument(PROFILE_ID, logicalKey);
+      const rawSourceStillPresent = Boolean(await store.readMessageContext(PROFILE_ID, oldMessageIds[0], 1));
       const assertions = {
-        providerRequestBudget: providerCalls === 2,
-        chatAPatchStarted: chatAEvents.some((event) => event.type === "tool_started" && event.toolName === "memory_patch"),
-        chatAPatchFinished: hasFinishedTool(chatAEvents, "memory_patch", (output) => Boolean(output && typeof output === "object" && !Array.isArray(output) && (output as Record<string, unknown>).status === "applied")),
-        ephemeralMutationApplied: state.mutationApplied && state.documents.size === 1,
-        chatBRetrievalStarted: chatBEvents.some((event) => event.type === "tool_started" && (event.toolName === "search_messages" || event.toolName === "read_messages")),
-        chatBRetrievalFinished: chatBEvents.some((event) => event.type === "tool_finished" && event.ok && (event.toolName === "search_messages" || event.toolName === "read_messages")),
-        validatedOpenMessageAction: Boolean(action && validateOpenMessageAction(action) && action.threadId === THREAD_A_ID && action.messageId === MESSAGE_A_ID),
+        requestBudget: providerCalls <= MAX_REQUESTS,
+        chatAPatchStarted: chatAResult.events.some((event) => event.type === "tool_started" && event.toolName === "memory_patch"),
+        chatAPatchFinished: Boolean(patchFinished && patchFinished.ok && patchFinished.output && typeof patchFinished.output === "object" && (patchFinished.output as Record<string, unknown>).status === "applied"),
+        canonicalMutationApplied: Boolean(documentAfterPatch && documentAfterPatch.contentMarkdown.includes("2026-09-30")),
+        chatBCurrentValue: /2026-09-30|september 30/i.test(textOutput(chatBResult.events)),
+        chatBNoToolClaim: toolNames(chatBResult.events).length === 0,
+        chatCSearchStarted: chatCResult.events.some((event) => event.type === "tool_started" && event.toolName === "search_messages"),
+        chatCSearchFinished: hasFinishedTool(chatCResult.events, "search_messages", () => true) || hasFinishedTool(chatCResult.events, "read_messages", () => true),
+        validatedHistoricalSourceAction: Boolean(sourceRow && validateOpenMessageAction(sourceRow.action) && oldMessageIds.includes(sourceRow.action.messageId)),
+        oldContextHasCollapsedCorrection: changeHint.changes.some((change) => change.logicalKey === logicalKey && change.contentMarkdown.includes("2026-09-30")) && buildDynamicSystemPrompt(oldContext).includes("memory-changes"),
+        oldChatFollowsCorrection: /2026-09-30|september 30/i.test(textOutput(oldResult.events)),
+        archiveApplied: archiveResult.status === "applied",
+        archivedDocumentAbsentFromActiveContext: activeAfterArchive === null,
+        rawTaggedHistoryPresent: rawSourceStillPresent,
       };
-      const allPassed = Object.values(assertions).every(Boolean);
-      console.log(`IRIS_LIVE_ACCEPTANCE_RESULT:${JSON.stringify({ model: (process.env.OPENROUTER_MODEL || "openai/gpt-5.6-luna").slice(0, 120), totalRequests: providerCalls + 2, observedToolNames: [...new Set([...toolNames(chatAEvents), ...toolNames(chatBEvents)])].sort(), assertions })}`);
-      expect(allPassed).toBe(true);
+      acceptanceReport = {
+        status: Object.values(assertions).every(Boolean) ? "passed" : "failed",
+        model: getConfiguredModelName(),
+        requestCount: providerCalls,
+        observedToolNames: toolNames(observedEvents),
+        assertions,
+      };
+    } catch (error) {
+      failureCode = errorCode(error);
+      throw error;
     } finally {
       globalThis.fetch = originalFetch;
+      try {
+        await cleanup(ledgerPath, ledger);
+        const after = await aggregate();
+        const cleanupReturnedToBaseline = baseline ? sameAggregate(baseline, after) : false;
+        if (acceptanceReport) {
+          const assertions = { ...(acceptanceReport.assertions as Record<string, boolean>), cleanupReturnedToBaseline };
+          const status = Object.values(assertions).every(Boolean) ? "passed" : "failed";
+          writeReport({ ...acceptanceReport, status, assertions, ...(status === "failed" ? { errorCode: "assertion_failed" } : {}) });
+          expect(status).toBe("passed");
+        } else {
+          writeReport({ status: "failed", model: getConfiguredModelName(), requestCount: providerCalls, observedToolNames: toolNames(observedEvents), errorCode: failureCode ?? (cleanupReturnedToBaseline ? "acceptance_failed" : "cleanup_mismatch"), assertions: { cleanupReturnedToBaseline } });
+        }
+      } catch (cleanupError) {
+        writeReport({ status: "failed", model: getConfiguredModelName(), requestCount: providerCalls, observedToolNames: toolNames(observedEvents), errorCode: errorCode(cleanupError), assertions: { cleanupReturnedToBaseline: false } });
+        throw cleanupError;
+      }
     }
   });
 });

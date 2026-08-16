@@ -90,12 +90,14 @@ connection and explicitly scopes every query.
 
 `src/server/memory/acceptance.test.ts` runs a no-network Chat A → canonical
 write → Chat B recall/source → old Chat A revision-delta scenario with injected
-fakes. A separate synthetic provider check is prepared at
+fakes. A separate guarded local acceptance check is prepared at
 `scripts/live-memory-acceptance.mjs`; it requires
-`IRIS_RUN_LIVE_MEMORY_ACCEPTANCE=1`, uses at most two short model requests and
-synthetic text only, prints pass/fail plus call count, and never touches Iris's
-Supabase tables. Do not run it as part of ordinary checks; the later hosted
-acceptance follow-up must explicitly opt in and review cost first.
+`IRIS_RUN_LIVE_MEMORY_ACCEPTANCE=1`, caps chat-model requests at six, uses no
+embeddings, seeds only tagged synthetic rows in the configured local database,
+and reports sanitized tool/assertion status through a temporary permission-600
+result file. The child cleans exact ledger IDs and verifies aggregate counts
+return to baseline. Do not run it as part of ordinary checks; a hosted
+acceptance still requires an explicitly configured matching project.
 
 ## Later slices
 
