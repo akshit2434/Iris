@@ -262,10 +262,17 @@ export type MemorySuppression = {
   liftedAt: string | null;
 };
 
+/** Search strategy used by the historical-message index. */
+export type MessageMatchType = "exact_phrase" | "hybrid" | "semantic";
+export type MessageSearchRole = "user" | "assistant" | "tool";
+
 export type MessageSearchInput = {
   profileId: ProfileId;
   query: string;
   queryEmbedding?: readonly number[] | null;
+  exactPhrase?: string | null;
+  matchType?: MessageMatchType;
+  roles?: readonly MessageSearchRole[] | null;
   threadId?: string | null;
   from?: string | null;
   to?: string | null;
@@ -282,6 +289,7 @@ export type MessageSearchResult = {
   lexicalScore: number;
   semanticScore: number | null;
   combinedScore: number;
+  matchType?: MessageMatchType;
 };
 
 export type MessageContextItem = {

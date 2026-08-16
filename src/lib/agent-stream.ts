@@ -417,21 +417,24 @@ export function toolActionLabel(toolName: string, status: ToolActivity["status"]
   if (status === "running" && statusMessage) return statusMessage;
   if (toolName === "current_time") return status === "running" ? "Checking time" : status === "failed" ? "Time check failed" : "Checked time";
   if (toolName === "thread_overview") return status === "running" ? "Reviewing this chat" : status === "failed" ? "Chat review failed" : "Reviewed this chat";
+  if (toolName === "history_preflight") return status === "running" ? "Searching chats" : status === "failed" ? "Chat search failed" : "Searched chats";
   const label = toolLabel(toolName).toLocaleLowerCase();
   return status === "running" ? `Using ${label}` : status === "failed" ? `${toolLabel(toolName)} failed` : `Used ${label}`;
 }
 
-export type ToolActivityIconName = "clock" | "chat" | "tools";
+export type ToolActivityIconName = "clock" | "chat" | "search" | "tools";
 
 export function toolActivityIconName(toolName: string): ToolActivityIconName {
   if (toolName === "current_time") return "clock";
   if (toolName === "thread_overview") return "chat";
+  if (toolName === "history_preflight") return "search";
   return "tools";
 }
 
 export function toolLabel(toolName: string) {
   if (toolName === "current_time") return "Current time";
   if (toolName === "thread_overview") return "Thread overview";
+  if (toolName === "history_preflight") return "Chat search";
   return toolName.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
@@ -470,6 +473,12 @@ export function summarizeToolResult(activity: ToolActivity) {
     const count = typeof structuredOutput.messageCount === "number" ? `${structuredOutput.messageCount} messages` : "Saved thread";
     return `${title} · ${count}`;
   }
+  if (activity.toolName === "history_preflight" && structuredOutput) {
+    if (structuredOutput.status === "no_match") return "No matching chat found";
+    if (structuredOutput.status === "unavailable") return "Chat search unavailable";
+    const sources = Array.isArray(structuredOutput.sources) ? structuredOutput.sources.length : 0;
+    return sources === 1 ? "Found 1 source" : `Found ${sources} sources`;
+  }
   if (activity.toolName === "search_messages" && structuredOutput) {
     const count = Array.isArray(structuredOutput.results) ? structuredOutput.results.length : 0;
     return count === 0 ? "No matching messages" : `Found ${count} ${count === 1 ? "message" : "messages"}`;
@@ -493,7 +502,7 @@ export function summarizeToolResult(activity: ToolActivity) {
 }
 
 export function toolDetail(activity: ToolActivity) {
-  if (["current_time", "thread_overview", "search_messages", "read_messages", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive"].includes(activity.toolName)) return null;
+  if (["current_time", "thread_overview", "history_preflight", "search_messages", "read_messages", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive"].includes(activity.toolName)) return null;
   const value: SafeJson | undefined = activity.output ?? activity.input;
   if (!value || typeof value !== "object") return null;
   return JSON.stringify(value, null, 2).slice(0, 1600);

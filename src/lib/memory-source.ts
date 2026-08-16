@@ -72,7 +72,9 @@ function objectOutput(value: SafeToolJson | undefined): Record<string, SafeToolJ
 
 function getRows(value: SafeToolJson | undefined) {
   const output = objectOutput(value);
-  return output && Array.isArray(output.results) ? output.results : [];
+  if (!output) return [];
+  if (Array.isArray(output.results)) return output.results;
+  return Array.isArray(output.sources) ? output.sources : [];
 }
 
 function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceRow | null {
@@ -93,7 +95,7 @@ function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceR
 }
 
 export function memorySourceRows(toolName: string, output: SafeToolJson | undefined, expectedProfileId?: ProfileId): MemorySourceRow[] {
-  if (toolName === "search_messages") return getRows(output).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
+  if (toolName === "search_messages" || toolName === "history_preflight") return getRows(output).map((value) => sourceRow(value, expectedProfileId)).filter((row): row is MemorySourceRow => row !== null).slice(0, 3);
   if (toolName === "read_messages") {
     const object = objectOutput(output);
     const target = object?.target;

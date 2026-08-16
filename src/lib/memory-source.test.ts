@@ -42,6 +42,14 @@ describe("memory source actions", () => {
     expect(buildOpenMessageAction("not-a-uuid", action.messageId)).toBeNull();
   });
 
+  it("replays deterministic preflight sources as internal message actions", () => {
+    expect(memorySourceRows("history_preflight", {
+      kind: "history_preflight",
+      status: "found",
+      sources: [{ profileId: "profile-a", threadId: action.threadId, messageId: action.messageId, action, excerpt: "A retained source", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Decision" }],
+    }, "profile-a")).toEqual([{ action, profileId: "profile-a", excerpt: "A retained source", createdAt: "2026-08-14T12:00:00.000Z", role: "user", threadTitle: "Decision" }]);
+  });
+
   it("renders structured memory item tool results without document-era fields", () => {
     expect(memoryItemRows("memory_read", {
       kind: "memory_read",

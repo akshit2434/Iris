@@ -77,6 +77,7 @@ export function createIrisAgent(input: {
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
 }): RuntimeAgent {
   const dynamicPrompt = dynamicSystemPromptMiddleware<AgentContext>((_state, runtime) =>
@@ -99,7 +100,7 @@ export function createIrisAgent(input: {
     model: input.model,
     contextSchema: agentContextSchema,
     middleware: acceptanceToolChoice ? [dynamicPrompt, acceptanceToolChoice] : [dynamicPrompt],
-    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive, { returnDirectTools: input.returnDirectTools })],
+    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive, { returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch })],
   });
 }
 
@@ -109,6 +110,7 @@ export function createProductionAgent(input?: {
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
 }): RuntimeAgent {
   return createIrisAgent({
@@ -118,6 +120,7 @@ export function createProductionAgent(input?: {
     memoryMutation: input?.memoryMutation,
     memoryArchive: input?.memoryArchive,
     returnDirectTools: input?.returnDirectTools,
+    disableHistoricalSearch: input?.disableHistoricalSearch,
     forceToolName: input?.forceToolName,
   });
 }
@@ -293,11 +296,12 @@ export async function* streamAgentEvents(input: {
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
 }): AsyncGenerator<AgentRuntimeEvent> {
   const agent = input.model
-    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, forceToolName: input.forceToolName })
-    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, forceToolName: input.forceToolName });
+    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch, forceToolName: input.forceToolName })
+    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, disableHistoricalSearch: input.disableHistoricalSearch, forceToolName: input.forceToolName });
   const stream = await agent.stream(
     { messages: input.messages },
     { context: input.context, signal: input.signal, streamMode: "messages" },
@@ -376,6 +380,7 @@ export async function* streamAssistantReply(input: {
   memoryMutation?: MemoryMutationService;
   memoryArchive?: MemoryArchiveService;
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
+  disableHistoricalSearch?: InternalToolOptions["disableHistoricalSearch"];
   forceToolName?: string;
 }) {
   void input.profileId;

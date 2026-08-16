@@ -26,6 +26,15 @@ describe("profile-scoped memory retrieval", () => {
     expect(memoryStore.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ queryEmbedding: expect.any(Array), limit: 2 }));
   });
 
+  it("falls back to lexical search when the semantic provider is unavailable", async () => {
+    const memoryStore = store();
+    const provider = { model: "test-embedding", embed: vi.fn(async () => { throw new Error("embedding unavailable"); }) };
+    const service = createMemoryRetrievalService({ store: memoryStore, semanticSearchEnabled: true, semanticQueryProvider: provider });
+    await service.searchMessages({ profileId: "profile-a", query: "roadmap", matchType: "semantic", roles: ["user"], limit: 2 });
+    expect(provider.embed).toHaveBeenCalledWith(["roadmap"]);
+    expect(memoryStore.searchMessages).toHaveBeenCalledWith(expect.objectContaining({ queryEmbedding: null, matchType: "semantic", roles: ["user"], limit: 2 }));
+  });
+
   it("rejects invalid date ranges and malformed exact IDs before the store", async () => {
     const memoryStore = store();
     const service = createMemoryRetrievalService({ store: memoryStore });

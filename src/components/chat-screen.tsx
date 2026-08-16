@@ -502,6 +502,7 @@ function ToolActivityIcon({ toolName }: Readonly<{ toolName: string }>) {
   const icon = toolActivityIconName(toolName);
   if (icon === "clock") return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10 6v4l2.7 1.7" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" /></svg>;
   if (icon === "chat") return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><path d="M4 4.5h12v8H9l-3.5 3v-3H4z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4" /><path d="M7 8h6M7 10.5h4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" /></svg>;
+  if (icon === "search") return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><circle cx="8.5" cy="8.5" r="4.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="m12.2 12.2 4 4" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" /></svg>;
   return <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true"><path d="m7.5 5.5 2.5-2 2.5 2-1 1.6 1.6 1 1.9-.4 1 3-1.7 1-.1 2-1.8.8-1.4-1.3-1.8.7-1.7-1.4.6-1.9-1.3-1.3-1.8.2-1.2-2.8z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2" /><circle cx="10" cy="9.8" r="2" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>;
 }
 

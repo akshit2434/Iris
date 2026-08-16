@@ -30,7 +30,13 @@ raw history and revisions. Archive also creates a suppression record.
 - `repository.ts` is the injected Supabase store. Every read and write carries
   a profile predicate.
 - `retrieval.ts` exposes bounded lexical/hybrid message search and structured
-  item search without requesting embeddings unless explicitly enabled.
+  item search without requesting embeddings unless explicitly enabled. Message
+  search accepts exact phrases, explicit roles, date/thread filters, and a
+  match strategy; semantic failures fall back to lexical retrieval.
+- `history-preflight.ts` detects only explicit historical-evidence and old-chat
+  continuation requests. It searches before agent generation, re-reads each
+  candidate inside the active profile, and produces bounded source blocks plus
+  validated `open_message` actions. Ordinary requests remain model-tool driven.
 - `mutation.ts` governs explicit item writes from persisted user turns.
 - `archive.ts` governs forget/archive and suppression creation.
 - `context-budget.ts` selects a deterministic token-bounded item snapshot and

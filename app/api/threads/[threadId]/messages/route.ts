@@ -41,9 +41,11 @@ import { shouldEnqueueConsolidation } from "@/server/memory/consolidation";
 import { DEFAULT_CONTINUITY_TAIL_TOKENS, hashContinuityInput, shouldQueueContinuity } from "@/server/memory/compaction";
 import { createSupabaseThreadContinuityStore } from "@/server/memory/compaction-repository";
 import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/reconciliation";
+import { runHistoryPreflight } from "@/server/memory/history-preflight";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import {
   AGENT_STREAM_PROTOCOL,
+  sanitizeForEvent,
   safeFailure,
   type AgentStreamEvent,
 } from "@/server/agent/protocol";
@@ -110,6 +112,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const userMessageId = crypto.randomUUID();
     const assistantMessageId = crypto.randomUUID();
     const model = getConfiguredModelName();
+    const requestNow = new Date();
     let thread;
     let run;
     if (isNewThread) {
@@ -200,6 +203,13 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       memoryControlsPromise,
       referenceHistoryStore.getLatestSnapshot(profileId).catch(() => null),
     ]);
+    const historicalPreflight = await runHistoryPreflight({
+      profileId,
+      query: content,
+      retrieval: memoryRetrieval,
+      now: requestNow,
+      maxResults: 3,
+    });
     const [memoryItems, memorySuppressions] = await Promise.all([
       memoryStore.listItems(profileId).catch(() => []),
       memoryStore.listActiveSuppressions ? memoryStore.listActiveSuppressions(profileId).catch(() => []) : Promise.resolve([]),
@@ -237,6 +247,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
+      now: requestNow,
       // State slots are supplied by the token assembler below. Keeping them
       // empty here ensures the ledger measures each component exactly once.
       budgetedContext: {
@@ -244,7 +255,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         pinnedNotes: [],
         savedMemoryPrompt: "",
         referenceHistoryPrompt,
-        targetedRetrievalPrompt: "",
+        targetedRetrievalPrompt: historicalPreflight.prompt,
       },
     });
     const currentUserMessage = history.find((message) => message.id === userMessageId) ?? {
@@ -272,7 +283,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         pinnedNotes: threadContextRow.pinnedNotes,
         savedMemoryPrompt,
         referenceHistoryPrompt,
-        targetedRetrievalPrompt: "",
+        targetedRetrievalPrompt: historicalPreflight.prompt,
         estimator,
       });
     } catch (error) {
@@ -304,6 +315,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
+      now: requestNow,
       budgetedContext: contextAssembly.prompt,
     });
     const userMessageTokenEstimate = estimator.estimateMessage({ role: "user", content });
@@ -406,12 +418,49 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             at: new Date().toISOString(),
           });
 
+          if (historicalPreflight.triggered) {
+            const toolCallId = `history-preflight:${run.id}`;
+            const statusMessage = "Searching chats";
+            const completionMessage = historicalPreflight.status === "no_match"
+              ? "No matching chat found"
+              : historicalPreflight.status === "unavailable"
+                ? "Chat search unavailable"
+                : historicalPreflight.sources.length === 1
+                  ? "Found 1 source"
+                  : `Found ${historicalPreflight.sources.length} sources`;
+            await appendAgentEvent({
+              profileId,
+              threadId,
+              runId: run.id,
+              sequence: ++persistedSequence,
+              type: "tool_call",
+              payload: { toolCallId, toolName: "history_preflight", input: { query: content, trigger: historicalPreflight.intent?.trigger ?? "history" }, statusMessage },
+            });
+            send({ type: "tool_started", runId: run.id, toolCallId, toolName: "history_preflight", input: { query: content, trigger: historicalPreflight.intent?.trigger ?? "history" }, statusMessage });
+            const output = sanitizeForEvent({
+              kind: "history_preflight",
+              status: historicalPreflight.status,
+              sources: historicalPreflight.sources,
+              ...(historicalPreflight.errorCode ? { errorCode: historicalPreflight.errorCode } : {}),
+            });
+            await appendAgentEvent({
+              profileId,
+              threadId,
+              runId: run.id,
+              sequence: ++persistedSequence,
+              type: "tool_result",
+              payload: { toolCallId, toolName: "history_preflight", output, ok: historicalPreflight.status !== "unavailable", statusMessage: completionMessage },
+            });
+            send({ type: "tool_finished", runId: run.id, toolCallId, toolName: "history_preflight", output, ok: historicalPreflight.status !== "unavailable", statusMessage: completionMessage });
+          }
+
           for await (const event of streamAgentEvents({
             context: agentContext,
             messages: contextAssembly.messages,
             memoryRetrieval,
             memoryMutation,
             memoryArchive,
+            disableHistoricalSearch: historicalPreflight.triggered,
           })) {
             if (event.type === "usage_observed") {
               actualUsage = event.usage;

@@ -1,5 +1,5 @@
 import { isProfileId, type ProfileId } from "@/lib/profiles";
-import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryItemRevisionInput, type MemoryProvenanceInput, type MemoryProvenanceRelation } from "@/server/memory/types";
+import { MEMORY_EMBEDDING_DIMENSIONS, type ApplyMemoryItemRevisionInput, type MemoryProvenanceInput, type MemoryProvenanceRelation, type MessageMatchType, type MessageSearchRole } from "@/server/memory/types";
 
 const CANONICAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const MAX_CONTENT_LENGTH = 500_000;
@@ -167,6 +167,26 @@ export function normalizeMemoryQuery(value: string) {
   const query = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (!query || query.length > 500) throw new Error("Memory search queries must be between 1 and 500 characters.");
   return query;
+}
+
+export function normalizeMemoryExactPhrase(value: string | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const phrase = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!phrase || phrase.length > 500) throw new Error("Exact historical phrases must be between 1 and 500 characters.");
+  return phrase;
+}
+
+export function normalizeMemoryMatchType(value: MessageMatchType | undefined): MessageMatchType {
+  return value === "exact_phrase" || value === "semantic" ? value : "hybrid";
+}
+
+export function normalizeMemoryRoles(value: readonly MessageSearchRole[] | null | undefined): MessageSearchRole[] | null {
+  if (value === null || value === undefined) return null;
+  const roles = [...new Set(value)];
+  if (roles.length === 0 || roles.some((role) => role !== "user" && role !== "assistant" && role !== "tool")) {
+    throw new Error("Historical search roles must be user, assistant, or tool.");
+  }
+  return roles;
 }
 
 export function normalizeMemoryLimit(value: number | undefined, fallback = 5) {

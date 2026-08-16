@@ -178,6 +178,20 @@ describe("context builder", () => {
     expect(prompt).not.toContain("full change");
   });
 
+  it("tells the model when trusted historical preflight already ran", () => {
+    const prompt = buildDynamicSystemPrompt(createAgentContext({
+      ...context,
+      budgetedContext: {
+        threadSummary: null,
+        pinnedNotes: [],
+        savedMemoryPrompt: "",
+        referenceHistoryPrompt: "",
+        targetedRetrievalPrompt: "<historical-preflight>\nHistorical preflight status: found.\n</historical-preflight>",
+      },
+    }));
+    expect(prompt).toContain("do not call search_messages again");
+  });
+
   it("sends only messages after a durable compaction checkpoint while keeping raw history", () => {
     const built = buildThreadAgentContext({
       messages: [
@@ -207,6 +221,17 @@ describe("internal tools", () => {
       "thread_overview",
       "search_messages",
       "read_messages",
+      "memory_list",
+      "memory_read",
+      "memory_search",
+      "memory_patch",
+      "memory_archive",
+    ]);
+  });
+
+  it("removes historical model tools after trusted preflight to avoid duplicate searches", () => {
+    expect(createInternalTools(undefined, undefined, undefined, undefined, { disableHistoricalSearch: true }).map((internalTool) => internalTool.name)).toEqual([
+      "thread_overview",
       "memory_list",
       "memory_read",
       "memory_search",

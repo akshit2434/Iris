@@ -881,6 +881,32 @@ export type Database = {
           combined_score: number;
         }>;
       };
+      search_messages_v2: {
+        Args: {
+          p_profile_id: "profile-a" | "profile-b";
+          p_query?: string;
+          p_exact_phrase?: string | null;
+          p_match_type?: "exact_phrase" | "hybrid" | "semantic";
+          p_roles?: string[] | null;
+          p_query_embedding?: number[] | null;
+          p_thread_id?: string | null;
+          p_from?: string | null;
+          p_to?: string | null;
+          p_limit?: number;
+        };
+        Returns: Array<{
+          message_id: string;
+          thread_id: string;
+          profile_id: "profile-a" | "profile-b";
+          role: MessageRole;
+          content: string;
+          created_at: string;
+          lexical_score: number;
+          semantic_score: number | null;
+          combined_score: number;
+          match_type: "exact_phrase" | "hybrid" | "semantic";
+        }>;
+      };
       apply_memory_item_revision: {
         Args: {
           p_profile_id: "profile-a" | "profile-b";

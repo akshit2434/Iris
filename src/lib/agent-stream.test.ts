@@ -71,6 +71,13 @@ describe("agent stream parser", () => {
     }]);
     expect(grouped[0].output).toMatchObject({ results: [expect.objectContaining({ action: sourceAction })] });
   });
+
+  it("uses concise history-preflight labels and search icon", () => {
+    expect(toolActionLabel("history_preflight", "running")).toBe("Searching chats");
+    expect(toolActionLabel("history_preflight", "succeeded")).toBe("Searched chats");
+    expect(toolActivityIconName("history_preflight")).toBe("search");
+    expect(summarizeToolResult({ runId: "run", toolCallId: "call", toolName: "history_preflight", status: "succeeded", output: { status: "no_match", sources: [] } })).toBe("No matching chat found");
+  });
 });
 
 describe("agent stream reducer", () => {

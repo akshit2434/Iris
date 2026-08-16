@@ -29,6 +29,8 @@ export type InternalToolOptions = {
    * with a natural assistant reply after a tool call.
    */
   returnDirectTools?: readonly string[];
+  /** The trusted server preflight already searched/read historical sources. */
+  disableHistoricalSearch?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -44,6 +46,9 @@ export const optionalToolProgressSchema = z.object({
 
 const searchMessagesInput = z.object({
   query: z.string().trim().min(1).max(500),
+  exactPhrase: z.string().trim().min(1).max(500).optional(),
+  matchType: z.enum(["exact_phrase", "hybrid", "semantic"]).optional(),
+  roles: z.array(z.enum(["user", "assistant", "tool"])).min(1).max(3).optional(),
   threadId: z.string().uuid().optional(),
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
@@ -119,6 +124,8 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
         role: result.role,
         createdAt: result.createdAt,
         excerpt: boundedExcerpt(result.content),
+        matchType: result.matchType ?? input.matchType ?? "hybrid",
+        scores: { lexical: result.lexicalScore, semantic: result.semanticScore, combined: result.combinedScore },
         action,
       }] : [];
     }),
@@ -276,7 +283,7 @@ export function createInternalTools(
     async (input: z.infer<typeof searchMessagesInput>, runtime: ToolRuntime<unknown, AgentContext>) => searchMessages(runtime.context, input, getMemoryRetrieval()),
     {
       name: "search_messages",
-      description: "Search this profile's prior chats when the user refers to an earlier conversation, decision, or where something was said. Return concise hits with source IDs; do not use for self-contained requests.",
+      description: "Search this profile's retained chats when the user refers to an earlier conversation, decision, or exact source. Use exact_phrase for quoted wording, hybrid for normal evidence queries, and semantic only when meaning matters. Return concise hits with source IDs; do not use for self-contained requests.",
       schema: searchMessagesInput,
       returnDirect: isReturnDirect("search_messages"),
     },
@@ -336,7 +343,8 @@ export function createInternalTools(
     },
   );
 
-  return [threadOverview, searchMessagesTool, readMessagesTool, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool] as const;
+  const historicalTools = options.disableHistoricalSearch ? [] : [searchMessagesTool, readMessagesTool];
+  return [threadOverview, ...historicalTools, memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool] as const;
 }
 
 /**

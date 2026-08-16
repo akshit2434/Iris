@@ -103,6 +103,21 @@ function toSearchResult(row: Database["public"]["Functions"]["search_messages"][
   };
 }
 
+function toAdvancedSearchResult(row: Database["public"]["Functions"]["search_messages_v2"]["Returns"][number]): MessageSearchResult {
+  return {
+    messageId: row.message_id,
+    threadId: row.thread_id,
+    profileId: row.profile_id,
+    role: row.role,
+    content: row.content,
+    createdAt: row.created_at,
+    lexicalScore: row.lexical_score,
+    semanticScore: row.semantic_score,
+    combinedScore: row.combined_score,
+    matchType: row.match_type === "exact_phrase" || row.match_type === "semantic" ? row.match_type : "hybrid",
+  };
+}
+
 function toMessageContextItem(row: { id: string; thread_id: string; profile_id: "profile-a" | "profile-b"; role: "user" | "assistant" | "tool"; content: string; created_at: string }): MessageContextItem {
   return { messageId: row.id, threadId: row.thread_id, profileId: row.profile_id, role: row.role, content: row.content, createdAt: row.created_at };
 }
@@ -213,17 +228,36 @@ export function createSupabaseMemoryStore(database: MemoryDatabase = getDatabase
 
     async searchMessages(input) {
       assertMemoryProfileId(input.profileId);
-      const { data, error } = await database.rpc("search_messages", {
-        p_profile_id: input.profileId,
-        p_query: input.query,
-        p_query_embedding: input.queryEmbedding ? [...validateEmbedding(input.queryEmbedding)] : null,
-        p_thread_id: input.threadId ?? null,
-        p_from: input.from ?? null,
-        p_to: input.to ?? null,
-        p_limit: input.limit ?? 20,
+      const advanced = input.matchType !== undefined || input.exactPhrase !== undefined || input.roles !== undefined;
+      const { data, error } = advanced
+        ? await database.rpc("search_messages_v2", {
+            p_profile_id: input.profileId,
+            p_query: input.query,
+            p_exact_phrase: input.exactPhrase ?? null,
+            p_match_type: input.matchType ?? "hybrid",
+            p_roles: input.roles ? [...input.roles] : null,
+            p_query_embedding: input.queryEmbedding ? [...validateEmbedding(input.queryEmbedding)] : null,
+            p_thread_id: input.threadId ?? null,
+            p_from: input.from ?? null,
+            p_to: input.to ?? null,
+            p_limit: input.limit ?? 20,
+          })
+        : await database.rpc("search_messages", {
+            p_profile_id: input.profileId,
+            p_query: input.query,
+            p_query_embedding: input.queryEmbedding ? [...validateEmbedding(input.queryEmbedding)] : null,
+            p_thread_id: input.threadId ?? null,
+            p_from: input.from ?? null,
+            p_to: input.to ?? null,
+            p_limit: input.limit ?? 20,
       });
       if (error) throw error;
-      return (data ?? []).map(toSearchResult);
+      if (advanced) {
+        const rows = (data ?? []) as Database["public"]["Functions"]["search_messages_v2"]["Returns"];
+        return rows.map(toAdvancedSearchResult);
+      }
+      const rows = (data ?? []) as Database["public"]["Functions"]["search_messages"]["Returns"];
+      return rows.map(toSearchResult);
     },
 
     async readMessageContext(profileId, messageId, windowSize = 3) {

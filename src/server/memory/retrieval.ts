@@ -2,12 +2,12 @@ import "server-only";
 
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import type { EmbeddingProvider } from "@/server/memory/embeddings";
-import type { MemoryItemSearchResult, MessageContextWindow, MessageSearchResult, MemoryStore } from "@/server/memory/types";
-import { normalizeMemoryDate, normalizeMemoryLimit, normalizeMemoryQuery, validateEmbedding, validateMemoryUuid } from "@/server/memory/validation";
+import type { MemoryItemSearchResult, MessageContextWindow, MessageMatchType, MessageSearchResult, MessageSearchRole, MemoryStore } from "@/server/memory/types";
+import { normalizeMemoryDate, normalizeMemoryExactPhrase, normalizeMemoryLimit, normalizeMemoryMatchType, normalizeMemoryQuery, normalizeMemoryRoles, validateEmbedding, validateMemoryUuid } from "@/server/memory/validation";
 import type { ProfileId } from "@/lib/profiles";
 
 export type MemoryRetrieval = {
-  searchMessages: (input: { profileId: ProfileId; query: string; threadId?: string | null; from?: string | null; to?: string | null; limit?: number }) => Promise<MessageSearchResult[]>;
+  searchMessages: (input: { profileId: ProfileId; query: string; exactPhrase?: string | null; matchType?: MessageMatchType; roles?: readonly MessageSearchRole[] | null; threadId?: string | null; from?: string | null; to?: string | null; limit?: number }) => Promise<MessageSearchResult[]>;
   readMessages: (profileId: ProfileId, messageId: string, windowSize?: number) => Promise<MessageContextWindow | null>;
   listMemory: (profileId: ProfileId) => Promise<Awaited<ReturnType<MemoryStore["listItems"]>>>;
   currentRevision: (profileId: ProfileId) => Promise<number>;
@@ -22,18 +22,28 @@ export function createMemoryRetrievalService(options: MemoryRetrievalOptions): M
   return {
     async searchMessages(input) {
       const query = normalizeMemoryQuery(input.query);
+      const exactPhrase = normalizeMemoryExactPhrase(input.exactPhrase);
+      const matchType = normalizeMemoryMatchType(input.matchType);
+      const roles = normalizeMemoryRoles(input.roles);
       const limit = normalizeMemoryLimit(input.limit);
       const threadId = input.threadId ? validateMemoryUuid(input.threadId, "Thread ID") : null;
       const from = normalizeMemoryDate(input.from, "Start date");
       const to = normalizeMemoryDate(input.to, "End date");
       if (from && to && from >= to) throw new Error("Start date must be before end date.");
       let queryEmbedding: readonly number[] | null = null;
-      if (semanticEnabled && options.semanticQueryProvider) {
-        const vectors = await options.semanticQueryProvider.embed([query]);
-        if (vectors.length !== 1) throw new Error("Semantic query provider returned an unexpected result.");
-        queryEmbedding = validateEmbedding(vectors[0] ?? []);
+      const wantsSemantic = matchType === "semantic" || matchType === "hybrid";
+      if (wantsSemantic && semanticEnabled && options.semanticQueryProvider) {
+        try {
+          const vectors = await options.semanticQueryProvider.embed([exactPhrase ?? query]);
+          if (vectors.length !== 1) throw new Error("Semantic query provider returned an unexpected result.");
+          queryEmbedding = validateEmbedding(vectors[0] ?? []);
+        } catch {
+          // Semantic search is an optional accelerator. Historical evidence
+          // must still work through the lexical index when embeddings fail.
+          queryEmbedding = null;
+        }
       }
-      return options.store.searchMessages({ profileId: input.profileId, query, queryEmbedding, threadId, from, to, limit });
+      return options.store.searchMessages({ profileId: input.profileId, query, exactPhrase, matchType, roles, queryEmbedding, threadId, from, to, limit });
     },
     async readMessages(profileId, messageId, windowSize = 3) {
       validateMemoryUuid(messageId, "Message ID");
