@@ -9,7 +9,7 @@ import {
   resolveBrowserTimezone,
 } from "@/server/agent/context";
 import { buildThreadAgentContext, getModelMessages } from "@/server/agent/context-builder";
-import { createIrisAgent, extractAgentMessageEvents, parseToolOutput, streamAgentEvents } from "@/server/agent";
+import { createIrisAgent, createProductionChatModel, extractAgentMessageEvents, parseToolOutput, streamAgentEvents } from "@/server/agent";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import { createInternalTools, optionalToolProgressSchema, patchMemory, readCurrentThreadOverview, readCurrentTime, searchMessages, readMessages } from "@/server/agent/tools";
 import type { MemoryRetrieval } from "@/server/memory/retrieval";
@@ -55,7 +55,24 @@ describe("agent context", () => {
     expect(prompt).toContain("Do not produce a long response unless the user explicitly requests or confirms one");
     expect(prompt).toContain("Be opinionated, candid, and direct");
     expect(prompt).toContain("use the read-only search_messages or memory_search tools instead of guessing");
+    expect(prompt).toContain("search_messages is the first required tool");
+    expect(prompt).toContain("thread_overview only describes the currently open thread and cannot answer historical-source requests");
     expect(prompt).toContain("Use read_messages when exact source wording or provenance matters");
+  });
+
+  it("constructs the production OpenRouter model with no automatic retries", () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    vi.stubEnv("OPENROUTER_MODEL", "openai/test-model");
+
+    try {
+      const model = createProductionChatModel();
+      const caller = (model as unknown as { caller: { maxRetries?: number } }).caller;
+
+      expect(model).toMatchObject({ model: "openai/test-model", temperature: 0.2 });
+      expect(caller.maxRetries).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("formats local date/time across UTC boundaries and DST transitions", () => {

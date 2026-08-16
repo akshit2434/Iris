@@ -56,6 +56,7 @@ export function createProductionChatModel(): AgentModel {
     apiKey,
     model: getConfiguredModelName(),
     temperature: 0.2,
+    maxRetries: 0,
   });
 }
 
