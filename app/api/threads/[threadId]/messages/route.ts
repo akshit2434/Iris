@@ -632,7 +632,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           const fastLaneSignal = !memoryMutatedThisTurn && isMeaningfulMemoryCandidate(content);
           if (memoryControls.savedMemoryEnabled && shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted, sourceTokenTotal, idleSignal: idleSignal || fastLaneSignal })) {
             try {
-              await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id, {
+              const consolidationJob = await memoryGovernance.enqueueConsolidationJob(profileId, threadId, run.id, {
                 sourceTokenTotal,
                 idleSignal: idleSignal || fastLaneSignal,
                 debounceSeconds: 30,
@@ -640,8 +640,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               // Fast-lane facts must be available when the completed stream is
               // followed immediately by a new chat. This maintenance is
               // internal and intentionally emits no user-visible tool event.
-              if (fastLaneSignal) {
-                await createProductionConsolidationWorker({ limit: 3, maxDurationMs: 25_000 });
+              if (fastLaneSignal && consolidationJob) {
+                await createProductionConsolidationWorker({ job: consolidationJob, maxDurationMs: 25_000 });
               }
             } catch {
               // Memory queue availability must not turn a completed chat run into a failure.

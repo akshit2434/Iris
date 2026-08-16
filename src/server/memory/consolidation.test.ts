@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createInjectedMemoryConsolidator, isMeaningfulMemoryCandidate, processConsolidationJobs, shouldEnqueueConsolidation, validateConsolidationProposals } from "@/server/memory/consolidation";
 import type { MemoryConsolidationJob, MemoryGovernanceStore, MemoryItem, MemoryStore } from "@/server/memory/types";
 
-const job: MemoryConsolidationJob = { id: "00000000-0000-4000-8000-000000000030", profileId: "profile-a", threadId: "00000000-0000-4000-8000-000000000011", sourceRunId: "00000000-0000-4000-8000-000000000012", status: "running", sourceTokenTotal: 1_500, attempts: 1, availableAt: "now", leaseExpiresAt: null, lockedAt: "now", lockedBy: "worker", lastErrorCode: null, lastErrorMessage: null, createdAt: "now", updatedAt: "now", completedAt: null };
+const job: MemoryConsolidationJob = { id: "00000000-0000-4000-8000-000000000030", profileId: "profile-a", threadId: "00000000-0000-4000-8000-000000000011", sourceRunId: "00000000-0000-4000-8000-000000000012", status: "running", sourceStartTokenTotal: 0, sourceTokenTotal: 1_500, attempts: 1, availableAt: "now", leaseExpiresAt: null, lockedAt: "now", lockedBy: "worker", lastErrorCode: null, lastErrorMessage: null, createdAt: "now", updatedAt: "now", completedAt: null };
 const messages = [{ messageId: "00000000-0000-4000-8000-000000000010", profileId: "profile-a" as const, threadId: job.threadId, content: "I prefer concise answers." }];
 const items: MemoryItem[] = [];
 
@@ -13,10 +13,15 @@ function governanceStore(): MemoryGovernanceStore {
 }
 
 describe("durable structured memory consolidation", () => {
-  it("fast-lanes durable device facts but skips trivial chatter", () => {
+  it("fast-lanes category-diverse first-person statements without domain keywords", () => {
     expect(isMeaningfulMemoryCandidate("Also I have a macbook m4 air and realme gt 7 just fyi")).toBe(true);
+    expect(isMeaningfulMemoryCandidate("I always avoid peanuts when choosing food")).toBe(true);
+    expect(isMeaningfulMemoryCandidate("My sister is helping with the launch this month")).toBe(true);
+    expect(isMeaningfulMemoryCandidate("Our project has a strict Friday release constraint")).toBe(true);
+    expect(isMeaningfulMemoryCandidate("Please remember that the quiet table works best for me")).toBe(true);
     expect(isMeaningfulMemoryCandidate("Hey")).toBe(false);
     expect(isMeaningfulMemoryCandidate("thanks, that was helpful")).toBe(false);
+    expect(isMeaningfulMemoryCandidate("What food should I order tonight?")).toBe(false);
   });
   it("enqueues only after a successful run with a persisted assistant", () => {
     expect(shouldEnqueueConsolidation({ runStatus: "completed", assistantPersisted: true })).toBe(true);
@@ -37,6 +42,20 @@ describe("durable structured memory consolidation", () => {
     expect(result).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
     expect(governance.insertMutationProposal).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: expect.stringContaining(`consolidation:${job.sourceRunId}:0:`) }));
     expect(governance.applyMutationProposal).toHaveBeenCalledTimes(1);
+  });
+  it("claims the requested fast-lane job instead of an unrelated backlog item", async () => {
+    const governance = governanceStore();
+    governance.claimConsolidationJob = vi.fn(async () => job);
+    const result = await processConsolidationJobs({
+      governanceStore: governance,
+      memoryStore: memoryStore(),
+      consolidator: createInjectedMemoryConsolidator(async () => []),
+      workerId: "worker",
+      job: { id: job.id, profileId: job.profileId },
+    });
+    expect(result).toMatchObject({ claimed: 1, skipped: 1 });
+    expect(governance.claimConsolidationJob).toHaveBeenCalledWith(job.profileId, job.id, "worker", 120);
+    expect(governance.claimConsolidationJobs).not.toHaveBeenCalled();
   });
   it("does not persist proposals that match an active suppression", async () => {
     const governance = governanceStore();

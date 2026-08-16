@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 const route = readFileSync(new URL("../../../app/api/threads/[threadId]/messages/route.ts", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../../supabase/migrations/20260828000000_atomic_existing_thread_turn.sql", import.meta.url), "utf8");
+const rangeMigration = readFileSync(new URL("../../../supabase/migrations/20260828100000_memory_consolidation_ranges.sql", import.meta.url), "utf8");
 const repository = readFileSync(new URL("./governance-repository.ts", import.meta.url), "utf8");
+const consolidation = readFileSync(new URL("./consolidation.ts", import.meta.url), "utf8");
 
 describe("memory reliability integration contract", () => {
   it("keeps automatic retrieval internal while preserving model tool events", () => {
@@ -23,9 +25,15 @@ describe("memory reliability integration contract", () => {
   });
 
   it("lets a pending consolidation job see later committed thread messages", () => {
-    expect(repository).not.toContain('.eq("agent_run_id", sourceRunId)');
-    expect(repository).toContain('.eq("thread_id", threadId)');
-    expect(repository).toContain('.eq("is_complete", true)');
-    expect(repository).toContain('.order("created_at", { ascending: false })');
+    expect(repository).toContain('database.rpc("list_memory_consolidation_job_messages"');
+    expect(consolidation).toContain("options.governanceStore.listJobMessages(job, MAX_SOURCE_MESSAGES)");
+    expect(rangeMigration).toContain("source_start_token_total");
+    expect(rangeMigration).toContain("last_processed_token_total");
+    expect(rangeMigration).toContain("source_start := least(state.last_processed_token_total, source_total)");
+    expect(rangeMigration).toContain("o.token_end > j.source_start_token_total");
+    expect(rangeMigration).toContain("o.token_end - o.token_count < j.source_token_total");
+    expect(rangeMigration).toContain("create or replace function public.claim_memory_consolidation_job");
+    expect(rangeMigration).toContain("set last_processed_token_total = greatest");
+    expect(route).toContain("createProductionConsolidationWorker({ job: consolidationJob");
   });
 });

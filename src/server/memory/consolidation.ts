@@ -9,17 +9,23 @@ import { createSupabaseReferenceHistoryStore } from "@/server/memory/reference-h
 import { validateCanonicalKey, validateMemoryContent, validateMemoryContentSafety, validateMemoryUuid } from "@/server/memory/validation";
 
 const MAX_PROPOSALS = 3;
-const MAX_SOURCE_MESSAGES = 10;
+const MAX_SOURCE_MESSAGES = 50;
+const MAX_PROPOSAL_SOURCES = 10;
 const MAX_PROPOSAL_CONTENT = 20_000;
 export const MIN_AUTOMATIC_CONSOLIDATION_TOKENS = 1_200;
 export const CONSOLIDATION_IDLE_DEBOUNCE_MS = 30_000;
 
-/** Cheap fast-lane gate. Meaning is still decided by the consolidator. */
+/**
+ * Cheap, category-agnostic fast-lane gate. This only identifies a plausible
+ * first-person durable statement; the structured consolidator remains the
+ * authority on whether anything is actually saved.
+ */
 export function isMeaningfulMemoryCandidate(content: string) {
   const text = content.replace(/\s+/g, " ").trim();
   if (text.length < 18) return false;
-  if (/^(?:hi|hey|hello|yo|thanks|thank you|ok|okay|cool|nice)[.! ]*$/i.test(text)) return false;
-  return /\b(?:remember|don't forget|do not forget|i (?:own|use|prefer|work|study|live|have)|my (?:phone|laptop|computer|macbook|device|devices|car|job|college|school)|i'm|i am)\b/i.test(text);
+  if (text.includes("?")) return false;
+  if (/\b(?:remember|don't forget|do not forget)\b/i.test(text)) return true;
+  return /\b(?:i|i'm|i've|i'd|my|we|we're|we've|our)\b/i.test(text);
 }
 
 export type ConsolidationProposalInput = {
@@ -77,7 +83,7 @@ export function validateConsolidationProposals(input: ConsolidatorInput, proposa
     keys.add(canonicalKey);
     if (proposal.mutationKind === "create" && proposal.expectedItemRevision !== null) throw new Error("Create proposals must use a null expected revision.");
     if (proposal.mutationKind !== "create" && (proposal.expectedItemRevision === null || !Number.isSafeInteger(proposal.expectedItemRevision) || proposal.expectedItemRevision < 0)) throw new Error("Update proposals require an expected revision.");
-    if (proposal.sourceMessageIds.length < 1 || proposal.sourceMessageIds.length > MAX_SOURCE_MESSAGES) throw new Error("Consolidator source messages are out of bounds.");
+    if (proposal.sourceMessageIds.length < 1 || proposal.sourceMessageIds.length > MAX_PROPOSAL_SOURCES) throw new Error("Consolidator source messages are out of bounds.");
     for (const sourceMessageId of proposal.sourceMessageIds) {
       validateMemoryUuid(sourceMessageId, "Proposal source message ID");
       if (!messageIds.has(sourceMessageId)) throw new Error("Consolidator returned a foreign source message.");
@@ -138,7 +144,7 @@ export function createProductionMemoryConsolidator(model: AgentModel = createPro
   });
 }
 
-export type ConsolidationWorkerOptions = { governanceStore: MemoryGovernanceStore; memoryStore: MemoryStore; consolidator: MemoryConsolidator; workerId?: string; limit?: number; leaseSeconds?: number; indexDerived?: (messages: readonly MemoryMessageForIndex[]) => Promise<void>; maxDurationMs?: number; controlsReader?: (profileId: MemoryControls["profileId"]) => Promise<Pick<MemoryControls, "savedMemoryEnabled">> };
+export type ConsolidationWorkerOptions = { governanceStore: MemoryGovernanceStore; memoryStore: MemoryStore; consolidator: MemoryConsolidator; workerId?: string; job?: Pick<MemoryConsolidationJob, "id" | "profileId">; limit?: number; leaseSeconds?: number; indexDerived?: (messages: readonly MemoryMessageForIndex[]) => Promise<void>; maxDurationMs?: number; controlsReader?: (profileId: MemoryControls["profileId"]) => Promise<Pick<MemoryControls, "savedMemoryEnabled">> };
 export type ConsolidationWorkerResult = { claimed: number; completed: number; skipped: number; failed: number; conflicts: number; indexingErrors: number };
 
 function safeWorkerError(error: unknown) { const message = error instanceof Error ? error.message : ""; return /stale|conflict|foreign|invalid|proposal/i.test(message) ? message.slice(0, 500) : "Consolidation processing failed."; }
@@ -147,7 +153,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number) { return new Pro
 export async function processConsolidationJobs(options: ConsolidationWorkerOptions): Promise<ConsolidationWorkerResult> {
   const workerId = (options.workerId ?? `iris-worker-${crypto.randomUUID()}`).slice(0, 120);
   const startedAt = Date.now(); const maxDurationMs = Math.max(1_000, Math.min(options.maxDurationMs ?? 25_000, 60_000));
-  const jobs = await options.governanceStore.claimConsolidationJobs(workerId, options.limit ?? 1, options.leaseSeconds ?? 120);
+  const targetedJob = options.job && options.governanceStore.claimConsolidationJob
+    ? await options.governanceStore.claimConsolidationJob(options.job.profileId, options.job.id, workerId, options.leaseSeconds ?? 120)
+    : null;
+  const jobs = options.job
+    ? (targetedJob ? [targetedJob] : [])
+    : await options.governanceStore.claimConsolidationJobs(workerId, options.limit ?? 1, options.leaseSeconds ?? 120);
   const result: ConsolidationWorkerResult = { claimed: jobs.length, completed: 0, skipped: 0, failed: 0, conflicts: 0, indexingErrors: 0 };
   for (const job of jobs) {
     try {
@@ -160,7 +171,7 @@ export async function processConsolidationJobs(options: ConsolidationWorkerOptio
           continue;
         }
       }
-      const [messages, items] = await Promise.all([options.governanceStore.listJobMessages(job.profileId, job.threadId, job.sourceRunId, MAX_SOURCE_MESSAGES), options.memoryStore.listItems(job.profileId)]);
+      const [messages, items] = await Promise.all([options.governanceStore.listJobMessages(job, MAX_SOURCE_MESSAGES), options.memoryStore.listItems(job.profileId)]);
       if (messages.length === 0) { await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: "skipped", errorCode: "NO_SOURCE_MESSAGES", errorMessage: "No user-authored source messages were available." }); result.skipped += 1; continue; }
       const proposals = await withTimeout(options.consolidator.propose({ job, messages, items }), Math.max(1_000, maxDurationMs - (Date.now() - startedAt)));
       if (proposals.length === 0) { await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: "skipped", errorCode: "NO_PROPOSALS", errorMessage: "No durable memory update was justified." }); result.skipped += 1; continue; }

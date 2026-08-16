@@ -9,7 +9,7 @@ import { assertMemoryProfileId, normalizeMemoryLimit, validateMemoryUuid } from 
 type MemoryDatabase = SupabaseClient<Database>;
 
 function toJob(row: Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]): MemoryConsolidationJob {
-  return { id: row.id, profileId: row.profile_id, threadId: row.thread_id, sourceRunId: row.source_run_id, status: row.status, sourceTokenTotal: row.source_token_total, attempts: row.attempts, availableAt: row.available_at, leaseExpiresAt: row.lease_expires_at, lockedAt: row.locked_at, lockedBy: row.locked_by, lastErrorCode: row.last_error_code, lastErrorMessage: row.last_error_message, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at };
+  return { id: row.id, profileId: row.profile_id, threadId: row.thread_id, sourceRunId: row.source_run_id, status: row.status, sourceStartTokenTotal: row.source_start_token_total, sourceTokenTotal: row.source_token_total, attempts: row.attempts, availableAt: row.available_at, leaseExpiresAt: row.lease_expires_at, lockedAt: row.locked_at, lockedBy: row.locked_by, lastErrorCode: row.last_error_code, lastErrorMessage: row.last_error_message, createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at };
 }
 
 function toProposal(row: Database["public"]["Tables"]["memory_mutation_proposals"]["Row"]): MemoryMutationProposal {
@@ -17,6 +17,11 @@ function toProposal(row: Database["public"]["Tables"]["memory_mutation_proposals
 }
 
 const proposalColumns = "id, profile_id, thread_id, source_run_id, job_id, proposal_index, idempotency_key, canonical_key, proposed_content, category, value_scope, origin, confidence, importance, sensitivity, expected_item_revision, mutation_kind, source_message_ids, rationale, status, reason, result_revision_id, created_at, updated_at, applied_at";
+
+function normalizeJobMessageLimit(value: number) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error("Consolidation message limits must be positive integers.");
+  return Math.min(value, 50);
+}
 
 export function createSupabaseMemoryGovernanceStore(database: MemoryDatabase = getDatabase()): MemoryGovernanceStore {
   return {
@@ -29,18 +34,23 @@ export function createSupabaseMemoryGovernanceStore(database: MemoryDatabase = g
       const { data, error } = await database.rpc("claim_memory_consolidation_jobs", { p_worker_id: workerId, p_limit: normalizeMemoryLimit(limit, 1), p_lease_seconds: leaseSeconds });
       if (error) throw error; return (data ?? []).map(toJob);
     },
+    async claimConsolidationJob(profileId, jobId, workerId, leaseSeconds = 120) {
+      assertMemoryProfileId(profileId); validateMemoryUuid(jobId, "Job ID");
+      const { data, error } = await database.rpc("claim_memory_consolidation_job", { p_profile_id: profileId, p_job_id: jobId, p_worker_id: workerId, p_lease_seconds: leaseSeconds });
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      return row ? toJob(row) : null;
+    },
     async finishConsolidationJob(input) {
       assertMemoryProfileId(input.profileId); validateMemoryUuid(input.jobId, "Job ID");
       const { data, error } = await database.rpc("finish_memory_consolidation_job", { p_profile_id: input.profileId, p_job_id: input.jobId, p_worker_id: input.workerId, p_status: input.status, p_error_code: input.errorCode ?? null, p_error_message: input.errorMessage ?? null, p_retry: input.retry ?? false, p_available_at: input.availableAt ?? null });
       if (error) throw error; const row = Array.isArray(data) ? data[0] : data; if (!row) throw new Error("Consolidation finish returned no job."); return toJob(row);
     },
-    async listJobMessages(profileId, threadId, sourceRunId, limit = 10) {
-      assertMemoryProfileId(profileId); validateMemoryUuid(threadId, "Thread ID"); validateMemoryUuid(sourceRunId, "Run ID");
-      // Jobs are thread-watermark work, not one-run work. Read the newest
-      // committed user range when the job is claimed so an older pending job
-      // cannot strand messages that arrived during its debounce window.
-      const { data, error } = await database.from("messages").select("id, thread_id, profile_id, content, created_at").eq("profile_id", profileId).eq("thread_id", threadId).eq("role", "user").eq("is_complete", true).order("created_at", { ascending: false }).order("id", { ascending: false }).limit(normalizeMemoryLimit(limit, 10));
-      if (error) throw error; return (data ?? []).reverse().map((row) => ({ messageId: row.id, profileId: row.profile_id, threadId: row.thread_id, content: row.content } satisfies MemoryMessageForIndex));
+    async listJobMessages(job, limit = 10) {
+      assertMemoryProfileId(job.profileId); validateMemoryUuid(job.id, "Job ID");
+      const { data, error } = await database.rpc("list_memory_consolidation_job_messages", { p_profile_id: job.profileId, p_job_id: job.id, p_limit: normalizeJobMessageLimit(limit) });
+      if (error) throw error;
+      return (data ?? []).map((row) => ({ messageId: row.message_id, profileId: row.profile_id, threadId: row.thread_id, content: row.content } satisfies MemoryMessageForIndex));
     },
     async insertMutationProposal(input) {
       assertMemoryProfileId(input.profileId); validateMemoryUuid(input.threadId, "Thread ID"); validateMemoryUuid(input.sourceRunId, "Run ID"); validateMemoryUuid(input.jobId, "Job ID");

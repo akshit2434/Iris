@@ -58,7 +58,7 @@ describe("agent context", () => {
     expect(prompt).toContain("search saved memory with memory_search");
     expect(prompt).toContain("search retained chats with search_messages");
     expect(prompt).toContain("Stop as soon as evidence is sufficient");
-    expect(prompt).toContain("owned or regularly used devices");
+    expect(prompt).toContain("clear stable personal fact with future value");
   });
 
   it("constructs the production OpenRouter model with no automatic retries", () => {

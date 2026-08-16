@@ -521,6 +521,7 @@ function validateReferenceHistoryCandidates(input: ReferenceHistorySynthesisInpu
     profileId: input.job.profileId,
     threadId: input.messages[0]?.threadId ?? "00000000-0000-4000-8000-000000000000",
     sourceRunId: input.job.sourceRunId ?? "00000000-0000-4000-8000-000000000000",
+    sourceStartTokenTotal: input.job.sourceStartTokenWatermark,
     sourceTokenTotal: input.job.sourceEndTokenWatermark,
     status: "running",
     attempts: input.job.attempts,
@@ -672,7 +673,7 @@ export async function processReferenceHistoryJobs(options: ReferenceHistoryWorke
 }
 
 export function createProductionReferenceHistoryWorker(options: Omit<ReferenceHistoryWorkerOptions, "store" | "memoryStore" | "synthesizer"> = {}) {
-  if (process.env.MEMORY_REFERENCE_HISTORY_ENABLED !== "true") {
+  if (process.env.MEMORY_REFERENCE_HISTORY_ENABLED === "false") {
     return Promise.resolve<ReferenceHistoryWorkerResult>({ claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 });
   }
   const model = createProductionChatModel();

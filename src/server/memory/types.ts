@@ -363,6 +363,7 @@ export type MemoryConsolidationJobStatus = "pending" | "running" | "completed" |
 export type MemoryMutationProposalStatus = "proposed" | "applied" | "rejected" | "conflict";
 export type MemoryConsolidationJob = {
   id: string; profileId: ProfileId; threadId: string; sourceRunId: string; status: MemoryConsolidationJobStatus;
+  sourceStartTokenTotal: number;
   sourceTokenTotal: number;
   attempts: number; availableAt: string; leaseExpiresAt: string | null; lockedAt: string | null; lockedBy: string | null;
   lastErrorCode: string | null; lastErrorMessage: string | null; createdAt: string; updatedAt: string; completedAt: string | null;
@@ -387,8 +388,9 @@ export type MemoryGovernanceStore = {
     debounceSeconds?: number;
   }) => Promise<MemoryConsolidationJob | null>;
   claimConsolidationJobs: (workerId: string, limit?: number, leaseSeconds?: number) => Promise<MemoryConsolidationJob[]>;
+  claimConsolidationJob?: (profileId: ProfileId, jobId: string, workerId: string, leaseSeconds?: number) => Promise<MemoryConsolidationJob | null>;
   finishConsolidationJob: (input: { profileId: ProfileId; jobId: string; workerId: string; status: Extract<MemoryConsolidationJobStatus, "completed" | "failed" | "skipped">; errorCode?: string | null; errorMessage?: string | null; retry?: boolean; availableAt?: string | null }) => Promise<MemoryConsolidationJob>;
-  listJobMessages: (profileId: ProfileId, threadId: string, sourceRunId: string, limit?: number) => Promise<MemoryMessageForIndex[]>;
+  listJobMessages: (job: MemoryConsolidationJob, limit?: number) => Promise<MemoryMessageForIndex[]>;
   insertMutationProposal: (proposal: Omit<MemoryMutationProposal, "id" | "status" | "reason" | "resultRevisionId" | "createdAt" | "updatedAt" | "appliedAt">) => Promise<MemoryMutationProposal>;
   applyMutationProposal: (profileId: ProfileId, jobId: string, proposalId: string, workerId: string) => Promise<MemoryProposalApplyResult>;
 };
