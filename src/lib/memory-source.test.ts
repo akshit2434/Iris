@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenMessageHref, memorySourceRows, validateOpenMessageAction } from "@/lib/memory-source";
+import { buildOpenMessageAction, buildOpenMessageHref, memorySourceRows, validateOpenMessageAction } from "@/lib/memory-source";
 
 const action = {
   type: "open_message",
@@ -27,5 +27,18 @@ describe("memory source actions", () => {
       ],
     }, "profile-a");
     expect(rows).toEqual([{ action, profileId: "profile-a", excerpt: "A useful prior decision", createdAt: "2026-08-14T12:00:00.000Z", role: "user" }]);
+  });
+
+  it("rebuilds a missing search action only from the hit's internal IDs", () => {
+    expect(buildOpenMessageAction(action.threadId, action.messageId)).toEqual(action);
+    expect(memorySourceRows("search_messages", {
+      kind: "message_search",
+      results: [{ profileId: "profile-a", threadId: action.threadId, messageId: action.messageId, excerpt: "Legacy search hit", createdAt: "2026-08-14T12:00:00.000Z" }],
+    }, "profile-a")).toEqual([{ action, profileId: "profile-a", excerpt: "Legacy search hit", createdAt: "2026-08-14T12:00:00.000Z" }]);
+    expect(memorySourceRows("search_messages", {
+      kind: "message_search",
+      results: [{ profileId: "profile-b", threadId: action.threadId, messageId: action.messageId, excerpt: "Foreign hit", createdAt: "2026-08-14T12:00:00.000Z" }],
+    }, "profile-a")).toEqual([]);
+    expect(buildOpenMessageAction("not-a-uuid", action.messageId)).toBeNull();
   });
 });

@@ -457,6 +457,46 @@ describe("runtime seams", () => {
     ]));
   });
 
+  it("includes a validated internal source action in search tool JSON and projection", async () => {
+    const retrieval: MemoryRetrieval = {
+      searchMessages: vi.fn(async () => [{
+        messageId: "00000000-0000-4000-8000-000000000010",
+        threadId: "00000000-0000-4000-8000-000000000011",
+        profileId: "profile-a" as const,
+        role: "user" as const,
+        content: "A synthetic historical decision.",
+        createdAt: "2026-08-14T12:00:00.000Z",
+        lexicalScore: 1,
+        semanticScore: null,
+        combinedScore: 1,
+      }]),
+      readMessages: vi.fn(async () => null),
+      listMemory: vi.fn(async () => []),
+      readMemory: vi.fn(async () => null),
+      searchMemory: vi.fn(async () => []),
+      currentRevision: vi.fn(async () => 0),
+    };
+    const events = [];
+    for await (const event of streamAgentEvents({
+      model: new FakeToolCallingModel({ toolCalls: [[{ id: "call-search-action", name: "search_messages", args: { query: "historical decision", limit: 3 } }]] }),
+      context,
+      memoryRetrieval: retrieval,
+      returnDirectTools: ["search_messages"],
+      messages: [{ role: "user", content: "Find the exact historical source." }],
+    })) events.push(event);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool_finished",
+        toolName: "search_messages",
+        output: expect.objectContaining({
+          results: [expect.objectContaining({
+            action: { type: "open_message", threadId: "00000000-0000-4000-8000-000000000011", messageId: "00000000-0000-4000-8000-000000000010", label: "Open source" },
+          })],
+        }),
+      }),
+    ]));
+  });
+
   it("keeps a partial assistant response on failure", () => {
     expect(planAssistantPersistence({ content: "partial", failed: true })).toEqual({
       content: "partial",

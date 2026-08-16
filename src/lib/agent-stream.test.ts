@@ -56,6 +56,21 @@ describe("agent stream parser", () => {
     const data = `${JSON.stringify(oldEvent)}\n${JSON.stringify({ ...currentEvent, version: "iris.agent.stream.v0" })}\n${JSON.stringify(unknownEvent)}\n${JSON.stringify(currentEvent)}\n`;
     expect(parser.push(data)).toEqual([currentEvent]);
   });
+
+  it("retains source actions through the persisted tool-event reducer", () => {
+    const sourceAction = { type: "open_message" as const, threadId: ids.threadId, messageId: "00000000-0000-4000-8000-000000000010", label: "Open source" };
+    const grouped = groupToolEvents([{
+      runId: "run-source",
+      sequence: 1,
+      type: "tool_result",
+      toolCallId: "call-source",
+      toolName: "search_messages",
+      output: { kind: "message_search", results: [{ profileId: "profile-a", threadId: ids.threadId, messageId: sourceAction.messageId, excerpt: "A source", createdAt: "2026-08-14T12:00:00.000Z", action: sourceAction }] },
+      ok: true,
+      createdAt: "2026-08-15T12:00:00.000Z",
+    }]);
+    expect(grouped[0].output).toMatchObject({ results: [expect.objectContaining({ action: sourceAction })] });
+  });
 });
 
 describe("agent stream reducer", () => {

@@ -48,6 +48,11 @@ export function validateOpenMessageAction(value: unknown): OpenMessageAction | n
   return { type: "open_message", threadId: candidate.threadId, messageId: candidate.messageId, label };
 }
 
+/** Build a safe internal source action from IDs owned by a validated result. */
+export function buildOpenMessageAction(threadId: unknown, messageId: unknown, label = "Open source") {
+  return validateOpenMessageAction({ type: "open_message", threadId, messageId, label });
+}
+
 export function buildOpenMessageHref(action: Pick<OpenMessageAction, "threadId" | "messageId">) {
   if (!isUuid(action.threadId) || !isUuid(action.messageId)) return null;
   return `/chat/${action.threadId}#message-${action.messageId}`;
@@ -72,9 +77,12 @@ function getRows(value: SafeToolJson | undefined) {
 function sourceRow(value: unknown, expectedProfileId?: ProfileId): MemorySourceRow | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  const action = validateOpenMessageAction(candidate.action);
   const profileId = isProfileId(candidate.profileId) ? candidate.profileId : null;
   if (!profileId || (expectedProfileId && profileId !== expectedProfileId)) return null;
+  // Older persisted/search projections may omit the derived action. Rebuild it
+  // only from the hit's own validated IDs; never accept a model-supplied URL.
+  const action = validateOpenMessageAction(candidate.action)
+    ?? buildOpenMessageAction(candidate.threadId, candidate.messageId);
   const excerpt = boundedText(candidate.excerpt, MAX_EXCERPT_LENGTH);
   const createdAt = boundedText(candidate.createdAt, 80);
   if (!action || !excerpt || !createdAt) return null;

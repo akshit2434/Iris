@@ -8,6 +8,7 @@ import { normalizeMemoryLimit, normalizeMemoryQuery } from "@/server/memory/vali
 import { createMemoryMutationService, type MemoryMutationService } from "@/server/memory/mutation";
 import { createMemoryArchiveService, type MemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
+import { buildOpenMessageAction } from "@/lib/memory-source";
 
 export type ThreadOverview = {
   title: string;
@@ -93,10 +94,6 @@ function boundedExcerpt(value: string, max = 280) {
   return compact.length > max ? `${compact.slice(0, max - 1).trimEnd()}…` : compact;
 }
 
-function openMessageAction(threadId: string, messageId: string) {
-  return { type: "open_message" as const, threadId, messageId, label: "Open source" };
-}
-
 export async function searchMessages(context: AgentContext, input: z.infer<typeof searchMessagesInput>, retrieval: MemoryRetrieval) {
   const query = normalizeMemoryQuery(input.query);
   const limit = normalizeMemoryLimit(input.limit);
@@ -104,15 +101,19 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
   return {
     kind: "message_search" as const,
     query,
-    results: results.filter((result) => result.profileId === context.profileId).map((result) => ({
-      messageId: result.messageId,
-      threadId: result.threadId,
-      profileId: result.profileId,
-      role: result.role,
-      createdAt: result.createdAt,
-      excerpt: boundedExcerpt(result.content),
-      action: openMessageAction(result.threadId, result.messageId),
-    })),
+    results: results.flatMap((result) => {
+      if (result.profileId !== context.profileId) return [];
+      const action = buildOpenMessageAction(result.threadId, result.messageId);
+      return action ? [{
+        messageId: result.messageId,
+        threadId: result.threadId,
+        profileId: result.profileId,
+        role: result.role,
+        createdAt: result.createdAt,
+        excerpt: boundedExcerpt(result.content),
+        action,
+      }] : [];
+    }),
   };
 }
 
@@ -126,7 +127,7 @@ export async function readMessages(context: AgentContext, input: z.infer<typeof 
     target: result.target,
     before: result.before,
     after: result.after,
-    action: openMessageAction(result.target.threadId, result.target.messageId),
+    action: buildOpenMessageAction(result.target.threadId, result.target.messageId),
   };
 }
 
