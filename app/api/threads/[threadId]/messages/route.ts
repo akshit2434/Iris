@@ -815,7 +815,8 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         "X-Iris-Thread-Id": threadId,
       },
     });
-  } catch {
+  } catch (error) {
+    console.error("Failed to process message request:", error);
     return NextResponse.json({ error: "Could not send that message." }, { status: 500 });
   }
 }

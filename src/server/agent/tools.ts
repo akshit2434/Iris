@@ -9,6 +9,7 @@ import { createMemoryMutationService, type MemoryMutationService } from "@/serve
 import { createMemoryArchiveService, type MemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { buildOpenMessageAction } from "@/lib/memory-source";
+import { searchTavily, type TavilySearchInput } from "@/server/tools/tavily";
 
 export type ThreadOverview = {
   title: string;
@@ -33,6 +34,8 @@ export type InternalToolOptions = {
   savedMemoryEnabled?: boolean;
   /** Profile-level cross-chat history control. */
   referenceHistoryEnabled?: boolean;
+  /** Controls whether Tavily web search tool is enabled. */
+  webSearchEnabled?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -71,6 +74,12 @@ const memoryArchiveInput = z.object({
   canonicalKey: z.string().trim().min(1).max(200),
   expectedItemRevision: z.number().int().min(1),
   reason: z.string().trim().max(240).optional(),
+}).extend(optionalToolProgressSchema.shape);
+const tavilySearchInput = z.object({
+  query: z.string().trim().min(1).max(400),
+  searchDepth: z.enum(["basic", "advanced"]).default("basic").optional(),
+  topic: z.enum(["general", "news"]).default("general").optional(),
+  maxResults: z.number().int().min(1).max(10).default(5).optional(),
 }).extend(optionalToolProgressSchema.shape);
 
 export async function readCurrentTime(context: AgentContext) {
@@ -349,12 +358,29 @@ export async function archiveMemory(context: AgentContext, input: z.infer<typeof
   };
 }
 
+export async function tavilySearch(
+  _context: AgentContext,
+  input: z.infer<typeof tavilySearchInput>,
+  customSearchFn?: (input: TavilySearchInput) => Promise<ReturnType<typeof searchTavily>>,
+) {
+  if (customSearchFn) {
+    return customSearchFn(input);
+  }
+  return searchTavily({
+    query: input.query,
+    searchDepth: input.searchDepth,
+    topic: input.topic,
+    maxResults: input.maxResults,
+  });
+}
+
 export function createInternalTools(
   reader: ThreadOverviewReader = getThreadOverview,
   memoryRetrieval?: MemoryRetrieval,
   memoryMutation?: MemoryMutationService,
   memoryArchive?: MemoryArchiveService,
   options: InternalToolOptions = {},
+  customTavilySearch?: (input: TavilySearchInput) => Promise<ReturnType<typeof searchTavily>>,
 ) {
   const isReturnDirect = (toolName: string) => options.returnDirectTools?.includes(toolName) ?? false;
   let resolvedMemoryRetrieval = memoryRetrieval;
@@ -446,12 +472,22 @@ export function createInternalTools(
       returnDirect: isReturnDirect("memory_archive"),
     },
   );
+  const tavilySearchTool = tool(
+    async (input: z.infer<typeof tavilySearchInput>, runtime: ToolRuntime<unknown, AgentContext>) => tavilySearch(runtime.context, input, customTavilySearch),
+    {
+      name: "tavily_search",
+      description: "Search the web using Tavily for real-time information, current news, live web data, technical documentation, or public facts not present in local memory. Provide a clear, focused search query.",
+      schema: tavilySearchInput,
+      returnDirect: isReturnDirect("tavily_search"),
+    },
+  );
 
   const historicalTools = options.referenceHistoryEnabled === false ? [] : [searchMessagesTool, readMessagesTool];
   const memoryTools = options.savedMemoryEnabled === false
     ? []
     : [memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool];
-  return [threadOverview, ...historicalTools, ...memoryTools] as const;
+  const webSearchTools = options.webSearchEnabled === false ? [] : [tavilySearchTool];
+  return [threadOverview, ...historicalTools, ...memoryTools, ...webSearchTools] as const;
 }
 
 /**
