@@ -10,6 +10,8 @@ Iris is maintained by one developer. The workflow is intentionally lightweight a
 4. Before each commit, run `npm run check:secrets`, `npm run check:privacy`, `npm run lint`, `npm run typecheck`, and `npm run build`.
 5. Review the diff before pushing. Squash-merge branches and delete them once finished.
 
+Hosted GitHub Actions CI is temporarily paused. Local checks remain required; restore the workflow when hosted runner access is available again.
+
 ## Commit format
 
 Use short imperative commits such as:

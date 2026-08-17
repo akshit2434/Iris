@@ -92,6 +92,8 @@ npm run start     # run the production build
 npm run check:secrets # scan tracked files for credential-like content
 ```
 
+Hosted GitHub Actions CI is temporarily paused. Run the checks above locally before every commit and pull request; the workflow can be restored when hosted runner access is available again.
+
 Repository workflow is documented in [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [PUBLIC_REPOSITORY_POLICY.md](PUBLIC_REPOSITORY_POLICY.md).
 
 The mobile-first visual and interaction rules are documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
