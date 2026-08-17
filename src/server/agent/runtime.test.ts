@@ -232,6 +232,7 @@ describe("internal tools", () => {
       "memory_search",
       "memory_patch",
       "memory_archive",
+      "tavily_search",
     ]);
   });
 
@@ -245,24 +246,29 @@ describe("internal tools", () => {
       "memory_search",
       "memory_patch",
       "memory_archive",
+      "tavily_search",
     ]);
   });
 
   it("hides only the tool family disabled by profile controls", () => {
-    expect(createInternalTools(undefined, undefined, undefined, undefined, { savedMemoryEnabled: false }).map((internalTool) => internalTool.name)).toEqual([
+    expect(createInternalTools(undefined, undefined, undefined, undefined, { savedMemoryEnabled: false, webSearchEnabled: false }).map((internalTool) => internalTool.name)).toEqual([
       "thread_overview", "search_messages", "read_messages",
     ]);
-    expect(getInternalToolSchemaDescriptors({ referenceHistoryEnabled: false }).map((schema) => schema.name)).toEqual([
+    expect(getInternalToolSchemaDescriptors({ referenceHistoryEnabled: false, webSearchEnabled: false }).map((schema) => schema.name)).toEqual([
       "thread_overview", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive",
     ]);
-    expect(getInternalToolSchemaDescriptors({ savedMemoryEnabled: false, referenceHistoryEnabled: false }).map((schema) => schema.name)).toEqual(["thread_overview"]);
+    expect(getInternalToolSchemaDescriptors({ savedMemoryEnabled: false, referenceHistoryEnabled: false, webSearchEnabled: false }).map((schema) => schema.name)).toEqual(["thread_overview"]);
   });
 
   it("serializes tool schemas for token accounting without invoking a tool", () => {
     const schemas = getInternalToolSchemaDescriptors();
-    expect(schemas).toHaveLength(8);
+    expect(schemas).toHaveLength(9);
     expect(schemas.find((schema) => schema.name === "search_messages")).toMatchObject({
       name: "search_messages",
+      parameters: { type: "object" },
+    });
+    expect(schemas.find((schema) => schema.name === "tavily_search")).toMatchObject({
+      name: "tavily_search",
       parameters: { type: "object" },
     });
   });
