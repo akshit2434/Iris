@@ -1,12 +1,10 @@
 # Iris
 
-Iris is a conversation-first personal agent with isolated profiles, chats, and history as the base for future memory, tools, skills, reminders, artifacts, voice, and telemetry.
-
-This repository currently implements **Milestone 2: Agent Runtime** on top of the Milestone 1 UI + Base.
+Iris is a conversation-first personal agent with isolated profiles, chats, history, cross-chat memory, and an extensible agent runtime.
 
 ## Current progress
 
-**Stage:** Milestone 2 — Agent Runtime is complete locally on this branch. A controlled live browser smoke verified live streaming, two-turn continuity, both internal tool calls and results, persistence after reload, and profile isolation. Milestone 3 remains deferred.
+**Stage:** Milestones 1–3 (UI + Base, Agent Runtime, and Memory) are complete. The current release supports persistent chats, streamed agent responses, cross-chat recall, governed memory, historical search, exact-source retrieval, and source deep links. Milestone 4 will add accountability workflows.
 
 The public build is a mobile-first, conversation-first base with isolated profiles, persistent raw chat history, local Supabase development, and the visual language documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
 
@@ -34,6 +32,8 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - Streaming LangChain agent responses through OpenRouter
 - User-local date/time is injected into every agent run as trusted runtime context; it is not exposed as a tool.
 - Versioned NDJSON run events with persisted, profile/thread-scoped tool activity
+- Governed saved memory with profile isolation, revisions, stale-state reconciliation, and token-budgeted context
+- Cross-chat semantic and lexical retrieval with exact-message reads and source preview/deep-link actions
 - Simple responsive Home, Chat, History, and Files surfaces
 - Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur
 - Local Supabase CLI workflow with a safe public seed (`Profile A` / `Profile B`)
@@ -117,10 +117,4 @@ Private product context and visual references are intentionally local-only and e
 
 ## Next stage
 
-Milestone 3 — Memory is next. The runtime keeps raw messages canonical and leaves memory consolidation, retrieval, and compaction for that milestone.
-
-Memory, tools, skills, reminders, artifacts, voice, telemetry, and full authentication remain deferred to their later milestones.
-
-## Intentionally deferred
-
-Full memory consolidation and retrieval, long-thread compaction, external tools/connectors, reminders, personalized skills, artifact generation/storage, voice, telemetry, and full user authentication belong to later milestones. The current base is designed so those capabilities can be added without replacing the chat UI or raw-history store.
+Milestone 4 — Accountability is next: open loops, commitment clarification, follow-ups, reminders, completion handling, and check-ins. External connectors, personalized skills, artifacts, voice, telemetry, and broader authentication remain later milestones.
