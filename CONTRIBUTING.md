@@ -25,7 +25,7 @@ chore: update quality workflow
 
 ## Scope rules
 
-- Keep Milestone 1 work separate from later memory, accountability, tools, skills, voice, and telemetry work.
+- Keep completed milestones stable and scope new work to the approved current milestone.
 - Do not hardcode personal seed context into application logic.
 - Do not commit secrets, local database files, private exports, telemetry, or raw user conversations.
 - Preserve raw history when adding future summaries or compaction.
