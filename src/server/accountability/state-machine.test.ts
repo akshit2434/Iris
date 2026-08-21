@@ -21,6 +21,10 @@ describe("accountability state machine", () => {
     expect(nextStatusOnEvent("done", "resumed")).toBeNull();
   });
 
+  it("allows reopening paused loops directly", () => {
+    expect(nextStatusOnEvent("paused", "reopened")).toBe("open");
+  });
+
   it("allows reopening terminal loops and nothing else leaves terminals implicitly", () => {
     expect(nextStatusOnEvent("done", "reopened")).toBe("open");
     expect(nextStatusOnEvent("cancelled", "reopened")).toBe("open");

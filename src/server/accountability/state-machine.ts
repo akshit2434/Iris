@@ -17,6 +17,7 @@ const TRANSITIONS: Record<OpenLoopStatus, Partial<Record<LoopEventKind, OpenLoop
     clarified: "paused",
     rescheduled: "paused",
     resumed: "open",
+    reopened: "open",
     nudged: "paused",
     completed: "done",
     cancelled: "cancelled",
