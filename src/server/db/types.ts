@@ -876,6 +876,231 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["thread_continuity_jobs"]["Insert"]>;
         Relationships: [];
       };
+      open_loops: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          title: string;
+          details: string | null;
+          kind: "commitment" | "routine" | "idea";
+          status: "open" | "paused" | "done" | "cancelled" | "dropped";
+          due_at: string | null;
+          cadence: Json | null;
+          origin_thread_id: string | null;
+          origin_message_id: string | null;
+          created_at: string;
+          updated_at: string;
+          closed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          title: string;
+          details?: string | null;
+          kind?: "commitment" | "routine" | "idea";
+          status?: "open" | "paused" | "done" | "cancelled" | "dropped";
+          due_at?: string | null;
+          cadence?: Json | null;
+          origin_thread_id?: string | null;
+          origin_message_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          closed_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          title: string;
+          details: string | null;
+          kind: "commitment" | "routine" | "idea";
+          status: "open" | "paused" | "done" | "cancelled" | "dropped";
+          due_at: string | null;
+          cadence: Json | null;
+          origin_thread_id: string | null;
+          origin_message_id: string | null;
+          created_at: string;
+          updated_at: string;
+          closed_at: string | null;
+        }>;
+        Relationships: [];
+      };
+      loop_events: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          loop_id: string;
+          kind: "created" | "clarified" | "rescheduled" | "paused" | "resumed" | "nudged" | "completed" | "cancelled" | "dropped" | "reopened" | "suppressed" | "note";
+          detail: string | null;
+          actor: "user" | "agent" | "system";
+          source_thread_id: string | null;
+          source_message_id: string | null;
+          agent_run_id: string | null;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          loop_id: string;
+          kind: "created" | "clarified" | "rescheduled" | "paused" | "resumed" | "nudged" | "completed" | "cancelled" | "dropped" | "reopened" | "suppressed" | "note";
+          detail?: string | null;
+          actor?: "user" | "agent" | "system";
+          source_thread_id?: string | null;
+          source_message_id?: string | null;
+          agent_run_id?: string | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          loop_id: string;
+          kind: "created" | "clarified" | "rescheduled" | "paused" | "resumed" | "nudged" | "completed" | "cancelled" | "dropped" | "reopened" | "suppressed" | "note";
+          detail: string | null;
+          actor: "user" | "agent" | "system";
+          source_thread_id: string | null;
+          source_message_id: string | null;
+          agent_run_id: string | null;
+          metadata: Json;
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
+      checkin_deliveries: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          message_id: string | null;
+          summary: string | null;
+          status: "pending" | "delivered" | "answered" | "cancelled";
+          created_at: string;
+          delivered_at: string | null;
+          answered_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          message_id?: string | null;
+          summary?: string | null;
+          status?: "pending" | "delivered" | "answered" | "cancelled";
+          created_at?: string;
+          delivered_at?: string | null;
+          answered_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          thread_id: string;
+          message_id: string | null;
+          summary: string | null;
+          status: "pending" | "delivered" | "answered" | "cancelled";
+          created_at: string;
+          delivered_at: string | null;
+          answered_at: string | null;
+        }>;
+        Relationships: [];
+      };
+      checkin_delivery_items: {
+        Row: {
+          delivery_id: string;
+          loop_id: string;
+          profile_id: "profile-a" | "profile-b";
+          response: string | null;
+          responded: boolean;
+          created_at: string;
+        };
+        Insert: {
+          delivery_id: string;
+          loop_id: string;
+          profile_id: "profile-a" | "profile-b";
+          response?: string | null;
+          responded?: boolean;
+          created_at?: string;
+        };
+        Update: Partial<{
+          delivery_id: string;
+          loop_id: string;
+          profile_id: "profile-a" | "profile-b";
+          response: string | null;
+          responded: boolean;
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
+      scheduled_checks: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          loop_id: string;
+          due_at: string;
+          status: "pending" | "delivered" | "merged" | "cancelled" | "expired";
+          attempt_count: number;
+          escalation_tier: number;
+          delivery_id: string | null;
+          delivered_at: string | null;
+          cancelled_at: string | null;
+          cancel_reason: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          loop_id: string;
+          due_at: string;
+          status?: "pending" | "delivered" | "merged" | "cancelled" | "expired";
+          attempt_count?: number;
+          escalation_tier?: number;
+          delivery_id?: string | null;
+          delivered_at?: string | null;
+          cancelled_at?: string | null;
+          cancel_reason?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          loop_id: string;
+          due_at: string;
+          status: "pending" | "delivered" | "merged" | "cancelled" | "expired";
+          attempt_count: number;
+          escalation_tier: number;
+          delivery_id: string | null;
+          delivered_at: string | null;
+          cancelled_at: string | null;
+          cancel_reason: string | null;
+          created_at: string;
+        }>;
+        Relationships: [];
+      };
+      loop_suppressions: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          subject: string;
+          reason: string;
+          created_at: string;
+          lifted_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          subject: string;
+          reason?: string;
+          created_at?: string;
+          lifted_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          subject: string;
+          reason: string;
+          created_at: string;
+          lifted_at: string | null;
+        }>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {

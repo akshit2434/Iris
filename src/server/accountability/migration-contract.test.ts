@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { type Database } from "@/server/db/types";
 
 const migration = readFileSync(
   new URL("../../../supabase/migrations/20260829000000_accountability_foundation.sql", import.meta.url),
@@ -37,5 +38,17 @@ describe("accountability foundation migration contract", () => {
       "kind <> 'routine' or cadence is not null",
       "(status in ('open','paused') and closed_at is null)",
     ]) expect(migration.toLowerCase()).toContain(required.toLowerCase());
+  });
+
+  it("exposes accountability tables in database types", () => {
+    const tables: Array<keyof Database["public"]["Tables"]> = [
+      "open_loops",
+      "loop_events",
+      "checkin_deliveries",
+      "checkin_delivery_items",
+      "scheduled_checks",
+      "loop_suppressions",
+    ];
+    expect(tables.length).toBe(6);
   });
 });
