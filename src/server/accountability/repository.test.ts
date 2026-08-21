@@ -120,6 +120,17 @@ describe("accountability repository", () => {
     expect(calls).toContainEqual({ operation: "eq", table: "open_loops", field: "profile_id", value: "profile-a" });
   });
 
+  it("rewrites due_at inside the guarded transition when the patch carries one and leaves it alone otherwise", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const rescheduled = await repository.updateOpenLoopStatus("profile-a", "loop-a", "2026-08-20T10:00:00.000Z", { event: "rescheduled", dueAt: "2026-09-10T09:00:00.000Z" });
+    expect(rescheduled).toMatchObject({ id: "loop-a", status: "open", dueAt: "2026-09-10T09:00:00.000Z" });
+    expect(calls.find((call) => call.operation === "update")?.params).toMatchObject({ status: "open", due_at: "2026-09-10T09:00:00.000Z" });
+    const untouched = await repository.updateOpenLoopStatus("profile-a", "loop-a", rescheduled.updatedAt, { event: "nudged" });
+    expect(untouched.dueAt).toBe("2026-09-10T09:00:00.000Z");
+    expect(calls.filter((call) => call.operation === "update").at(-1)?.params).not.toHaveProperty("due_at");
+  });
+
   it("throws StaleOpenLoopRevisionError on revision mismatch and clear errors otherwise", async () => {
     const { database } = fakeAccountabilityDatabase();
     const repository = createAccountabilityRepository(database as never);

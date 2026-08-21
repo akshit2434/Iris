@@ -48,7 +48,10 @@ const loopUpdateInputSchema = z
     }
   });
 
-const loopCloseInputSchema = z.object({ loopId: z.string().uuid() });
+const loopCloseInputSchema = z.object({
+  loopId: z.string().uuid(),
+  outcome: z.enum(["completed", "cancelled", "dropped"]).default("completed"),
+});
 
 const scheduleCheckInputSchema = z.object({
   loopId: z.string().uuid(),
@@ -177,7 +180,12 @@ export async function updateLoop(
     if (nextStatusOnEvent(current.status, event) === null) {
       return errorOutput("loop_update", new Error(`Illegal open loop transition: "${event}" is not allowed from status "${current.status}".`));
     }
-    const updated = await repo.updateOpenLoopStatus(context.profileId, current.id, current.updatedAt, { event });
+    const updated = await repo.updateOpenLoopStatus(
+      context.profileId,
+      current.id,
+      current.updatedAt,
+      input.action === "reschedule" && input.dueAt !== undefined ? { event, dueAt: input.dueAt } : { event },
+    );
     const detail = input.action === "reschedule" ? `Rescheduled to ${input.dueAt}` : input.action === "resume" ? RESUME_CHECK_HORIZON_NOTE : null;
     await repo.insertLoopEvent(context.profileId, { loopId: current.id, kind: event, detail, ...provenance(context) });
     if (input.action === "pause") {
@@ -196,19 +204,20 @@ export async function updateLoop(
 
 export async function closeLoop(
   context: AgentContext,
-  input: z.infer<typeof loopCloseInputSchema>,
+  input: z.input<typeof loopCloseInputSchema>,
   repository?: AccountabilityRepository,
 ): Promise<LoopCloseOutput> {
   try {
     const repo = resolveRepository(repository);
+    const outcome = input.outcome ?? "completed";
     const current = await repo.getOpenLoop(context.profileId, input.loopId);
     if (!current) return errorOutput("loop_close", new Error(`Open loop "${input.loopId}" was not found.`));
-    if (nextStatusOnEvent(current.status, "completed") === null) {
-      return errorOutput("loop_close", new Error(`Illegal open loop transition: a ${isTerminal(current.status) ? "terminal" : ""} loop in status "${current.status}" cannot be completed.`));
+    if (nextStatusOnEvent(current.status, outcome) === null) {
+      return errorOutput("loop_close", new Error(`Illegal open loop transition: "${outcome}" is not allowed from status "${current.status}".`));
     }
-    const updated = await repo.updateOpenLoopStatus(context.profileId, current.id, current.updatedAt, { event: "completed" });
-    await repo.insertLoopEvent(context.profileId, { loopId: current.id, kind: "completed", ...provenance(context) });
-    const cancelledChecks = await repo.cancelPendingChecksForLoop(context.profileId, current.id, "Loop completed");
+    const updated = await repo.updateOpenLoopStatus(context.profileId, current.id, current.updatedAt, { event: outcome });
+    await repo.insertLoopEvent(context.profileId, { loopId: current.id, kind: outcome, ...provenance(context) });
+    const cancelledChecks = await repo.cancelPendingChecksForLoop(context.profileId, current.id, `Loop ${outcome}`);
     return { kind: "loop_close", status: "closed", loopId: updated.id, cancelledChecks };
   } catch (error) {
     return errorOutput("loop_close", error);
@@ -271,7 +280,7 @@ export function createAccountabilityTools(repository?: AccountabilityRepository)
     {
       name: "loop_close",
       description:
-        "Complete an open loop by ID when the user states anywhere in conversation that it is done, cancelling all of its pending checks in the same step. The exact loop ID must come from loop_list or prefilled context; never guess IDs or close loops the user did not clearly finish.",
+        "Close an open loop by ID with an explicit outcome: completed when the user states it is done anywhere in conversation, cancelled or dropped when they explicitly abandon it, cancelling all of its pending checks in the same step. The exact loop ID must come from loop_list or prefilled context; never guess IDs and never close loops the user did not clearly finish.",
       schema: loopCloseInputSchema,
     },
   );

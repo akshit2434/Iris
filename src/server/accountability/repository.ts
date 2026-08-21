@@ -76,7 +76,7 @@ export class StaleOpenLoopRevisionError extends Error {
 }
 
 export type ListOpenLoopsFilter = { statuses?: readonly OpenLoopStatus[] };
-export type UpdateOpenLoopPatch = { event: LoopEventKind };
+export type UpdateOpenLoopPatch = { event: LoopEventKind; dueAt?: string };
 export type InsertOpenLoopInput = z.input<typeof createLoopInputSchema> & { profileId: ProfileId };
 export type InsertLoopEventInput = {
   loopId: string;
@@ -218,7 +218,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       const updatedAt = new Date().toISOString();
       const { data, error } = await client
         .from("open_loops")
-        .update({ status: nextStatus, updated_at: updatedAt, closed_at: isTerminal(nextStatus) ? updatedAt : null })
+        .update({ status: nextStatus, updated_at: updatedAt, closed_at: isTerminal(nextStatus) ? updatedAt : null, ...(patch.dueAt === undefined ? {} : { due_at: patch.dueAt }) })
         .eq("id", loopId)
         .eq("profile_id", profileId)
         .eq("updated_at", expectedUpdatedAt)

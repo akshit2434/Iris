@@ -133,6 +133,16 @@ describe("accountability tools", () => {
     expect(repo.cancelPendingChecksForLoop).toHaveBeenCalledWith("profile-a", LOOP_ID, expect.any(String));
   });
 
+  it("closes loops through every explicit outcome as its own ledger event", async () => {
+    for (const outcome of ["completed", "cancelled", "dropped"] as const) {
+      const repo = fakeRepository({ cancelPendingChecksForLoop: vi.fn(async () => 1) });
+      const result = await closeLoop(context, { loopId: LOOP_ID, outcome }, repo);
+      expect(result).toEqual({ kind: "loop_close", status: "closed", loopId: LOOP_ID, cancelledChecks: 1 });
+      expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: outcome });
+      expect(repo.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: LOOP_ID, kind: outcome }));
+    }
+  });
+
   it("refuses to close a terminal loop without touching checks", async () => {
     const repo = fakeRepository({ getOpenLoop: vi.fn(async () => makeLoop({ status: "done", closedAt: "2026-08-21T10:00:00.000Z" })) });
     const result = await closeLoop(context, { loopId: LOOP_ID }, repo);
@@ -158,14 +168,56 @@ describe("accountability tools", () => {
     expect(repo.insertScheduledCheck).not.toHaveBeenCalled();
   });
 
+  it("rejects scheduled checks against paused loops", async () => {
+    const repo = fakeRepository({ getOpenLoop: vi.fn(async () => makeLoop({ status: "paused" })) });
+    const result = await scheduleCheck(context, { loopId: LOOP_ID, dueAt: NEW_DUE_AT }, repo);
+    expect(result).toMatchObject({ kind: "schedule_check", status: "error" });
+    if (result.status !== "error") throw new Error("expected error");
+    expect(result.message).toMatch(/paused/i);
+    expect(repo.insertScheduledCheck).not.toHaveBeenCalled();
+  });
+
+  it("rejects updates on terminal loops without writing", async () => {
+    const repo = fakeRepository({ getOpenLoop: vi.fn(async () => makeLoop({ status: "done", closedAt: "2026-08-21T10:00:00.000Z" })) });
+    for (const action of ["reschedule", "pause", "resume"] as const) {
+      const result = await updateLoop(context, { loopId: LOOP_ID, action, ...(action === "reschedule" ? { dueAt: NEW_DUE_AT } : {}) }, repo);
+      expect(result).toMatchObject({ kind: "loop_update", status: "error" });
+      if (result.status === "error") expect(result.message).toMatch(/illegal|terminal|not allowed/i);
+    }
+    expectNoWrites(repo);
+  });
+
+  it("rejects resuming a loop that is already open", async () => {
+    const repo = fakeRepository();
+    const result = await updateLoop(context, { loopId: LOOP_ID, action: "resume" }, repo);
+    expect(result).toMatchObject({ kind: "loop_update", status: "error" });
+    if (result.status === "error") expect(result.message).toMatch(/resumed.*not allowed|not allowed/i);
+    expectNoWrites(repo);
+  });
+
   it("reschedules by moving pending checks to the new time with a rescheduled event", async () => {
     const repo = fakeRepository();
     const result = await updateLoop(context, { loopId: LOOP_ID, action: "reschedule", dueAt: NEW_DUE_AT }, repo);
     expect(result).toEqual({ kind: "loop_update", status: "updated", loopId: LOOP_ID });
-    expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: "rescheduled" });
+    expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: "rescheduled", dueAt: NEW_DUE_AT });
     expect(repo.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: LOOP_ID, kind: "rescheduled" }));
     expect(repo.cancelPendingChecksForLoop).toHaveBeenCalledWith("profile-a", LOOP_ID, expect.any(String));
     expect(repo.insertScheduledCheck).toHaveBeenCalledWith("profile-a", { loopId: LOOP_ID, dueAt: NEW_DUE_AT });
+  });
+
+  it("keeps a rescheduled due time when the loop later resumes", async () => {
+    let current = makeLoop({ status: "paused" });
+    const repo = fakeRepository({
+      getOpenLoop: vi.fn(async () => current),
+      updateOpenLoopStatus: vi.fn(async (_profileId, _loopId, _expectedUpdatedAt, patch) => {
+        current = { ...current, status: patch.event === "paused" ? ("paused" as const) : patch.event === "resumed" ? ("open" as const) : current.status, dueAt: patch.dueAt ?? current.dueAt };
+        return current;
+      }),
+    });
+    await updateLoop(context, { loopId: LOOP_ID, action: "reschedule", dueAt: NEW_DUE_AT }, repo);
+    await updateLoop(context, { loopId: LOOP_ID, action: "resume" }, repo);
+    expect(repo.insertScheduledCheck).toHaveBeenCalledTimes(2);
+    expect(repo.insertScheduledCheck).toHaveBeenLastCalledWith("profile-a", { loopId: LOOP_ID, dueAt: NEW_DUE_AT });
   });
 
   it("pauses by cancelling pending checks without scheduling new ones", async () => {
