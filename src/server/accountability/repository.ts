@@ -166,6 +166,10 @@ async function fetchOpenLoop(client: AccountabilityDatabase, profileId: ProfileI
   return data ? toOpenLoop(data) : null;
 }
 
+export function createProductionAccountabilityRepository(): AccountabilityRepository {
+  return createAccountabilityRepository(getDatabase());
+}
+
 export function createAccountabilityRepository(client: AccountabilityDatabase = getDatabase()): AccountabilityRepository {
   return {
     async listOpenLoops(profileId, filter = {}) {
