@@ -105,8 +105,27 @@ const OPEN_LOOP_COLUMNS = "id, profile_id, title, details, kind, status, due_at,
 const LOOP_EVENT_COLUMNS = "id, profile_id, loop_id, kind, detail, actor, source_thread_id, source_message_id, agent_run_id, metadata, created_at";
 const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, created_at";
 
+const MAX_LOOP_EVENT_DETAIL_LENGTH = 2_000;
+const MAX_CANCEL_REASON_LENGTH = 500;
+
 function assertProfileId(value: unknown): asserts value is ProfileId {
   if (!isProfileId(value)) throw new Error("A valid profile scope is required.");
+}
+
+function validateLoopEventDetail(detail: string | null | undefined): string | null {
+  if (detail === undefined || detail === null) return null;
+  if (detail.length > MAX_LOOP_EVENT_DETAIL_LENGTH) {
+    throw new Error("Loop event details are limited to 2,000 characters.");
+  }
+  return detail;
+}
+
+function validateCancelReason(reason: string): string {
+  const normalized = reason.trim();
+  if (!normalized || normalized.length > MAX_CANCEL_REASON_LENGTH) {
+    throw new Error("Cancel reasons must be between 1 and 500 characters.");
+  }
+  return normalized;
 }
 
 function toOpenLoop(row: OpenLoopTableRow): OpenLoopRow {
@@ -231,13 +250,14 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
 
     async insertLoopEvent(profileId, input) {
       assertProfileId(profileId);
+      const detail = validateLoopEventDetail(input.detail);
       const { data, error } = await client
         .from("loop_events")
         .insert({
           profile_id: profileId,
           loop_id: input.loopId,
           kind: input.kind,
-          detail: input.detail ?? null,
+          detail,
           actor: input.actor ?? "agent",
           source_thread_id: input.sourceThreadId ?? null,
           source_message_id: input.sourceMessageId ?? null,
@@ -285,9 +305,10 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
 
     async cancelPendingChecksForLoop(profileId, loopId, reason) {
       assertProfileId(profileId);
+      const cancelReason = validateCancelReason(reason);
       const { data, error } = await client
         .from("scheduled_checks")
-        .update({ status: "cancelled", cancelled_at: new Date().toISOString(), cancel_reason: reason })
+        .update({ status: "cancelled", cancelled_at: new Date().toISOString(), cancel_reason: cancelReason })
         .eq("profile_id", profileId)
         .eq("loop_id", loopId)
         .eq("status", "pending")

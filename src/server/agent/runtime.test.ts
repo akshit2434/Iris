@@ -273,7 +273,16 @@ describe("internal tools", () => {
   });
 
   it("excludes accountability tools when the profile control disables them", () => {
-    expect(createInternalTools(undefined, undefined, undefined, undefined, { accountabilityEnabled: false }).map((internalTool) => internalTool.name)).not.toEqual(expect.arrayContaining(["loop_list", "loop_create", "loop_update", "loop_close", "schedule_check"]));
+    expect(createInternalTools(undefined, undefined, undefined, undefined, { accountabilityEnabled: false }).map((internalTool) => internalTool.name)).toEqual([
+      "thread_overview",
+      "search_messages",
+      "read_messages",
+      "memory_list",
+      "memory_read",
+      "memory_search",
+      "memory_patch",
+      "memory_archive",
+    ]);
     expect(getInternalToolSchemaDescriptors({ savedMemoryEnabled: false, referenceHistoryEnabled: false, accountabilityEnabled: false }).map((schema) => schema.name)).toEqual(["thread_overview"]);
   });
 

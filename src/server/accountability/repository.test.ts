@@ -131,6 +131,15 @@ describe("accountability repository", () => {
     expect(calls.filter((call) => call.operation === "update").at(-1)?.params).not.toHaveProperty("due_at");
   });
 
+  it("reopens a closed loop and clears closed_at", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const reopened = await repository.updateOpenLoopStatus("profile-a", "loop-done", "2026-08-21T10:00:00.000Z", { event: "reopened" });
+    expect(reopened).toMatchObject({ id: "loop-done", status: "open" });
+    expect(reopened.closedAt).toBeNull();
+    expect(calls.find((call) => call.operation === "update")?.params).toMatchObject({ status: "open", closed_at: null });
+  });
+
   it("throws StaleOpenLoopRevisionError on revision mismatch and clear errors otherwise", async () => {
     const { database } = fakeAccountabilityDatabase();
     const repository = createAccountabilityRepository(database as never);
@@ -162,6 +171,17 @@ describe("accountability repository", () => {
     expect(calls).toContainEqual({ operation: "eq", table: "scheduled_checks", field: "status", value: "pending" });
     await expect(repository.listDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 5)).resolves.toMatchObject([{ id: "check-other-loop" }]);
     await expect(repository.cancelPendingChecksForLoop("profile-a", "loop-a", "Loop completed by user")).resolves.toBe(0);
+  });
+
+  it("pre-validates loop event detail and cancel reason lengths before touching the database", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertLoopEvent("profile-a", { loopId: "loop-a", kind: "note", detail: "x".repeat(2001) })).rejects.toThrow(/limited to 2,000 characters/i);
+    await expect(repository.cancelPendingChecksForLoop("profile-a", "loop-a", "   ")).rejects.toThrow(/between 1 and 500/i);
+    await expect(repository.cancelPendingChecksForLoop("profile-a", "loop-a", "y".repeat(501))).rejects.toThrow(/between 1 and 500/i);
+    expect(calls).toHaveLength(0);
+    await expect(repository.insertLoopEvent("profile-a", { loopId: "loop-a", kind: "note", detail: "x".repeat(2000) })).resolves.toMatchObject({ detail: "x".repeat(2000) });
+    await expect(repository.cancelPendingChecksForLoop("profile-a", "loop-a", "Loop completed by user")).resolves.toBe(3);
   });
 
   it("records loop events and scheduled checks with mapped columns", async () => {
