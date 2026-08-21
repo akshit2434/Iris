@@ -247,7 +247,11 @@ export async function scheduleCheck(
 }
 
 export function createAccountabilityTools(repository?: AccountabilityRepository) {
-  const getRepository = () => resolveRepository(repository);
+  let resolvedRepository = repository;
+  const getRepository = () => {
+    resolvedRepository ??= createProductionAccountabilityRepository();
+    return resolvedRepository;
+  };
   const loopListTool = tool(
     async (input: z.infer<typeof loopListInputSchema>, runtime: ToolRuntime<unknown, AgentContext>) => listLoops(runtime.context, input, getRepository()),
     {

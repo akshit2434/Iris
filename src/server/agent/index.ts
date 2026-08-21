@@ -84,6 +84,7 @@ export function createIrisAgent(input: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   savedMemoryEnabled?: InternalToolOptions["savedMemoryEnabled"];
   referenceHistoryEnabled?: InternalToolOptions["referenceHistoryEnabled"];
+  accountabilityEnabled?: InternalToolOptions["accountabilityEnabled"];
   forceToolName?: string;
   observability?: AgentTraceRecorder;
   executionKind?: TraceExecutionKind;
@@ -133,7 +134,7 @@ export function createIrisAgent(input: {
     model: input.model,
     contextSchema: agentContextSchema,
     middleware,
-    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive, { returnDirectTools: input.returnDirectTools, savedMemoryEnabled: input.savedMemoryEnabled, referenceHistoryEnabled: input.referenceHistoryEnabled })] as unknown as NonNullable<Parameters<typeof createAgent>[0]["tools"]>,
+    tools: [...createInternalTools(input.threadOverviewReader, input.memoryRetrieval, input.memoryMutation, input.memoryArchive, { returnDirectTools: input.returnDirectTools, savedMemoryEnabled: input.savedMemoryEnabled, referenceHistoryEnabled: input.referenceHistoryEnabled, accountabilityEnabled: input.accountabilityEnabled })] as unknown as NonNullable<Parameters<typeof createAgent>[0]["tools"]>,
   });
 }
 
@@ -145,6 +146,7 @@ export function createProductionAgent(input?: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   savedMemoryEnabled?: InternalToolOptions["savedMemoryEnabled"];
   referenceHistoryEnabled?: InternalToolOptions["referenceHistoryEnabled"];
+  accountabilityEnabled?: InternalToolOptions["accountabilityEnabled"];
   forceToolName?: string;
   observability?: AgentTraceRecorder;
   executionKind?: TraceExecutionKind;
@@ -158,6 +160,7 @@ export function createProductionAgent(input?: {
     returnDirectTools: input?.returnDirectTools,
     savedMemoryEnabled: input?.savedMemoryEnabled,
     referenceHistoryEnabled: input?.referenceHistoryEnabled,
+    accountabilityEnabled: input?.accountabilityEnabled,
     forceToolName: input?.forceToolName,
     observability: input?.observability,
     executionKind: input?.executionKind,
@@ -294,13 +297,14 @@ export async function* streamAgentEvents(input: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   savedMemoryEnabled?: InternalToolOptions["savedMemoryEnabled"];
   referenceHistoryEnabled?: InternalToolOptions["referenceHistoryEnabled"];
+  accountabilityEnabled?: InternalToolOptions["accountabilityEnabled"];
   forceToolName?: string;
   observability?: AgentTraceRecorder;
   executionKind?: TraceExecutionKind;
 }): AsyncGenerator<AgentRuntimeEvent> {
   const agent = input.model
-    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, savedMemoryEnabled: input.savedMemoryEnabled, referenceHistoryEnabled: input.referenceHistoryEnabled, forceToolName: input.forceToolName, observability: input.observability, executionKind: input.executionKind })
-    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, savedMemoryEnabled: input.savedMemoryEnabled, referenceHistoryEnabled: input.referenceHistoryEnabled, forceToolName: input.forceToolName, observability: input.observability, executionKind: input.executionKind });
+    ? createIrisAgent({ model: input.model, threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, savedMemoryEnabled: input.savedMemoryEnabled, referenceHistoryEnabled: input.referenceHistoryEnabled, accountabilityEnabled: input.accountabilityEnabled, forceToolName: input.forceToolName, observability: input.observability, executionKind: input.executionKind })
+    : createProductionAgent({ threadOverviewReader: input.threadOverviewReader, memoryRetrieval: input.memoryRetrieval, memoryMutation: input.memoryMutation, memoryArchive: input.memoryArchive, returnDirectTools: input.returnDirectTools, savedMemoryEnabled: input.savedMemoryEnabled, referenceHistoryEnabled: input.referenceHistoryEnabled, accountabilityEnabled: input.accountabilityEnabled, forceToolName: input.forceToolName, observability: input.observability, executionKind: input.executionKind });
   const stream = await agent.stream(
     { messages: input.messages },
     { context: input.context, signal: input.signal, streamMode: "messages" },
@@ -381,6 +385,7 @@ export async function* streamAssistantReply(input: {
   returnDirectTools?: InternalToolOptions["returnDirectTools"];
   savedMemoryEnabled?: InternalToolOptions["savedMemoryEnabled"];
   referenceHistoryEnabled?: InternalToolOptions["referenceHistoryEnabled"];
+  accountabilityEnabled?: InternalToolOptions["accountabilityEnabled"];
   forceToolName?: string;
 }) {
   void input.profileId;

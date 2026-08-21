@@ -8,6 +8,8 @@ import { isMemoryUuid, normalizeMemoryLimit, normalizeMemoryQuery } from "@/serv
 import { createMemoryMutationService, type MemoryMutationService } from "@/server/memory/mutation";
 import { createMemoryArchiveService, type MemoryArchiveService } from "@/server/memory/archive";
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
+import { createAccountabilityTools } from "@/server/accountability/tools";
+import type { AccountabilityRepository } from "@/server/accountability/repository";
 import { buildOpenMessageAction } from "@/lib/memory-source";
 
 export type ThreadOverview = {
@@ -33,6 +35,8 @@ export type InternalToolOptions = {
   savedMemoryEnabled?: boolean;
   /** Profile-level cross-chat history control. */
   referenceHistoryEnabled?: boolean;
+  /** Profile-level accountability loop control. */
+  accountabilityEnabled?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -355,6 +359,7 @@ export function createInternalTools(
   memoryMutation?: MemoryMutationService,
   memoryArchive?: MemoryArchiveService,
   options: InternalToolOptions = {},
+  accountabilityRepository?: AccountabilityRepository,
 ) {
   const isReturnDirect = (toolName: string) => options.returnDirectTools?.includes(toolName) ?? false;
   let resolvedMemoryRetrieval = memoryRetrieval;
@@ -451,7 +456,8 @@ export function createInternalTools(
   const memoryTools = options.savedMemoryEnabled === false
     ? []
     : [memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool];
-  return [threadOverview, ...historicalTools, ...memoryTools] as const;
+  const accountabilityTools = options.accountabilityEnabled === false ? [] : createAccountabilityTools(accountabilityRepository);
+  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools] as const;
 }
 
 /**
