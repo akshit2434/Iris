@@ -9,6 +9,12 @@ This file is the operating guide for automated coding work in this repository.
 - Run `git status -sb` first and preserve unrelated work.
 - Never stage or commit private names, `.env.local`, service keys, user exports, runtime logs, database dumps, generated private data, or personal context.
 
+## Milestone planning artifacts
+
+- Milestone design specs live in `docs/MILESTONE_*.md`; step-by-step implementation plans live in `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`.
+- One short-lived branch per milestone phase (`feature/<phase-slug>`); plans are executed task-by-task with tests green before each commit.
+- Update the milestone doc's phase table when a phase lands; refresh README status at milestone completion.
+
 ## Branches and commits
 
 - Commit directly to `main` for small, reversible, single-purpose changes. For major features, risky migrations, parallel work, or changes that benefit from an isolated reviewable diff, use a short-lived meaningful branch such as `feature/<short-kebab-description>`, `fix/<short-kebab-description>`, `docs/<short-kebab-description>`, `refactor/<short-kebab-description>`, `test/<short-kebab-description>`, or `chore/<short-kebab-description>`.
