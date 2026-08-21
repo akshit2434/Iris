@@ -134,6 +134,7 @@ export function createTemporaryAgentResponse(input: TemporaryAgentInput): Respon
           threadOverviewReader: createTemporaryThreadOverviewReader(),
           savedMemoryEnabled: false,
           referenceHistoryEnabled: false,
+          accountabilityEnabled: false,
         })) {
           if (event.type === "usage_observed") continue;
           if (event.type === "text_delta") {

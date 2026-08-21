@@ -177,7 +177,8 @@ export async function updateLoop(
     const current = await repo.getOpenLoop(context.profileId, input.loopId);
     if (!current) return errorOutput("loop_update", new Error(`Open loop "${input.loopId}" was not found.`));
     const event = UPDATE_EVENT_BY_ACTION[input.action];
-    if (nextStatusOnEvent(current.status, event) === null) {
+    const nextStatus = nextStatusOnEvent(current.status, event);
+    if (nextStatus === null) {
       return errorOutput("loop_update", new Error(`Illegal open loop transition: "${event}" is not allowed from status "${current.status}".`));
     }
     const updated = await repo.updateOpenLoopStatus(
@@ -192,9 +193,14 @@ export async function updateLoop(
       await repo.cancelPendingChecksForLoop(context.profileId, current.id, "Loop paused");
     } else if (input.action === "reschedule") {
       await repo.cancelPendingChecksForLoop(context.profileId, current.id, "Rescheduled");
-      await repo.insertScheduledCheck(context.profileId, { loopId: current.id, dueAt: input.dueAt! });
-    } else if (current.dueAt && new Date(current.dueAt).getTime() > new Date(context.serverNow).getTime()) {
-      await repo.insertScheduledCheck(context.profileId, { loopId: current.id, dueAt: current.dueAt });
+      if (nextStatus !== "paused") {
+        await repo.insertScheduledCheck(context.profileId, { loopId: current.id, dueAt: input.dueAt! });
+      }
+    } else {
+      await repo.cancelPendingChecksForLoop(context.profileId, current.id, "Resumed");
+      if (current.dueAt && new Date(current.dueAt).getTime() > new Date(context.serverNow).getTime()) {
+        await repo.insertScheduledCheck(context.profileId, { loopId: current.id, dueAt: current.dueAt });
+      }
     }
     return { kind: "loop_update", status: "updated", loopId: updated.id };
   } catch (error) {
@@ -216,8 +222,8 @@ export async function closeLoop(
       return errorOutput("loop_close", new Error(`Illegal open loop transition: "${outcome}" is not allowed from status "${current.status}".`));
     }
     const updated = await repo.updateOpenLoopStatus(context.profileId, current.id, current.updatedAt, { event: outcome });
-    await repo.insertLoopEvent(context.profileId, { loopId: current.id, kind: outcome, ...provenance(context) });
     const cancelledChecks = await repo.cancelPendingChecksForLoop(context.profileId, current.id, `Loop ${outcome}`);
+    await repo.insertLoopEvent(context.profileId, { loopId: current.id, kind: outcome, ...provenance(context) });
     return { kind: "loop_close", status: "closed", loopId: updated.id, cancelledChecks };
   } catch (error) {
     return errorOutput("loop_close", error);

@@ -13,6 +13,7 @@ import {
   toolActivityIconName,
   summarizeToolActivity,
   summarizeToolResult,
+  toolDetail,
 } from "@/lib/agent-stream";
 import type { Message } from "@/lib/types";
 
@@ -77,6 +78,13 @@ describe("agent stream parser", () => {
     expect(toolActionLabel("history_preflight", "succeeded")).toBe("Searched chats");
     expect(toolActivityIconName("history_preflight")).toBe("search");
     expect(summarizeToolResult({ runId: "run", toolCallId: "call", toolName: "history_preflight", status: "succeeded", output: { status: "no_match", sources: [] } })).toBe("No matching chat found");
+  });
+
+  it("suppresses raw JSON detail for accountability tools like the other production tools", () => {
+    for (const toolName of ["loop_list", "loop_create", "loop_update", "loop_close", "schedule_check"]) {
+      expect(toolDetail({ runId: "run-1", toolCallId: `call-${toolName}`, toolName, status: "succeeded", input: { loopId: "00000000-0000-4000-8000-000000000010" }, output: { kind: toolName } })).toBeNull();
+    }
+    expect(toolDetail({ runId: "run-1", toolCallId: "call-x", toolName: "future_tool", status: "succeeded", input: {}, output: { value: 1 } })).not.toBeNull();
   });
 });
 
