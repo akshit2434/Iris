@@ -79,6 +79,7 @@ function fakeRepository(overrides: Partial<AccountabilityRepository> = {}): Acco
     insertScheduledCheck: vi.fn(async (_profileId, input) => ({ id: "generated-check", profileId: "profile-a" as const, loopId: input.loopId, dueAt: input.dueAt, status: "pending" as const, attemptCount: 0, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: "2026-08-22T12:00:00.000Z" })),
     cancelPendingChecksForLoop: vi.fn(async () => 2),
     insertDelivery: vi.fn(async (_profileId, input) => ({ id: "generated-delivery", profileId: "profile-a" as const, threadId: input.threadId, messageId: null, summary: null, status: "pending" as const, createdAt: "2026-08-22T12:00:00.000Z", deliveredAt: null, answeredAt: null })),
+    insertDeliveryItems: vi.fn(async () => undefined),
     markDeliveryDelivered: vi.fn(async (_profileId, deliveryId, input) => ({ id: deliveryId, profileId: "profile-a" as const, threadId: ids.thread, messageId: input.messageId, summary: null, status: "delivered" as const, createdAt: "2026-08-22T12:00:00.000Z", deliveredAt: "2026-08-22T12:00:00.000Z", answeredAt: null })),
     insertLoopSuppression: vi.fn(async (_profileId, input) => ({ id: "generated-suppression", profileId: "profile-a" as const, subject: input.subject, reason: input.reason ?? "User asked Iris to stop following up", createdAt: "2026-08-22T12:00:00.000Z", liftedAt: null })),
     liftLoopSuppression: vi.fn(async () => 1),

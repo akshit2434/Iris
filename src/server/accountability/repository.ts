@@ -185,6 +185,7 @@ export type AccountabilityRepository = {
   cancelPendingChecksForLoop(profileId: ProfileId, loopId: string, reason: string): Promise<number>;
   cancelOrphanPendingDeliveries(profileId: ProfileId, nowIso: string): Promise<number>;
   insertDelivery(profileId: ProfileId, input: { threadId: string }): Promise<CheckinDeliveryRow>;
+  insertDeliveryItems(profileId: ProfileId, deliveryId: string, loopIds: readonly string[]): Promise<void>;
   markDeliveryDelivered(profileId: ProfileId, deliveryId: string, input: { messageId: string; deliveredAt?: string }): Promise<CheckinDeliveryRow>;
   insertLoopSuppression(profileId: ProfileId, input: InsertLoopSuppressionInput): Promise<LoopSuppressionRow>;
   liftLoopSuppression(profileId: ProfileId, subject: string): Promise<number>;
@@ -595,6 +596,15 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       if (error) throw error;
       if (!data) throw new Error("Check-in delivery insert returned no row.");
       return toDelivery(data);
+    },
+
+    async insertDeliveryItems(profileId, deliveryId, loopIds) {
+      assertProfileId(profileId);
+      if (loopIds.length === 0) return;
+      const { error } = await client
+        .from("checkin_delivery_items")
+        .insert(loopIds.map((loopId) => ({ profile_id: profileId, delivery_id: deliveryId, loop_id: loopId })));
+      if (error) throw error;
     },
 
     async markDeliveryDelivered(profileId, deliveryId, input) {

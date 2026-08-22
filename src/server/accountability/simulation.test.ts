@@ -35,6 +35,7 @@ type Tables = {
   scheduled_checks: Record<string, unknown>[];
   loop_events: Record<string, unknown>[];
   checkin_deliveries: Record<string, unknown>[];
+  checkin_delivery_items: Record<string, unknown>[];
   loop_suppressions: Record<string, unknown>[];
 };
 
@@ -44,6 +45,7 @@ function createAccountabilityDatabase() {
     scheduled_checks: [],
     loop_events: [],
     checkin_deliveries: [],
+    checkin_delivery_items: [],
     loop_suppressions: [],
   };
   const defaults: Record<string, Record<string, unknown>> = {
@@ -51,6 +53,7 @@ function createAccountabilityDatabase() {
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
     scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null },
     checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
+    checkin_delivery_items: { response: null, responded: false },
     loop_suppressions: { lifted_at: null },
   };
   let generated = 0;
@@ -59,6 +62,7 @@ function createAccountabilityDatabase() {
     scheduled_checks: "2",
     loop_events: "3",
     checkin_deliveries: "4",
+    checkin_delivery_items: "6",
     loop_suppressions: "5",
   };
   const at = (row: Record<string, unknown>, field: string) => row[field];
@@ -105,16 +109,21 @@ function createAccountabilityDatabase() {
     builder.maybeSingle = () => Promise.resolve({ data: filtered[0] ?? null, error: null });
     builder.single = () => Promise.resolve(filtered.length > 0 ? { data: filtered[0], error: null } : { data: null, error: { message: "no rows returned" } });
     builder.insert = (value: unknown) => {
-      generated += 1;
-      const record: Record<string, unknown> = {
-        id: `00000000-0000-4000-800${idPrefix[table]}-${String(generated).padStart(11, "0")}`,
-        created_at: "2026-08-01T00:00:00.000Z",
-        ...(defaults[table] ?? {}),
-        ...(value as Record<string, unknown>),
-      };
-      if (table === "open_loops") record.updated_at = "2026-08-01T00:00:00.000Z";
-      rows[table as keyof Tables].push(record);
-      filtered = [record];
+      const inputs = Array.isArray(value) ? value : [value];
+      const inserted: Record<string, unknown>[] = [];
+      for (const input of inputs) {
+        generated += 1;
+        const record: Record<string, unknown> = {
+          id: `00000000-0000-4000-800${idPrefix[table]}-${String(generated).padStart(11, "0")}`,
+          created_at: "2026-08-01T00:00:00.000Z",
+          ...(defaults[table] ?? {}),
+          ...(input as Record<string, unknown>),
+        };
+        if (table === "open_loops") record.updated_at = "2026-08-01T00:00:00.000Z";
+        rows[table as keyof Tables].push(record);
+        inserted.push(record);
+      }
+      filtered = inserted;
       return builder;
     };
     builder.update = (value: unknown) => { pendingPatch = value as Record<string, unknown>; return builder; };
@@ -303,6 +312,10 @@ function createWorld() {
     const messageIds = new Set(writtenMessages.map((message) => message.id));
     for (const delivery of deliveries()) {
       if (delivery.message_id !== null) expect(messageIds.has(String(delivery.message_id))).toBe(true);
+      if (delivery.status !== "delivered") continue;
+      const expectedLoopIds = [...new Set(checks().filter((check) => check.delivery_id === delivery.id).map((check) => String(check.loop_id)))].sort();
+      const itemRows = db.rows.checkin_delivery_items.filter((item) => item.delivery_id === delivery.id);
+      expect(itemRows.map((item) => String(item.loop_id)).sort()).toEqual(expectedLoopIds);
     }
   }
   return {
@@ -314,6 +327,7 @@ function createWorld() {
     composerRequests: composedRequests,
     contextLoopTitles,
     deliveries,
+    deliveryItems: () => db.rows.checkin_delivery_items,
     deliveryLog,
     events,
     loops,

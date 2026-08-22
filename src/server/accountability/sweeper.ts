@@ -193,6 +193,7 @@ export async function runAccountabilitySweep(input: {
               const escalationTier = Math.max(...batch.map((pair) => pair.check.escalationTier));
               const composed = await composeCheckinMessage({ kind, loops, escalationTier, composer });
               const delivery = await repository.insertDelivery(profileId, { threadId });
+              await repository.insertDeliveryItems(profileId, delivery.id, [...new Set(batch.map((pair) => pair.loop.id))]);
               const message = await writeMessage({ profileId, threadId, content: composed.text });
               await repository.markDeliveryDelivered(profileId, delivery.id, { messageId: message.id });
               for (const pair of batch) {

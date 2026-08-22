@@ -54,6 +54,7 @@ function fakeRepository(
     insertScheduledCheck: vi.fn(async (_profileId, input) => ({ id: "check-1", profileId: "profile-a" as const, loopId: input.loopId, dueAt: input.dueAt, status: "pending" as const, attemptCount: 0, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: NOW })),
     cancelPendingChecksForLoop: vi.fn(async () => 0),
     insertDelivery: vi.fn(async (_profileId, input) => ({ id: "delivery-1", profileId: "profile-a" as const, threadId: input.threadId, messageId: null, summary: null, status: "pending" as const, createdAt: NOW, deliveredAt: null, answeredAt: null })),
+    insertDeliveryItems: vi.fn(async () => undefined),
     markDeliveryDelivered: vi.fn(async (_profileId, deliveryId, input) => ({ id: deliveryId, profileId: "profile-a" as const, threadId: "thread-1", messageId: input.messageId, summary: null, status: "delivered" as const, createdAt: NOW, deliveredAt: NOW, answeredAt: null })),
     insertLoopSuppression: vi.fn(async (_profileId, input) => ({ id: "suppression-1", profileId: "profile-a" as const, subject: input.subject, reason: input.reason ?? "r", createdAt: NOW, liftedAt: null })),
     liftLoopSuppression: vi.fn(async () => 1),

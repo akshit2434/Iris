@@ -97,6 +97,7 @@ const REPOSITORY_METHODS = [
   "cancelPendingChecksForLoop",
   "cancelOrphanPendingDeliveries",
   "insertDelivery",
+  "insertDeliveryItems",
   "markDeliveryDelivered",
   "insertLoopSuppression",
   "liftLoopSuppression",
@@ -155,6 +156,7 @@ function fakeRepository(pairs: DeliverableDueCheck[] = [], overrides: Partial<Ac
         answeredAt: null,
       };
     }),
+    insertDeliveryItems: vi.fn(async () => undefined),
     markDeliveryDelivered: vi.fn(async (_profileId: string, deliveryId: string, input: { messageId: string }) => ({
       id: deliveryId,
       profileId: "profile-a" as const,
@@ -361,6 +363,33 @@ describe("accountability sweep", () => {
       }));
     }
     expect(vi.mocked(repository.markCheckDelivered).mock.calls.every((call) => call[2].attemptCount === 1 && call[2].escalationTier === 1)).toBe(true);
+  });
+
+  it("seeds one delivery item per loop inside each delivery before anything is marked delivered", async () => {
+    const pairs = [
+      makePair({ title: "Renew passport" }, { dueAt: "2026-08-22T08:00:00.000Z" }),
+      makePair({ title: "Buy groceries" }, { dueAt: "2026-08-22T09:00:00.000Z" }),
+      makePair({ title: "Call plumber" }, { dueAt: "2026-08-22T10:00:00.000Z" }),
+      makePair({ title: "Task 4" }, { dueAt: "2026-08-22T11:00:00.000Z" }),
+      makePair({ title: "Task 5" }, { dueAt: "2026-08-22T12:00:00.000Z" }),
+    ];
+    const repository = fakeRepository(pairs);
+    const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, composer: async () => "nudge", threadLister: liveThreads });
+    expect(report.profiles[0]).toMatchObject({ selected: 5, delivered: 5, mergedBatches: 2, failed: 0 });
+    const insertedDeliveryIds = vi.mocked(repository.markDeliveryDelivered).mock.calls.map((call) => call[1]);
+    expect(repository.insertDeliveryItems).toHaveBeenCalledTimes(2);
+    expect(repository.insertDeliveryItems).toHaveBeenNthCalledWith(1, "profile-a", insertedDeliveryIds[0], [
+      pairs[0].loop.id,
+      pairs[1].loop.id,
+      pairs[2].loop.id,
+      pairs[3].loop.id,
+    ]);
+    expect(repository.insertDeliveryItems).toHaveBeenNthCalledWith(2, "profile-a", insertedDeliveryIds[1], [pairs[4].loop.id]);
+    const insertOrder = vi.mocked(repository.insertDelivery).mock.invocationCallOrder;
+    const itemsOrder = vi.mocked(repository.insertDeliveryItems).mock.invocationCallOrder;
+    const deliveredOrder = vi.mocked(repository.markDeliveryDelivered).mock.invocationCallOrder;
+    expect(itemsOrder.every((order) => insertOrder.some((before) => before < order))).toBe(true);
+    expect(deliveredOrder.every((order) => itemsOrder.some((before) => before < order))).toBe(true);
   });
 
   it("caps every merged delivery at four items while preserving due_at order", async () => {
