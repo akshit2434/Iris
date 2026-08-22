@@ -373,4 +373,27 @@ describe("accountability sweep", () => {
     expect(report.profiles.map((entry) => entry.profileId)).toEqual(["profile-a", "profile-b"]);
     expect(report.profiles.every((entry) => entry.selected === 0)).toBe(true);
   });
+
+  it("emits the exact SweepReport contract the endpoint and Home card consume", async () => {
+    const repository = fakeRepository([]);
+    const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(Object.keys(report).sort()).toEqual(["at", "profiles"]);
+    expect(Number.isNaN(Date.parse(report.at))).toBe(false);
+    expect(report.profiles).toHaveLength(1);
+    for (const entry of report.profiles) {
+      expect(Object.keys(entry).sort()).toEqual([
+        "cancelledStale",
+        "delivered",
+        "failed",
+        "mergedBatches",
+        "profileId",
+        "selected",
+        "skippedNoThread",
+      ]);
+      for (const counter of [entry.selected, entry.delivered, entry.mergedBatches, entry.cancelledStale, entry.skippedNoThread, entry.failed]) {
+        expect(typeof counter).toBe("number");
+        expect(Number.isInteger(counter)).toBe(true);
+      }
+    }
+  });
 });
