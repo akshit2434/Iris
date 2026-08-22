@@ -30,6 +30,8 @@ function fakeRepository(
 ): AccountabilityRepository {
   return {
     listOpenLoops: vi.fn(async () => rows),
+  listRecentlyClosedLoops: vi.fn(async () => []),
+  listLoopEventsForRun: vi.fn(async () => []),
     getOpenLoop: vi.fn(async () => null),
     insertOpenLoop: vi.fn(async () => makeLoop()),
     updateOpenLoopStatus: vi.fn(async () => makeLoop()),

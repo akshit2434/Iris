@@ -101,8 +101,8 @@ describe("agent context", () => {
 
 describe("accountability context", () => {
   it("defaults accountability tracking off without changing the legacy context shape", () => {
-    expect(context.accountability).toEqual({ enabled: false, loops: [] });
-    expect(agentContextSchema.parse(context).accountability).toEqual({ enabled: false, loops: [] });
+    expect(context.accountability).toEqual({ enabled: false, loops: [], recentlyClosed: [] });
+    expect(agentContextSchema.parse(context).accountability).toEqual({ enabled: false, loops: [], recentlyClosed: [] });
     const prompt = buildDynamicSystemPrompt(context);
     expect(prompt).not.toContain("accountability tracking is active");
     expect(prompt).not.toContain("<open-loops>");

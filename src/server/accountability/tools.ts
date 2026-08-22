@@ -86,7 +86,7 @@ export type LoopListOutput =
 
 export type LoopCreateOutput =
   | { kind: "loop_create"; status: "needs_confirmation"; message: string }
-  | { kind: "loop_create"; status: "created"; loopId: string; dueAt: string | null }
+  | { kind: "loop_create"; status: "created"; loopId: string; title: string; dueAt: string | null }
   | { kind: "loop_create"; status: "error"; message: string };
 
 export type LoopUpdateOutput =
@@ -94,7 +94,7 @@ export type LoopUpdateOutput =
   | { kind: "loop_update"; status: "error"; message: string };
 
 export type LoopCloseOutput =
-  | { kind: "loop_close"; status: "closed"; loopId: string; cancelledChecks: number }
+  | { kind: "loop_close"; status: "closed"; loopId: string; title: string; cancelledChecks: number }
   | { kind: "loop_close"; status: "error"; message: string };
 
 export type ScheduleCheckOutput =
@@ -187,7 +187,7 @@ export async function createLoop(
     });
     await repo.insertLoopEvent(context.profileId, { loopId: loop.id, kind: "created", ...provenance(context) });
     if (loop.dueAt) await repo.insertScheduledCheck(context.profileId, { loopId: loop.id, dueAt: loop.dueAt });
-    return { kind: "loop_create", status: "created", loopId: loop.id, dueAt: loop.dueAt };
+    return { kind: "loop_create", status: "created", loopId: loop.id, title: loop.title, dueAt: loop.dueAt };
   } catch (error) {
     return errorOutput("loop_create", error);
   }
@@ -256,7 +256,7 @@ export async function closeLoop(
     const updated = await repo.updateOpenLoopStatus(context.profileId, current.id, current.updatedAt, { event: outcome });
     const cancelledChecks = await repo.cancelPendingChecksForLoop(context.profileId, current.id, `Loop ${outcome}`);
     await repo.insertLoopEvent(context.profileId, { loopId: current.id, kind: outcome, ...provenance(context) });
-    return { kind: "loop_close", status: "closed", loopId: updated.id, cancelledChecks };
+    return { kind: "loop_close", status: "closed", loopId: updated.id, title: updated.title, cancelledChecks };
   } catch (error) {
     return errorOutput("loop_close", error);
   }

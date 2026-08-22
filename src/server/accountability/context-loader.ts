@@ -26,6 +26,16 @@ export type OpenLoopContextEntry = {
   createdAt: string;
 };
 
+export const RECENTLY_CLOSED_CONTEXT_MAX_ITEMS = 3;
+export const RECENTLY_CLOSED_WINDOW_HOURS = 48;
+
+export type RecentlyClosedContextEntry = { title: string; closedAt: string };
+
+export type AccountabilityContextSnapshot = {
+  loops: OpenLoopContextEntry[];
+  recentlyClosed: RecentlyClosedContextEntry[];
+};
+
 export type LoadOpenLoopContextOptions = { limit?: number; now?: string };
 
 const KIND_RANK: Record<OpenLoopKind, number> = { commitment: 0, routine: 1, idea: 2 };
@@ -88,6 +98,19 @@ export async function loadOpenLoopContext(profileId: ProfileId, options: LoadOpe
   return loadOpenLoopsForProfile(createProductionAccountabilityRepository(), profileId, options);
 }
 
+export async function loadAccountabilityContext(profileId: ProfileId, options: LoadOpenLoopContextOptions = {}): Promise<AccountabilityContextSnapshot> {
+  const repository = createProductionAccountabilityRepository();
+  const nowMs = Date.parse(options.now ?? new Date().toISOString());
+  const sinceIso = new Date(nowMs - RECENTLY_CLOSED_WINDOW_HOURS * 3_600_000).toISOString();
+  const [loops, recentlyClosed] = await Promise.all([
+    loadOpenLoopsForProfile(repository, profileId, options),
+    repository.listRecentlyClosedLoops(profileId, sinceIso, RECENTLY_CLOSED_CONTEXT_MAX_ITEMS)
+      .then((rows) => rows.map((row) => ({ title: row.title.replace(/[\r\n]+/g, " ").slice(0, OPEN_LOOP_TITLE_MAX_LENGTH), closedAt: row.closedAt })))
+      .catch(() => [] as RecentlyClosedContextEntry[]),
+  ]);
+  return { loops, recentlyClosed };
+}
+
 function escapePrompt(value: string) {
   return value.replace(/[<>]/g, (character) => character === "<" ? "&lt;" : "&gt;");
 }
@@ -103,9 +126,19 @@ function describeEntry(entry: OpenLoopContextEntry, nowMs: number): string {
   return `${entry.status}, due ${entry.dueAt.slice(0, 10)}`;
 }
 
-export function formatOpenLoopsPrompt(entries: readonly OpenLoopContextEntry[], nowIso: string): string {
-  if (entries.length === 0) return "";
+export function formatOpenLoopsPrompt(
+  entries: readonly OpenLoopContextEntry[],
+  nowIso: string,
+  recentlyClosed: readonly RecentlyClosedContextEntry[] = [],
+): string {
+  if (entries.length === 0 && recentlyClosed.length === 0) return "";
   const nowMs = Date.parse(nowIso);
-  const body = entries.map((entry) => `- [${entry.kind}] ${escapePrompt(entry.title)} (${describeEntry(entry, nowMs)})`).join("\n");
-  return `<open-loops>\n${body}\n</open-loops>`;
+  const sections: string[] = [];
+  if (entries.length > 0) {
+    sections.push(entries.map((entry) => `- [${entry.kind}] ${escapePrompt(entry.title)} (${describeEntry(entry, nowMs)})`).join("\n"));
+  }
+  if (recentlyClosed.length > 0) {
+    sections.push(`Recently closed:\n${recentlyClosed.map((entry) => `- ${escapePrompt(entry.title)} (${entry.closedAt.slice(0, 10)})`).join("\n")}`);
+  }
+  return `<open-loops>\n${sections.join("\n")}\n</open-loops>`;
 }

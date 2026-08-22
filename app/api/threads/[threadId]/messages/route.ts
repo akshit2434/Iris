@@ -1,5 +1,5 @@
 import { NextResponse, after } from "next/server";
-import { loadOpenLoopContext } from "@/server/accountability/context-loader";
+import { loadAccountabilityContext } from "@/server/accountability/context-loader";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
 import {
@@ -255,9 +255,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         afterRevision: threadContextRow.memoryRevisionSeen,
         throughRevision: memoryRevisionSnapshot,
       }).catch(() => ({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] })) : Promise.resolve({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] }),
-      loadOpenLoopContext(profileId)
-        .then((loops) => ({ enabled: true, loops }))
-        .catch(() => ({ enabled: false, loops: [] })),
+      loadAccountabilityContext(profileId)
+        .then((snapshot) => ({ enabled: true, loops: snapshot.loops, recentlyClosed: snapshot.recentlyClosed }))
+        .catch(() => ({ enabled: false, loops: [], recentlyClosed: [] })),
     ]);
     const referenceHistoryPrompt = memoryControls.referenceHistoryEnabled
       && referenceHistoryPromptIsFresh(referenceHistorySnapshot, memoryRevisionSnapshot)
@@ -514,6 +514,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             }
             if (event.type === "text_delta") {
               assistantContent += event.text;
+              turnAssistantText = assistantContent;
               if (!bufferAmbiguousResponse) send({ type: "text_delta", runId: run.id, text: event.text });
               continue;
             }
@@ -550,6 +551,11 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
                 ...(event.statusMessage ? { statusMessage: event.statusMessage } : {}),
               },
             });
+            if (event.ok && typeof event.output === "object" && event.output !== null && !Array.isArray(event.output)) {
+              const output = event.output as { kind?: string; title?: string };
+              if (output.kind === "loop_create" && typeof output.title === "string") loopLedger.created.push(output.title);
+              if (output.kind === "loop_close" && typeof output.title === "string") loopLedger.closed.push(output.title);
+            }
             if (event.toolName === "memory_patch"
               && event.ok
               && typeof event.output === "object"
@@ -732,6 +738,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
               // Continuity queue availability must not fail a completed run.
             }
           }
+          if (loopLedger.created.length > 0 || loopLedger.closed.length > 0) {
+            send({ type: "loop_ledger", runId: run.id, created: loopLedger.created.slice(0, 4), closed: loopLedger.closed.slice(0, 4) });
+          }
           send({
             type: "completed",
             runId: run.id,
@@ -813,12 +822,40 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       },
     });
 
+    let turnAssistantText = "";
+    const loopLedger: { created: string[]; closed: string[] } = { created: [], closed: [] };
     if (process.env.ACCOUNTABILITY_SWEEP_DISABLED !== "true") {
       after(() =>
         import("@/server/accountability/sweeper")
           .then(({ runAccountabilitySweep }) => runAccountabilitySweep())
           .catch(() => {}),
       );
+    }
+    if (process.env.ACCOUNTABILITY_SCANNER_DISABLED !== "true") {
+      after(async () => {
+        const { createProductionAccountabilityRepository } = await import("@/server/accountability/repository");
+        const { createProductionCommitmentScanner, filterNewCommitments } = await import("@/server/accountability/scanner");
+        try {
+          const repository = createProductionAccountabilityRepository();
+          const events = await repository.listLoopEventsForRun(profileId, run.id);
+          if (events.some((event) => event.kind === "created")) return;
+          const openLoops = await repository.listOpenLoops(profileId).catch(() => []);
+          const scannerStartedAt = Date.now();
+          const titles = await createProductionCommitmentScanner()({
+            userText: content,
+            assistantText: turnAssistantText,
+            openLoopTitles: openLoops.map((loop) => loop.title),
+          });
+          console.log(JSON.stringify({ scope: "commitment-scanner", durationMs: Date.now() - scannerStartedAt, found: titles.length }));
+          const missed = filterNewCommitments(titles, openLoops.map((loop) => loop.title));
+          for (const title of missed) {
+            const loop = await repository.insertOpenLoop({ profileId, title, kind: "commitment" }).catch(() => null);
+            if (!loop) continue;
+            await repository.insertLoopEvent(profileId, { loopId: loop.id, kind: "created", actor: "system", sourceThreadId: threadId, sourceMessageId: userMessageId, agentRunId: run.id, detail: "Recovered by the missed-commitment scan.", metadata: { autoScan: true } }).catch(() => {});
+            await repository.insertScheduledCheck(profileId, { loopId: loop.id, dueAt: new Date(Date.now() + 12 * 3_600_000).toISOString() }).catch(() => {});
+          }
+        } catch { /* scanning must never break the chat path */ }
+      });
     }
 
     return new Response(stream, {
