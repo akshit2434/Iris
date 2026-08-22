@@ -541,7 +541,6 @@ describe("accountability multi-week simulation", () => {
     await world.agent.trackCommitment({ title: "Buy stamps", dueAt: at(2, "08:00") });
 
     world.advanceTo(at(2, SWEEP_TIME));
-    world.advanceTo(at(2, SWEEP_TIME));
     const fallback = await composeCheckinMessage({ kind: "merged_batch", loops: [{ title: "Renew passport" }, { title: "Buy stamps" }], composer: failingComposer });
     expect(fallback.tier).toBe(0);
     expect(fallback.text).toContain("Renew passport");

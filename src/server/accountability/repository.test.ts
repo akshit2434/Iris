@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAccountabilityRepository, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
-function fakeAccountabilityDatabase() {
+function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
   const calls: Array<{ operation: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
   const insertedAt = "2026-08-22T12:00:00.000Z";
   const rows: Record<string, Record<string, unknown>[]> = {
@@ -17,6 +17,7 @@ function fakeAccountabilityDatabase() {
       { id: "check-other-loop", profile_id: "profile-a", loop_id: "loop-done", due_at: "2026-08-22T06:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
       { id: "check-cancelled", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T07:00:00.000Z", status: "cancelled", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: "2026-08-21T15:00:00.000Z", cancel_reason: "superseded", created_at: "2026-08-21T10:00:00.000Z" },
       { id: "check-b", profile_id: "profile-b", loop_id: "loop-b", due_at: "2026-08-22T05:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
+      ...extraScheduledChecks,
     ],
     loop_events: [],
     checkin_deliveries: [],
@@ -208,6 +209,20 @@ describe("accountability repository", () => {
       escalationTier: 0,
     });
     expect(calls.some((call) => call.operation === "insert" && call.table === "scheduled_checks")).toBe(true);
+  });
+
+  it("inherits the highest prior attempt count when rescheduling a loop's check", async () => {
+    const { database, calls } = fakeAccountabilityDatabase([
+      { id: "check-prior", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T09:00:00.000Z", status: "delivered", attempt_count: 3, escalation_tier: 2, delivery_id: "delivery-old", delivered_at: "2026-08-22T09:30:00.000Z", cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
+    ]);
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertScheduledCheck("profile-a", { loopId: "loop-a", dueAt: "2026-08-25T09:00:00.000Z" })).resolves.toMatchObject({
+      loopId: "loop-a",
+      status: "pending",
+      attemptCount: 3,
+      escalationTier: 0,
+    });
+    expect(calls.find((call) => call.operation === "insert" && call.table === "scheduled_checks")?.params).toMatchObject({ attempt_count: 3 });
   });
 
   it("joins pending due checks with their parent loops regardless of loop status", async () => {
