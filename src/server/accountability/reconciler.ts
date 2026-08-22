@@ -147,9 +147,9 @@ function supportingCandidate(
 ): ReconciliationCandidate | undefined {
   const index = classification.supportingIndex;
   if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= candidates.length) {
-    return candidates[0];
+    return undefined;
   }
-  return candidates[index] ?? candidates[0];
+  return candidates[index];
 }
 
 /**

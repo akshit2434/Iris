@@ -147,7 +147,12 @@ export async function listLoops(
     const rows = input.statuses
       ? await repo.listOpenLoops(context.profileId, { statuses: input.statuses })
       : await repo.listOpenLoops(context.profileId);
-    return { kind: "loop_list", loops: rows.map(toSummary) };
+    const suppressions = await repo.listActiveSuppressions(context.profileId);
+    const suppressedSubjects = new Set(suppressions.map((suppression) => normalizeSuppressionSubject(suppression.subject)));
+    return {
+      kind: "loop_list",
+      loops: rows.filter((row) => !suppressedSubjects.has(normalizeSuppressionSubject(row.title))).map(toSummary),
+    };
   } catch (error) {
     return errorOutput("loop_list", error);
   }

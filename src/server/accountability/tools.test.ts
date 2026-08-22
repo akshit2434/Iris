@@ -143,6 +143,19 @@ describe("accountability tools", () => {
     expect(repo.listOpenLoops).toHaveBeenCalledWith("profile-a");
   });
 
+  it("hides suppressed subjects from loop_list while direct id operations still reach the loop", async () => {
+    const repo = fakeRepository({
+      listActiveSuppressions: vi.fn(async () => [
+        { id: "sup-1", profileId: "profile-a" as const, subject: "  renew   PASSPORT ", reason: "r", createdAt: "2026-08-22T12:00:00.000Z", liftedAt: null },
+      ]),
+    });
+    const listed = await listLoops(context, {}, repo);
+    expect(listed).toEqual({ kind: "loop_list", loops: [] });
+    const closed = await closeLoop(context, { loopId: LOOP_ID }, repo);
+    expect(closed).toEqual({ kind: "loop_close", status: "closed", loopId: LOOP_ID, cancelledChecks: 2 });
+    expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: "completed" });
+  });
+
   it("closes a completed loop with its expected revision and cancels pending checks", async () => {
     const repo = fakeRepository({ cancelPendingChecksForLoop: vi.fn(async () => 3) });
     const result = await closeLoop(context, { loopId: LOOP_ID }, repo);

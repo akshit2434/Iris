@@ -73,7 +73,7 @@ export function composeTier0Text(input: { kind: CheckinKind; loops: CheckinLoopR
     case "routine_reflection": {
       const subject = joinedTitles(titles);
       if (tone === 1) return `Whenever you have a moment today, I'd love to hear how ${subject} has been going.`;
-      if (tone >= 2) return `${subject} keeps sliding past its check-ins — still working for you? Happy to adjust the rhythm or let it go.`;
+      if (tone >= 2) return `${subject} keeps sliding past their check-ins — still working for you? Happy to adjust the rhythm or let it go.`;
       return `Time for your check-in: how has ${subject} been going lately?`;
     }
     case "catch_up": {
@@ -83,7 +83,7 @@ export function composeTier0Text(input: { kind: CheckinKind; loops: CheckinLoopR
         return `Just a gentle nudge about ${names}, which ${plural ? "have" : "has"} slipped past ${plural ? "their" : "its"} date. Want to pick ${plural ? "them" : "it"} up soon, or find a better time?`;
       }
       if (tone >= 2) {
-        return `${names} keeps slipping — still important? Tell me what changed and we can reschedule ${plural ? "them" : "it"}, or drop ${plural ? "them" : "it"}.`;
+        return `${names} ${plural ? "keep" : "keeps"} slipping — still important? Tell me what changed and we can reschedule ${plural ? "them" : "it"}, or drop ${plural ? "them" : "it"}.`;
       }
       return `${names} ${plural ? "slipped past their dates" : "slipped past its date"} — no judgment. Want to pick ${plural ? "them" : "it"} up today, or should we find a better time?`;
     }
@@ -99,8 +99,9 @@ export function composeTier0Text(input: { kind: CheckinKind; loops: CheckinLoopR
     case "single_commitment":
     default: {
       const names = joinedTitles(titles);
+      const plural = titles.length > 1;
       if (tone === 1) return `Gentle reminder about ${names}: it's still on your list whenever you're ready.`;
-      if (tone >= 2) return `${names} keeps slipping — still important? Tell me what changed and we can reschedule it or drop it.`;
+      if (tone >= 2) return `${names} ${plural ? "keep" : "keeps"} slipping — still important? Tell me what changed and we can reschedule ${plural ? "them" : "it"} or drop ${plural ? "them" : "it"}.`;
       return `Quick check: did you get to ${names} yet? Even a quick yes or no helps.`;
     }
   }

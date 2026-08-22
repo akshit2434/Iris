@@ -165,7 +165,7 @@ function createWorld() {
   const searchCalls: Array<{ profileId: string; query: string; from: string | null }> = [];
   const classifyCalls: Array<{ title: string; candidates: ReconciliationCandidate[] }> = [];
   let historyCandidates: ReconciliationCandidate[] = [];
-  let classification: { completed: boolean; confidence: number } = { completed: false, confidence: 0 };
+  let classification: { completed: boolean; confidence: number; supportingIndex?: number | null } = { completed: false, confidence: 0 };
   const retrieval: CommitmentSearchClient = async (input) => {
     searchCalls.push({ profileId: input.profileId, query: input.query, from: input.from ?? null });
     return historyCandidates;
@@ -304,7 +304,7 @@ function createWorld() {
       setHistory(candidates: ReconciliationCandidate[]) {
         historyCandidates = candidates;
       },
-      setClassification(next: { completed: boolean; confidence: number }) {
+      setClassification(next: { completed: boolean; confidence: number; supportingIndex?: number | null }) {
         classification = next;
       },
     },
@@ -780,7 +780,7 @@ describe("accountability multi-week simulation", () => {
       content: "btw I finally submitted the OS assignment this morning",
       createdAt: at(2, "15:00"),
     }]);
-    world.reconcile.setClassification({ completed: true, confidence: 0.92 });
+    world.reconcile.setClassification({ completed: true, confidence: 0.92, supportingIndex: 0 });
 
     const [loopRow] = world.loops();
     expect(loopRow).toMatchObject({ title: "Submit OS assignment", status: "open", created_at: "2026-08-01T00:00:00.000Z" });

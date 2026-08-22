@@ -76,6 +76,7 @@ describe("soft-close reconciliation", () => {
     const classifier = vi.fn(async (input: { candidates: ReconciliationCandidate[] }) => ({
       completed: input.candidates.length > 0 && input.candidates[0] === evidence ? true : false,
       confidence: 0.86,
+      supportingIndex: 0,
     }));
     const plans = await reconcileOverdueCommitments({
       profileId: "profile-a",
@@ -134,7 +135,7 @@ describe("soft-close reconciliation", () => {
     expect(plans.get("00000000-0000-4000-8000-0000000000a1")?.excerpt).toContain("actually submitted the passport renewal");
   });
 
-  it("falls back to the first candidate when the supporting index is missing or out of range", async () => {
+  it("omits the evidence excerpt when the supporting index is missing or out of range", async () => {
     const retrieval = vi.fn(async () => [
       candidate({ content: "first message about the passport" }),
       candidate({ content: "second message about the passport" }),
@@ -148,7 +149,7 @@ describe("soft-close reconciliation", () => {
         retrieval,
         classifier,
       });
-      expect(plans.get("00000000-0000-4000-8000-0000000000a1")?.excerpt).toBe("first message about the passport");
+      expect(plans.get("00000000-0000-4000-8000-0000000000a1")?.excerpt).toBe("");
     }
   });
 

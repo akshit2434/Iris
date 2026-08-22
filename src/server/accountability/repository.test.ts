@@ -36,6 +36,7 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
     const builder: Record<string, (...args: unknown[]) => unknown> = {};
     let filtered = [...rows[table]];
     let pendingPatch: Record<string, unknown> | null = null;
+    let orderSpecs: Array<{ field: string; dir: number }> = [];
     const applyPendingPatch = () => {
       if (!pendingPatch) return;
       const targets = new Set(filtered);
@@ -67,7 +68,7 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
       }));
       return builder;
     };
-    builder.order = (field: unknown, options: unknown) => { calls.push({ operation: "order", table, field: String(field), value: options }); const direction = (options as { ascending?: boolean } | undefined)?.ascending === false ? -1 : 1; filtered = [...filtered].sort((left, right) => String(at(left, String(field))).localeCompare(String(at(right, String(field)))) * direction); return builder; };
+    builder.order = (field: unknown, options: unknown) => { calls.push({ operation: "order", table, field: String(field), value: options }); const direction = (options as { ascending?: boolean } | undefined)?.ascending === false ? -1 : 1; orderSpecs = [...orderSpecs, { field: String(field), dir: direction }]; filtered = [...filtered].sort((left, right) => { for (const spec of orderSpecs) { const compared = String(at(left, spec.field)).localeCompare(String(at(right, spec.field))); if (compared !== 0) return compared * spec.dir; } return 0; }); return builder; };
     builder.limit = (count: unknown) => { calls.push({ operation: "limit", table, value: count }); filtered = filtered.slice(0, Number(count)); return builder; };
     builder.maybeSingle = () => Promise.resolve({ data: filtered[0] ?? null, error: null });
     builder.single = () => Promise.resolve(filtered.length > 0 ? { data: filtered[0], error: null } : { data: null, error: { message: "no rows returned" } });
@@ -288,6 +289,12 @@ describe("accountability repository", () => {
     expect(calls).toContainEqual({ operation: "lte", table: "scheduled_checks", field: "due_at", value: "2026-08-22T12:00:00.000Z" });
     expect(calls.find((call) => call.operation === "or")?.value).toContain("claimed_at.is.null");
     expect(calls.find((call) => call.operation === "or")?.value).toContain("claimed_at.lt.2026-08-22T11:50");
+    expect(calls).toContainEqual({ operation: "order", table: "scheduled_checks", field: "due_at", value: { ascending: true } });
+    expect(calls).toContainEqual({ operation: "order", table: "scheduled_checks", field: "id", value: { ascending: true } });
+    const dueAtOrderIndex = calls.findIndex((call) => call.operation === "order" && call.field === "due_at");
+    const idOrderIndex = calls.findIndex((call) => call.operation === "order" && call.field === "id");
+    expect(dueAtOrderIndex).toBeGreaterThanOrEqual(0);
+    expect(idOrderIndex).toBeGreaterThan(dueAtOrderIndex);
     expect(calls).toContainEqual({ operation: "limit", table: "scheduled_checks", value: 2 });
     await expect(repository.listDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 5)).resolves.toMatchObject([
       { id: "check-other-loop" },

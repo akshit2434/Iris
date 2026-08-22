@@ -425,6 +425,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
         .lte("due_at", nowIso)
         .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeIso}`)
         .order("due_at", { ascending: true })
+        .order("id", { ascending: true })
         .limit(limit)
         .select(SCHEDULED_CHECK_COLUMNS);
       if (error) throw error;

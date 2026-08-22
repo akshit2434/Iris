@@ -584,7 +584,7 @@ describe("accountability sweep", () => {
       content: "finally submitted the passport renewal yesterday btw",
       createdAt: "2026-08-20T14:00:00.000Z",
     }]);
-    const classifier: CompletionClassifier = vi.fn(async () => ({ completed: true, confidence: 0.9 }));
+    const classifier: CompletionClassifier = vi.fn(async () => ({ completed: true, confidence: 0.9, supportingIndex: 0 }));
     const composer = vi.fn(async () => "model nudge text");
     const writtenTexts: string[] = [];
     const report = await runAccountabilitySweep({
