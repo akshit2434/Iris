@@ -61,7 +61,7 @@ Each phase leaves Iris usable and fully checked (`npm run check:secrets && npm r
 | C ✅ | Open-loop context injection + clarify/close prompt guidance (#6); detection backstop moved to Phase E reconciliation | `feature/accountability-detection` |
 | D ✅ | Sweep endpoint (worker-auth guarded), post-turn lazy sweep, Tier 0/1 delivery, merge logic, 14-day simulation harness, live acceptance PASS (#7) | `feature/accountability-sweep` |
 | E ✅ | Atomic claim RPC, soft-close reconciliation, suppressions, tier-aware escalation, FK fix — live acceptance PASS (#8) | `feature/accountability-followup` |
-| F | Home attention card, quick actions, briefing v0 | `feature/accountability-surfaces` |
+| F ✅ | Attention/respond APIs, delivery-items seeding, Home card + one-tap quick actions, chat inline actions, briefing v0 — browser-verified via Playwright (#9) | `feature/accountability-surfaces` |
 
 ## Explicit non-goals for this milestone
 
@@ -73,3 +73,13 @@ Each phase leaves Iris usable and fully checked (`npm run check:secrets && npm r
 ## Acceptance harness
 
 A live script (`scripts/live-accountability-acceptance.mjs`) mirrors the memory acceptance flow: mention a responsibility in Chat A → verify clarification → verify scheduled check row → mention completion casually in Chat B → verify closure and pending-check cancellation → verify no silent drops remain.
+
+## Milestone status
+
+**Complete.** All six phases landed through #4–#9 with live acceptance passing against local Supabase and a Playwright-verified UI flow.
+
+Known deferred items (documented, non-blocking):
+- Web Push / out-of-app delivery (Home card carries visibility; heartbeat cron still unwired — wire only after enabling `pg_cron`, the claim RPC is concurrency-safe).
+- Briefing v0 is UTC-based ("08:00-local" pending stored profile timezones); daily cadence requires at least one sweep per day in the 00:00–08:00 window.
+- Reserved "Morning briefing" title is exact-match; a user loop with that name would be co-opted.
+- Backlog-on-lift burst after lifting a suppression delivers up to the batch cap at once.

@@ -4,7 +4,7 @@ Iris is a conversation-first personal agent with isolated profiles, chats, histo
 
 ## Current progress
 
-**Stage:** Milestones 1–3 (UI + Base, Agent Runtime, and Memory) are complete. The current release supports persistent chats, streamed agent responses, cross-chat recall, governed memory, historical search, exact-source retrieval, and source deep links. Milestone 4 will add accountability workflows.
+**Stage:** Milestones 1–4 (UI + Base, Agent Runtime, Memory, and Accountability) are complete. The current release supports persistent chats, streamed agent responses, cross-chat recall, governed memory, historical search, exact-source retrieval, source deep links, open loops with scheduled follow-ups, merged check-ins with one-tap responses, soft-close reconciliation, conversational suppressions, tier-aware escalation tone, and a daily morning briefing. Milestone 5 will add external tools.
 
 The public build is a mobile-first, conversation-first base with isolated profiles, persistent raw chat history, local Supabase development, and the visual language documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
 
@@ -33,6 +33,7 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - User-local date/time is injected into every agent run as trusted runtime context; it is not exposed as a tool.
 - Versioned NDJSON run events with persisted, profile/thread-scoped tool activity
 - Governed saved memory with profile isolation, revisions, stale-state reconciliation, and token-budgeted context
+- Accountability: person-scoped open loops (commitments, routines, ideas) with clarify-before-commit, scheduled follow-up checks, merged conversational check-ins, one-tap Done / Not today / Drop it responses, cross-chat completion soft-close, topic suppressions, tier-aware escalation tone, and a daily morning briefing
 - Cross-chat semantic and lexical retrieval with exact-message reads and source preview/deep-link actions
 - Simple responsive Home, Chat, History, and Files surfaces
 - Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur
@@ -121,4 +122,4 @@ Private product context and visual references are intentionally local-only and e
 
 ## Next stage
 
-Milestone 4 — Accountability is next: open loops, commitment clarification, follow-ups, reminders, completion handling, and check-ins. External connectors, personalized skills, artifacts, voice, telemetry, and broader authentication remain later milestones.
+Milestone 5 — Tools is next: calendar, location/context, Composio/Classroom, files, web, and artifact generation. Personalized skills, voice, and telemetry remain later milestones.
