@@ -24,6 +24,7 @@ export type SweepProfileReport = {
   mergedBatches: number;
   cancelledStale: number;
   skippedNoThread: number;
+  failed: number;
 };
 
 export type SweepReport = { profiles: SweepProfileReport[]; at: string };
@@ -90,67 +91,85 @@ export async function runAccountabilitySweep(input: {
   const reportProfiles: SweepProfileReport[] = [];
 
   for (const profileId of profiles) {
-    const pairs = await repository.listDeliverableDueChecks(profileId, now, limitPerProfile);
-    const deliverable = pairs.filter((pair) => pair.loop.status === "open");
-    const staleLoopIds = [
-      ...new Set(pairs.filter((pair) => pair.loop.status !== "open").map((pair) => pair.check.loopId)),
-    ];
-    let cancelledStale = 0;
-    for (const loopId of staleLoopIds) {
-      cancelledStale += await repository.cancelPendingChecksForLoop(profileId, loopId, STALE_PARENT_CANCEL_REASON);
-    }
+    try {
+      const pairs = await repository.listDeliverableDueChecks(profileId, now, limitPerProfile);
+      const deliverable = pairs.filter((pair) => pair.loop.status === "open");
+      const staleLoopIds = [
+        ...new Set(pairs.filter((pair) => pair.loop.status !== "open").map((pair) => pair.check.loopId)),
+      ];
+      let cancelledStale = 0;
+      for (const loopId of staleLoopIds) {
+        cancelledStale += await repository.cancelPendingChecksForLoop(profileId, loopId, STALE_PARENT_CANCEL_REASON);
+      }
 
-    let delivered = 0;
-    let mergedBatches = 0;
-    let skippedNoThread = 0;
+      let delivered = 0;
+      let mergedBatches = 0;
+      let skippedNoThread = 0;
+      let failed = 0;
 
-    if (deliverable.length > 0) {
-      const threads = await listThreadsFor(profileId);
-      const threadId = threads[0]?.id ?? null;
-      if (!threadId) {
-        skippedNoThread = deliverable.length;
-      } else {
-        for (const batch of chunkIntoBatches(deliverable, SWEEP_MAX_BATCH)) {
-          const kind = selectCheckinKind(batch.map((pair) => pair.loop), now);
-          const composed = await composeCheckinMessage({
-            kind,
-            loops: batch.map((pair) => ({ title: pair.loop.title })),
-            composer,
-          });
-          const delivery = await repository.insertDelivery(profileId, { threadId });
-          const message = await writeMessage({ profileId, threadId, content: composed.text });
-          await repository.markDeliveryDelivered(profileId, delivery.id, { messageId: message.id });
-          for (const pair of batch) {
-            const attemptCount = pair.check.attemptCount + 1;
-            await repository.markCheckDelivered(profileId, pair.check.id, {
-              deliveryId: delivery.id,
-              deliveredAt: now,
-              attemptCount,
-              escalationTier: Math.min(attemptCount - 1, MAX_ESCALATION_TIER),
-            });
-            await repository.insertLoopEvent(profileId, {
-              loopId: pair.loop.id,
-              kind: "nudged",
-              actor: "system",
-              sourceThreadId: null,
-              sourceMessageId: null,
-              agentRunId: null,
-            });
+      if (deliverable.length > 0) {
+        const threads = await listThreadsFor(profileId);
+        const threadId = threads[0]?.id ?? null;
+        if (!threadId) {
+          skippedNoThread = deliverable.length;
+        } else {
+          for (const batch of chunkIntoBatches(deliverable, SWEEP_MAX_BATCH)) {
+            try {
+              const kind = selectCheckinKind(batch.map((pair) => pair.loop), now);
+              const composed = await composeCheckinMessage({
+                kind,
+                loops: batch.map((pair) => ({ title: pair.loop.title })),
+                composer,
+              });
+              const delivery = await repository.insertDelivery(profileId, { threadId });
+              const message = await writeMessage({ profileId, threadId, content: composed.text });
+              await repository.markDeliveryDelivered(profileId, delivery.id, { messageId: message.id });
+              for (const pair of batch) {
+                const attemptCount = pair.check.attemptCount + 1;
+                await repository.markCheckDelivered(profileId, pair.check.id, {
+                  deliveryId: delivery.id,
+                  deliveredAt: now,
+                  attemptCount,
+                  escalationTier: Math.min(attemptCount - 1, MAX_ESCALATION_TIER),
+                });
+                await repository.insertLoopEvent(profileId, {
+                  loopId: pair.loop.id,
+                  kind: "nudged",
+                  actor: "system",
+                  sourceThreadId: null,
+                  sourceMessageId: null,
+                  agentRunId: null,
+                });
+              }
+              mergedBatches += 1;
+              delivered += batch.length;
+            } catch {
+              failed += 1;
+            }
           }
-          mergedBatches += 1;
-          delivered += batch.length;
         }
       }
-    }
 
-    reportProfiles.push({
-      profileId,
-      selected: deliverable.length,
-      delivered,
-      mergedBatches,
-      cancelledStale,
-      skippedNoThread,
-    });
+      reportProfiles.push({
+        profileId,
+        selected: deliverable.length,
+        delivered,
+        mergedBatches,
+        cancelledStale,
+        skippedNoThread,
+        failed,
+      });
+    } catch {
+      reportProfiles.push({
+        profileId,
+        selected: 0,
+        delivered: 0,
+        mergedBatches: 0,
+        cancelledStale: 0,
+        skippedNoThread: 0,
+        failed: 1,
+      });
+    }
   }
 
   return { profiles: reportProfiles, at: now };

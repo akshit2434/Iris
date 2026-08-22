@@ -340,16 +340,15 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
         .from("open_loops")
         .select(OPEN_LOOP_COLUMNS)
         .eq("profile_id", profileId)
-        .in("id", loopIds)
-        .in("status", ["open"]);
+        .in("id", loopIds);
       if (error) throw error;
-      const openLoopsById = new Map((data ?? []).map((row) => [row.id, toOpenLoop(row)]));
-      const deliverable: DeliverableDueCheck[] = [];
+      const loopsById = new Map((data ?? []).map((row) => [row.id, toOpenLoop(row)]));
+      const joined: DeliverableDueCheck[] = [];
       for (const check of checks) {
-        const loop = openLoopsById.get(check.loopId);
-        if (loop) deliverable.push({ check, loop });
+        const loop = loopsById.get(check.loopId);
+        if (loop) joined.push({ check, loop });
       }
-      return deliverable;
+      return joined;
     },
 
     async markCheckDelivered(profileId, checkId, input) {

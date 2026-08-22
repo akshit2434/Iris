@@ -181,7 +181,13 @@ describe("check-in composer", () => {
     const result = await composeCheckinMessage({ kind: "routine_reflection", loops: [{ title: "DSA practice" }], composer: failing });
     expect(result.tier).toBe(0);
     expect(result.text).toContain("DSA practice");
-    expect(composeTier0Text({ kind: "catch_up", loops: [{ title: "Tax filing" }] })).toContain("Tax filing");
+    expect(composeTier0Text({ kind: "catch_up", loops: [{ title: "Tax filing" }] })).toContain("its date");
+  });
+
+  it("pluralizes Tier 0 catch-up phrasing across multiple overdue loops", () => {
+    const text = composeTier0Text({ kind: "catch_up", loops: [{ title: "Tax filing" }, { title: "Dentist booking" }] });
+    expect(text).toContain("their dates");
+    expect(text).toContain("pick them up");
   });
 
   it("builds the production composer like the title model factory", () => {
@@ -211,7 +217,7 @@ describe("accountability sweep", () => {
       threadLister: liveThreads,
     });
     expect(report.profiles).toHaveLength(1);
-    expect(report.profiles[0]).toEqual({ profileId: "profile-a", selected: 2, delivered: 2, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0 });
+    expect(report.profiles[0]).toEqual({ profileId: "profile-a", selected: 2, delivered: 2, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
     expect(report.at).toBe(NOW);
     expect(repository.insertDelivery).toHaveBeenCalledTimes(1);
     expect(repository.insertDelivery).toHaveBeenCalledWith("profile-a", { threadId: THREAD_ID });
@@ -314,6 +320,33 @@ describe("accountability sweep", () => {
     expect(repository.insertDelivery).not.toHaveBeenCalled();
     expect(repository.markCheckDelivered).not.toHaveBeenCalled();
     expect(repository.insertLoopEvent).not.toHaveBeenCalled();
+  });
+
+  it("keeps later batches and other profiles moving when one batch fails", async () => {
+    const hours = ["04:00:00", "05:00:00", "06:00:00", "07:00:00", "08:00:00"];
+    const pairs = hours.map((hour, index) => makePair({ title: `Task ${index + 1}` }, { dueAt: `2026-08-22T${hour}.000Z` }));
+    const writes: string[] = [];
+    const flakyWriter = vi.fn(async (input: { profileId: string; content: string }) => {
+      writes.push(`${input.profileId}:${input.content.length}`);
+      if (writes.length === 1) throw new Error("transient write failure");
+      return { id: `message-${writes.length}` };
+    });
+    const repository = fakeRepository(pairs, {
+      listDeliverableDueChecks: vi.fn(async (profileId) => (profileId === "profile-a" ? pairs : [])),
+    });
+    const report = await runAccountabilitySweep({
+      now: NOW,
+      profiles: ["profile-a", "profile-b"],
+      repository,
+      messageWriter: flakyWriter,
+      threadLister: liveThreads,
+    });
+    expect(report.profiles[0]).toMatchObject({ selected: 5, delivered: 1, mergedBatches: 1, failed: 1, skippedNoThread: 0 });
+    expect(report.profiles[1]).toEqual({ profileId: "profile-b", selected: 0, delivered: 0, mergedBatches: 0, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(repository.insertDelivery).toHaveBeenCalledTimes(2);
+    expect(repository.markDeliveryDelivered).toHaveBeenCalledTimes(1);
+    expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
+    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", pairs[4].check.id, expect.objectContaining({ attemptCount: 1 }));
   });
 
   it("persists sweep messages as complete assistant turns with no agent run", async () => {

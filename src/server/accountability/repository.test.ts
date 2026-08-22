@@ -210,19 +210,18 @@ describe("accountability repository", () => {
     expect(calls.some((call) => call.operation === "insert" && call.table === "scheduled_checks")).toBe(true);
   });
 
-  it("joins pending due checks with their open parent loops entirely in memory", async () => {
+  it("joins pending due checks with their parent loops regardless of loop status", async () => {
     const { database, calls } = fakeAccountabilityDatabase();
     const repository = createAccountabilityRepository(database as never);
     await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
-      { check: { id: "check-due-early" }, loop: { id: "loop-a" } },
-      { check: { id: "check-due-late" }, loop: { id: "loop-a" } },
+      { check: { id: "check-other-loop" }, loop: { id: "loop-done", status: "done" } },
+      { check: { id: "check-due-early" }, loop: { id: "loop-a", status: "open" } },
+      { check: { id: "check-due-late" }, loop: { id: "loop-a", status: "open" } },
     ]);
     expect(calls.filter((call) => call.operation === "from")).toHaveLength(2);
-    expect(calls).toContainEqual({ operation: "in", table: "open_loops", field: "status", value: ["open"] });
-    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 1)).resolves.toEqual([]);
-    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 3)).resolves.toMatchObject([
-      { check: { id: "check-due-early" } },
-      { check: { id: "check-due-late" } },
+    expect(calls).toContainEqual({ operation: "in", table: "open_loops", field: "id", value: ["loop-done", "loop-a"] });
+    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 1)).resolves.toMatchObject([
+      { check: { id: "check-other-loop" }, loop: { id: "loop-done" } },
     ]);
     await expect(repository.listDeliverableDueChecks("profile-b", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
       { check: { id: "check-b" }, loop: { id: "loop-b" } },

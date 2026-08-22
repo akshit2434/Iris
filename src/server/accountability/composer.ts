@@ -38,8 +38,11 @@ export function composeTier0Text(input: { kind: CheckinKind; loops: CheckinLoopR
       ].join("\n");
     case "routine_reflection":
       return `Time for your check-in: how has ${joinedTitles(titles)} been going lately?`;
-    case "catch_up":
-      return `${joinedTitles(titles)} slipped past its date — no judgment. Want to pick it up today, or should we find a better time?`;
+    case "catch_up": {
+      const plural = titles.length > 1;
+      const subject = `${joinedTitles(titles)} ${plural ? "slipped past their dates" : "slipped past its date"} — no judgment.`;
+      return `${subject} Want to pick ${plural ? "them" : "it"} up today, or should we find a better time?`;
+    }
     case "single_commitment":
     default:
       return `Quick check: did you get to ${joinedTitles(titles)} yet? Even a quick yes or no helps.`;
