@@ -60,7 +60,7 @@ Each phase leaves Iris usable and fully checked (`npm run check:secrets && npm r
 | B ✅ | Agent tools (`loop_create/update/close/list`, `schedule_check`) with clarification gate (#5) | `feature/accountability-tools` |
 | C ✅ | Open-loop context injection + clarify/close prompt guidance (#6); detection backstop moved to Phase E reconciliation | `feature/accountability-detection` |
 | D ✅ | Sweep endpoint (worker-auth guarded), post-turn lazy sweep, Tier 0/1 delivery, merge logic, 14-day simulation harness, live acceptance PASS (#7) | `feature/accountability-sweep` |
-| E | Soft-close reconciliation, escalation guidance, suppressions wiring | `feature/accountability-followup` |
+| E ✅ | Atomic claim RPC, soft-close reconciliation, suppressions, tier-aware escalation, FK fix — live acceptance PASS (#8) | `feature/accountability-followup` |
 | F | Home attention card, quick actions, briefing v0 | `feature/accountability-surfaces` |
 
 ## Explicit non-goals for this milestone
