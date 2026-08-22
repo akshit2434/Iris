@@ -374,6 +374,13 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
 
     async insertScheduledCheck(profileId, input) {
       assertProfileId(profileId);
+      const { data: priorChecks, error: priorError } = await client
+        .from("scheduled_checks")
+        .select(SCHEDULED_CHECK_COLUMNS)
+        .eq("profile_id", profileId)
+        .eq("loop_id", input.loopId);
+      if (priorError) throw priorError;
+      const carriedAttempts = Math.max(0, ...(priorChecks ?? []).map((row) => row.attempt_count));
       const { data, error } = await client
         .from("scheduled_checks")
         .insert({
@@ -381,6 +388,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           loop_id: input.loopId,
           due_at: input.dueAt,
           delivery_id: input.deliveryId ?? null,
+          attempt_count: carriedAttempts,
         })
         .select(SCHEDULED_CHECK_COLUMNS)
         .single();

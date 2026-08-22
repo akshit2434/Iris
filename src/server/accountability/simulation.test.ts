@@ -1,0 +1,554 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createAgentContext, type AgentContext } from "@/server/agent/context";
+import { composeCheckinMessage, type CheckinKind } from "@/server/accountability/composer";
+import {
+  createAccountabilityRepository,
+  type AccountabilityRepository,
+  type MarkCheckDeliveredInput,
+} from "@/server/accountability/repository";
+import { runAccountabilitySweep, type SweepReport } from "@/server/accountability/sweeper";
+import { closeLoop, createLoop, scheduleCheck, updateLoop } from "@/server/accountability/tools";
+
+vi.mock("server-only", () => ({}));
+
+const MONDAY = 17;
+const SWEEP_TIME = "09:30";
+const THREAD_A = "00000000-0000-4000-8000-0000000000a1";
+const THREAD_B = "00000000-0000-4000-8000-0000000000b1";
+const USER_MESSAGE_ID = "00000000-0000-4000-8000-0000000000c1";
+const AGENT_RUN_ID = "00000000-0000-4000-8000-0000000000d1";
+const PROFILES = ["profile-a", "profile-b"] as const;
+
+function at(dayOffsetFromMonday: number, time: string): string {
+  const day = MONDAY + dayOffsetFromMonday;
+  return `2026-08-${String(day).padStart(2, "0")}T${time}:00.000Z`;
+}
+
+type Tables = {
+  open_loops: Record<string, unknown>[];
+  scheduled_checks: Record<string, unknown>[];
+  loop_events: Record<string, unknown>[];
+  checkin_deliveries: Record<string, unknown>[];
+};
+
+function createAccountabilityDatabase() {
+  const rows: Tables = {
+    open_loops: [],
+    scheduled_checks: [],
+    loop_events: [],
+    checkin_deliveries: [],
+  };
+  const defaults: Record<string, Record<string, unknown>> = {
+    open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
+    loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
+    scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null },
+    checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
+  };
+  let generated = 0;
+  const idPrefix: Record<string, string> = {
+    open_loops: "1",
+    scheduled_checks: "2",
+    loop_events: "3",
+    checkin_deliveries: "4",
+  };
+  const at = (row: Record<string, unknown>, field: string) => row[field];
+  const chain = (table: string) => {
+    const builder: Record<string, (...args: unknown[]) => unknown> = {};
+    let filtered = [...rows[table as keyof Tables]];
+    let pendingPatch: Record<string, unknown> | null = null;
+    const applyPendingPatch = () => {
+      if (!pendingPatch) return;
+      const targets = new Set(filtered);
+      const patchedRows: Record<string, unknown>[] = [];
+      rows[table as keyof Tables] = rows[table as keyof Tables].map((row) => {
+        if (!targets.has(row)) return row;
+        const patched = { ...row, ...pendingPatch };
+        patchedRows.push(patched);
+        return patched;
+      });
+      filtered = patchedRows;
+      pendingPatch = null;
+    };
+    builder.select = () => builder;
+    builder.eq = (field: unknown, value: unknown) => { filtered = filtered.filter((row) => at(row, String(field)) === value); return builder; };
+    builder.in = (field: unknown, values: unknown) => { filtered = filtered.filter((row) => (values as unknown[]).includes(at(row, String(field)))); return builder; };
+    builder.lte = (field: unknown, value: unknown) => { filtered = filtered.filter((row) => String(at(row, String(field))) <= String(value)); return builder; };
+    builder.order = (field: unknown, options: unknown) => {
+      const direction = (options as { ascending?: boolean } | undefined)?.ascending === false ? -1 : 1;
+      filtered = [...filtered].sort((left, right) => String(at(left, String(field))).localeCompare(String(at(right, String(field)))) * direction);
+      return builder;
+    };
+    builder.limit = (count: unknown) => { filtered = filtered.slice(0, Number(count)); return builder; };
+    builder.maybeSingle = () => Promise.resolve({ data: filtered[0] ?? null, error: null });
+    builder.single = () => Promise.resolve(filtered.length > 0 ? { data: filtered[0], error: null } : { data: null, error: { message: "no rows returned" } });
+    builder.insert = (value: unknown) => {
+      generated += 1;
+      const record: Record<string, unknown> = {
+        id: `00000000-0000-4000-800${idPrefix[table]}-${String(generated).padStart(11, "0")}`,
+        created_at: "2026-08-01T00:00:00.000Z",
+        ...(defaults[table] ?? {}),
+        ...(value as Record<string, unknown>),
+      };
+      if (table === "open_loops") record.updated_at = "2026-08-01T00:00:00.000Z";
+      rows[table as keyof Tables].push(record);
+      filtered = [record];
+      return builder;
+    };
+    builder.update = (value: unknown) => { pendingPatch = value as Record<string, unknown>; return builder; };
+    builder.then = (...args: unknown[]) => {
+      applyPendingPatch();
+      const resolve = args[0] as ((value: unknown) => unknown) | undefined;
+      const promise = Promise.resolve({ data: filtered, error: null });
+      return resolve ? promise.then(resolve) : promise;
+    };
+    return builder;
+  };
+  return {
+    client: { from(table: string) { return chain(table); } },
+    rows,
+  };
+}
+
+type DeliveryLogEntry = { checkId: string; input: MarkCheckDeliveredInput };
+
+function createWorld() {
+  const db = createAccountabilityDatabase();
+  const raw = createAccountabilityRepository(db.client as never);
+  const deliveryLog: DeliveryLogEntry[] = [];
+  const writtenMessages: Array<{ id: string; profileId: string; content: string }> = [];
+  const composedRequests: Array<{ kind: CheckinKind; titles: string[] }> = [];
+  const reports: Array<{ now: string; report: SweepReport }> = [];
+  const threads: Record<(typeof PROFILES)[number], string | null> = { "profile-a": THREAD_A, "profile-b": THREAD_B };
+  let sequence = 0;
+  const repository: AccountabilityRepository = {
+    ...raw,
+    async markCheckDelivered(profileId, checkId, input) {
+      const delivered = await raw.markCheckDelivered(profileId, checkId, input);
+      deliveryLog.push({ checkId, input });
+      return delivered;
+    },
+  };
+  const composer = async (request: { kind: CheckinKind; loops: Array<{ title: string }> }) => {
+    composedRequests.push({ kind: request.kind, titles: request.loops.map((loop) => loop.title) });
+    return `[${request.kind}] ${request.loops.map((loop) => loop.title).join(", ")}`;
+  };
+  const messageWriter = async (input: { profileId: string; content: string }) => {
+    sequence += 1;
+    const id = `msg-${String(sequence).padStart(3, "0")}`;
+    writtenMessages.push({ id, profileId: input.profileId, content: input.content });
+    return { id };
+  };
+  const threadLister = async (profileId: (typeof PROFILES)[number]) => (threads[profileId] ? [{ id: threads[profileId] }] : []);
+  const sweep = async (options: { profiles?: Array<(typeof PROFILES)[number]>; limitPerProfile?: number } = {}) => {
+    const report = await runAccountabilitySweep({
+      now: currentNow(),
+      profiles: options.profiles ? [...options.profiles] : undefined,
+      limitPerProfile: options.limitPerProfile,
+      repository,
+      composer,
+      messageWriter,
+      threadLister: threadLister as never,
+    });
+    reports.push({ now: currentNow(), report });
+    assertInvariants();
+    return report;
+  };
+  let now = at(0, "00:00");
+  function currentNow(): string {
+    return now;
+  }
+  function advanceTo(iso: string) {
+    now = iso;
+    vi.setSystemTime(new Date(iso));
+  }
+  function agentContextFor(profileId: (typeof PROFILES)[number]): AgentContext {
+    return createAgentContext({
+      profileId,
+      profileLabel: profileId === "profile-a" ? "Profile A" : "Profile B",
+      threadId: threads[profileId] ?? THREAD_A,
+      threadTitle: "Simulation",
+      currentUserMessageId: USER_MESSAGE_ID,
+      agentRunId: AGENT_RUN_ID,
+      now: new Date(now),
+    });
+  }
+  const agent = {
+    trackCommitment: async (input: { title: string; dueAt: string }, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await createLoop(agentContextFor(profileId), { title: input.title, kind: "commitment", dueAt: input.dueAt, confirm: true }, repository);
+      expect(result).toMatchObject({ kind: "loop_create", status: "created" });
+      if (result.status !== "created") throw new Error("commitment creation failed");
+      return result.loopId;
+    },
+    trackRoutine: async (input: { title: string }, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await createLoop(agentContextFor(profileId), { title: input.title, kind: "routine", cadence: { kind: "daily" }, confirm: true }, repository);
+      expect(result).toMatchObject({ kind: "loop_create", status: "created" });
+      if (result.status !== "created") throw new Error("routine creation failed");
+      return result.loopId;
+    },
+    complete: async (loopId: string, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await closeLoop(agentContextFor(profileId), { loopId }, repository);
+      expect(result).toMatchObject({ kind: "loop_close", status: "closed" });
+      if (result.status !== "closed") throw new Error("close failed");
+      return result.cancelledChecks;
+    },
+    scheduleFollowUp: async (loopId: string, dueAt: string, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await scheduleCheck(agentContextFor(profileId), { loopId, dueAt }, repository);
+      expect(result).toMatchObject({ kind: "schedule_check", status: "scheduled" });
+      if (result.status !== "scheduled") throw new Error("schedule failed");
+      return result.checkId;
+    },
+    pause: async (loopId: string, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await updateLoop(agentContextFor(profileId), { loopId, action: "pause" }, repository);
+      expect(result).toMatchObject({ kind: "loop_update", status: "updated" });
+    },
+    resume: async (loopId: string, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await updateLoop(agentContextFor(profileId), { loopId, action: "resume" }, repository);
+      expect(result).toMatchObject({ kind: "loop_update", status: "updated" });
+    },
+  };
+  const loops = () => db.rows.open_loops;
+  const checks = () => db.rows.scheduled_checks;
+  const events = () => db.rows.loop_events;
+  const deliveries = () => db.rows.checkin_deliveries;
+  const checksForLoop = (loopId: string) => checks().filter((check) => check.loop_id === loopId);
+  const nudgedCount = (loopId: string) => events().filter((event) => event.loop_id === loopId && event.kind === "nudged").length;
+  const loopByTitle = (title: string) => loops().find((loop) => loop.title === title);
+  function assertInvariants() {
+    const terminalStatuses = ["done", "cancelled", "dropped"];
+    for (const loop of loops()) {
+      if (!terminalStatuses.includes(String(loop.status))) continue;
+      const stillPending = checksForLoop(String(loop.id)).filter((check) => check.status === "pending");
+      expect(stillPending).toHaveLength(0);
+    }
+    const perCheckDeliveries = new Map<string, number>();
+    for (const entry of deliveryLog) perCheckDeliveries.set(entry.checkId, (perCheckDeliveries.get(entry.checkId) ?? 0) + 1);
+    for (const check of checks()) {
+      const timesDelivered = perCheckDeliveries.get(String(check.id)) ?? 0;
+      if (check.status === "delivered") {
+        expect(timesDelivered).toBe(1);
+        expect(check.delivery_id).not.toBeNull();
+        expect(check.delivered_at).not.toBeNull();
+      } else {
+        expect(timesDelivered).toBe(0);
+      }
+      if (timesDelivered > 0) expect(check.status).toBe("delivered");
+    }
+    const messageIds = new Set(writtenMessages.map((message) => message.id));
+    for (const delivery of deliveries()) {
+      if (delivery.message_id !== null) expect(messageIds.has(String(delivery.message_id))).toBe(true);
+    }
+  }
+  return {
+    advanceTo,
+    agent,
+    at,
+    checks,
+    checksForLoop,
+    composerRequests: composedRequests,
+    deliveries,
+    deliveryLog,
+    events,
+    loops,
+    loopByTitle,
+    messages: writtenMessages,
+    nudgedCount,
+    reports,
+    repository,
+    rows: db.rows,
+    sweep,
+    threads,
+    get now() { return now; },
+  };
+}
+
+type World = ReturnType<typeof createWorld>;
+
+function sweepProfileA(world: World) {
+  return world.sweep({ profiles: ["profile-a"] });
+}
+
+async function sweepDaily(world: World, fromDay: number, throughDay: number, time = SWEEP_TIME) {
+  const dailyReports = [];
+  for (let day = fromDay; day <= throughDay; day += 1) {
+    world.advanceTo(at(day, time));
+    dailyReports.push(await world.sweep());
+  }
+  return dailyReports;
+}
+
+describe("accountability multi-week simulation", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("scenario 1: a monday commitment is delivered once, friday morning, as a single tier-0 message", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const assignmentId = await world.agent.trackCommitment({ title: "Submit OS assignment", dueAt: at(4, "09:00") });
+
+    for (let day = 0; day <= 3; day += 1) {
+      world.advanceTo(at(day, SWEEP_TIME));
+      const report = await sweepProfileA(world);
+      expect(report.profiles[0]).toMatchObject({ selected: 0, delivered: 0 });
+    }
+
+    world.advanceTo(at(4, SWEEP_TIME));
+    const friday = await sweepProfileA(world);
+    expect(friday.profiles[0]).toEqual({ profileId: "profile-a", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(world.composerRequests).toHaveLength(0);
+    expect(world.messages).toHaveLength(1);
+    expect(world.messages[0].content).toContain("Submit OS assignment");
+
+    const [check] = world.checksForLoop(assignmentId);
+    expect(check).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 0, delivered_at: at(4, SWEEP_TIME) });
+
+    world.advanceTo(at(4, "23:00"));
+    const repeat = await sweepProfileA(world);
+    expect(repeat.profiles[0]).toMatchObject({ selected: 0, delivered: 0 });
+    expect(world.messages).toHaveLength(1);
+  });
+
+  it("scenario 2: three commitments due the same morning merge into one batched nudge with three nudges", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    await world.agent.trackCommitment({ title: "Renew passport", dueAt: at(2, "08:00") });
+    await world.agent.trackCommitment({ title: "Buy groceries", dueAt: at(2, "08:00") });
+    await world.agent.trackCommitment({ title: "Pay rent", dueAt: at(2, "08:00") });
+
+    world.advanceTo(at(1, SWEEP_TIME));
+    expect((await sweepProfileA(world)).profiles[0]).toMatchObject({ selected: 0 });
+
+    world.advanceTo(at(2, SWEEP_TIME));
+    const wednesday = await sweepProfileA(world);
+    expect(wednesday.profiles[0]).toMatchObject({ selected: 3, delivered: 3, mergedBatches: 1, failed: 0 });
+    expect(world.composerRequests).toEqual([{ kind: "merged_batch", titles: ["Renew passport", "Buy groceries", "Pay rent"] }]);
+    expect(world.messages).toHaveLength(1);
+
+    for (const title of ["Renew passport", "Buy groceries", "Pay rent"]) {
+      const loopId = String(world.loopByTitle(title)?.id);
+      expect(loopId).toBeTruthy();
+      expect(world.nudgedCount(loopId)).toBe(1);
+      for (const check of world.checksForLoop(loopId)) {
+        expect(check).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 0 });
+      }
+    }
+    expect(world.deliveryLog).toHaveLength(3);
+    const deliveryIds = new Set(world.deliveryLog.map((entry) => entry.input.deliveryId));
+    expect(deliveryIds.size).toBe(1);
+  });
+
+  it("scenario 3: a midweek 'done' reply closes the loop and its friday check never delivers", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    await world.agent.trackCommitment({ title: "Submit OS assignment", dueAt: at(4, "09:00") });
+    const passportId = await world.agent.trackCommitment({ title: "Renew passport", dueAt: at(4, "09:00") });
+
+    world.advanceTo(at(3, "12:00"));
+    const cancelledChecks = await world.agent.complete(passportId);
+    expect(cancelledChecks).toBe(1);
+
+    const [passportCheck] = world.checksForLoop(passportId);
+    expect(passportCheck).toMatchObject({ status: "cancelled", cancel_reason: expect.stringMatching(/completed/i) });
+    expect(passportCheck.delivered_at).toBeNull();
+
+    world.advanceTo(at(4, SWEEP_TIME));
+    const friday = await sweepProfileA(world);
+    expect(friday.profiles[0]).toMatchObject({ selected: 1, delivered: 1, cancelledStale: 0 });
+    expect(world.messages).toHaveLength(1);
+    expect(world.messages[0].content).not.toContain("Renew passport");
+    expect(world.deliveryLog.map((entry) => entry.checkId)).toEqual([world.checksForLoop(String(world.loopByTitle("Submit OS assignment")?.id))[0].id]);
+  });
+
+  it("scenario 4: a daily routine reflects each morning, goes silent while paused, and restarts after resume", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "08:00"));
+    const dsaId = await world.agent.trackRoutine({ title: "DSA practice" });
+    for (const day of [1, 2, 3, 4]) {
+      await world.agent.scheduleFollowUp(dsaId, at(day, "07:00"));
+    }
+
+    for (let day = 1; day <= 3; day += 1) {
+      world.advanceTo(at(day, "07:30"));
+      const morning = await sweepProfileA(world);
+      expect(morning.profiles[0]).toMatchObject({ selected: 1, delivered: 1 });
+      expect(world.composerRequests.at(-1)).toEqual({ kind: "routine_reflection", titles: ["DSA practice"] });
+    }
+    const nudgesBeforePause = world.nudgedCount(dsaId);
+    expect(nudgesBeforePause).toBe(3);
+
+    world.advanceTo(at(3, "20:00"));
+    await world.agent.pause(dsaId);
+    expect(world.checksForLoop(dsaId).every((check) => check.status !== "pending")).toBe(true);
+
+    for (const day of [4, 5]) {
+      world.advanceTo(at(day, "07:30"));
+      const silentMorning = await sweepProfileA(world);
+      expect(silentMorning.profiles[0]).toMatchObject({ selected: 0, delivered: 0 });
+    }
+    expect(world.nudgedCount(dsaId)).toBe(nudgesBeforePause);
+
+    world.advanceTo(at(6, "09:00"));
+    await world.agent.resume(dsaId);
+    await world.agent.scheduleFollowUp(dsaId, at(7, "07:00"));
+
+    world.advanceTo(at(7, "07:30"));
+    const monday = await sweepProfileA(world);
+    expect(monday.profiles[0]).toMatchObject({ selected: 1, delivered: 1 });
+    expect(world.composerRequests.at(-1)).toEqual({ kind: "routine_reflection", titles: ["DSA practice"] });
+    expect(world.nudgedCount(dsaId)).toBe(4);
+  });
+
+  it("scenario 5: an ignored check re-nudges with attempt 2 tier 1, then flips to catch-up phrasing past two overdue days", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "08:00"));
+    const dentistId = await world.agent.trackCommitment({ title: "Book dentist", dueAt: at(1, "08:00") });
+
+    world.advanceTo(at(1, "08:30"));
+    await sweepProfileA(world);
+    expect(world.composerRequests).toHaveLength(0);
+
+    world.advanceTo(at(1, "12:00"));
+    await world.agent.scheduleFollowUp(dentistId, at(2, "08:00"));
+
+    world.advanceTo(at(2, "08:30"));
+    await sweepProfileA(world);
+    expect(world.composerRequests).toHaveLength(0);
+
+    world.advanceTo(at(2, "12:00"));
+    await world.agent.scheduleFollowUp(dentistId, at(4, "08:00"));
+
+    world.advanceTo(at(4, "08:30"));
+    await sweepProfileA(world);
+    expect(world.composerRequests).toEqual([{ kind: "catch_up", titles: ["Book dentist"] }]);
+
+    expect(world.deliveryLog.map((entry) => entry.input.attemptCount)).toEqual([1, 2, 3]);
+    expect(world.deliveryLog.map((entry) => entry.input.escalationTier)).toEqual([0, 1, 2]);
+    const attempts = world.checksForLoop(dentistId).filter((check) => check.status === "delivered");
+    expect(attempts).toHaveLength(3);
+    expect(attempts.every((check) => check.loop_id === dentistId)).toBe(true);
+  });
+
+  it("scenario 6: a profile without a thread skips delivery, keeps checks pending, and delivers once a thread appears", async () => {
+    const world = createWorld();
+    world.threads["profile-b"] = null;
+    world.advanceTo(at(0, "10:00"));
+    const plantsId = await world.agent.trackCommitment({ title: "Water plants", dueAt: at(1, "09:00") }, "profile-b");
+
+    world.advanceTo(at(1, SWEEP_TIME));
+    const tuesday = await world.sweep({ profiles: ["profile-b"] });
+    expect(tuesday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 0, mergedBatches: 0, cancelledStale: 0, skippedNoThread: 1, failed: 0 });
+    expect(world.messages).toHaveLength(0);
+    expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "pending", attempt_count: 0 });
+
+    world.advanceTo(at(2, SWEEP_TIME));
+    const wednesday = await world.sweep({ profiles: ["profile-b"] });
+    expect(wednesday.profiles[0]).toMatchObject({ skippedNoThread: 1, delivered: 0 });
+    expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "pending" });
+
+    world.threads["profile-b"] = THREAD_B;
+    world.advanceTo(at(3, SWEEP_TIME));
+    const thursday = await world.sweep({ profiles: ["profile-b"] });
+    expect(thursday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(world.messages).toHaveLength(1);
+    expect(world.messages[0].content).toContain("Water plants");
+    expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "delivered", attempt_count: 1 });
+  });
+
+  it("scenario 7: fourteen simulated days keep zero re-deliveries and zero pending checks on terminal loops", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const assignmentId = await world.agent.trackCommitment({ title: "Submit OS assignment", dueAt: at(4, "09:00") });
+    const dentistId = await world.agent.trackCommitment({ title: "Book dentist", dueAt: at(1, "08:00") });
+    const dsaId = await world.agent.trackRoutine({ title: "DSA practice" });
+    for (const day of [1, 2, 3, 4]) await world.agent.scheduleFollowUp(dsaId, at(day, "07:00"));
+    world.threads["profile-b"] = null;
+    const plantsId = await world.agent.trackCommitment({ title: "Water plants", dueAt: at(5, "09:00") }, "profile-b");
+
+    for (let day = 0; day <= 13; day += 1) {
+      if (day === 1) {
+        world.advanceTo(at(day, "12:00"));
+        await world.agent.scheduleFollowUp(dentistId, at(2, "08:00"));
+      }
+      if (day === 2) {
+        world.advanceTo(at(day, "12:00"));
+        await world.agent.scheduleFollowUp(dentistId, at(9, "08:00"));
+      }
+      if (day === 3) {
+        world.advanceTo(at(day, "07:30"));
+        await sweepProfileA(world);
+        world.advanceTo(at(day, "20:00"));
+        await world.agent.pause(dsaId);
+        continue;
+      }
+      if (day === 4) {
+        world.advanceTo(at(day, SWEEP_TIME));
+        await world.agent.complete(assignmentId);
+        await sweepProfileA(world);
+        continue;
+      }
+      if (day === 6) {
+        world.advanceTo(at(day, "09:00"));
+        await world.agent.resume(dsaId);
+        await world.agent.scheduleFollowUp(dsaId, at(7, "07:00"));
+      }
+      if (day === 8) {
+        const stale = world.loops().find((loop) => loop.id === plantsId);
+        stale!.status = "cancelled";
+        stale!.closed_at = at(8, "10:00");
+        stale!.updated_at = at(8, "10:00");
+      }
+      world.advanceTo(at(day, SWEEP_TIME));
+      await world.sweep();
+    }
+
+    const deliveredChecks = world.checks().filter((check) => check.status === "delivered");
+    expect(deliveredChecks.length).toBe(world.deliveryLog.length);
+    expect(new Set(world.deliveryLog.map((entry) => entry.checkId)).size).toBe(world.deliveryLog.length);
+    for (const loop of [assignmentId, dentistId, dsaId, plantsId]) {
+      expect(world.checksForLoop(loop).some((check) => check.status === "pending")).toBe(false);
+    }
+    expect(String(world.loopByTitle("Submit OS assignment")?.status)).toBe("done");
+    expect(world.nudgedCount(plantsId)).toBe(0);
+  });
+
+  it("edge: nine checks due one morning deliver eight under the shared cap and the ninth lands next morning", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const ids = [];
+    for (let index = 1; index <= 9; index += 1) {
+      ids.push(await world.agent.trackCommitment({ title: `Task ${index}`, dueAt: at(2, "08:00") }));
+    }
+
+    world.advanceTo(at(2, SWEEP_TIME));
+    const cappedDay = await world.sweep({ profiles: ["profile-a"], limitPerProfile: 8 });
+    expect(cappedDay.profiles[0]).toMatchObject({ selected: 8, delivered: 8, mergedBatches: 2 });
+    expect(world.messages).toHaveLength(2);
+    expect(world.checksForLoop(ids[8])[0]).toMatchObject({ status: "pending" });
+
+    world.advanceTo(at(3, SWEEP_TIME));
+    const nextMorning = await world.sweep({ profiles: ["profile-a"] });
+    expect(nextMorning.profiles[0]).toMatchObject({ selected: 1, delivered: 1 });
+    expect(world.checksForLoop(ids[8])[0]).toMatchObject({ status: "delivered", attempt_count: 1 });
+  });
+
+  it("edge: composing falls back to tier 0 text when the tier-1 composer fails mid-simulation", async () => {
+    const failingComposer = async () => {
+      throw new Error("model down");
+    };
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    await world.agent.trackCommitment({ title: "Renew passport", dueAt: at(2, "08:00") });
+    await world.agent.trackCommitment({ title: "Buy stamps", dueAt: at(2, "08:00") });
+
+    world.advanceTo(at(2, SWEEP_TIME));
+    world.advanceTo(at(2, SWEEP_TIME));
+    const fallback = await composeCheckinMessage({ kind: "merged_batch", loops: [{ title: "Renew passport" }, { title: "Buy stamps" }], composer: failingComposer });
+    expect(fallback.tier).toBe(0);
+    expect(fallback.text).toContain("Renew passport");
+    expect(fallback.text).toContain("Buy stamps");
+
+    await world.sweep({ profiles: ["profile-a"] });
+    expect(world.messages).toHaveLength(1);
+    expect(world.deliveryLog).toHaveLength(2);
+  });
+});
