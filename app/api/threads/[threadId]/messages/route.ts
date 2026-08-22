@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { loadOpenLoopContext } from "@/server/accountability/context-loader";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
 import {
@@ -243,7 +244,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         ])
       : [[], []] as const;
     const memoryRetrieval = memoryControls.savedMemoryEnabled ? productionMemoryRetrieval : createDisabledMemoryRetrieval();
-    const [canonicalMemory, memoryChangeHint] = await Promise.all([
+    const [canonicalMemory, memoryChangeHint, accountability] = await Promise.all([
       Promise.resolve(memoryControls.savedMemoryEnabled
         ? budgetCanonicalMemory(memoryItems, memoryRevisionSnapshot, { profileId })
         : { globalRevision: memoryRevisionSnapshot, items: [] })
@@ -254,6 +255,9 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         afterRevision: threadContextRow.memoryRevisionSeen,
         throughRevision: memoryRevisionSnapshot,
       }).catch(() => ({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] })) : Promise.resolve({ afterRevision: threadContextRow.memoryRevisionSeen, throughRevision: memoryRevisionSnapshot, changes: [] }),
+      loadOpenLoopContext(profileId)
+        .then((loops) => ({ enabled: true, loops }))
+        .catch(() => ({ enabled: false, loops: [] })),
     ]);
     const referenceHistoryPrompt = memoryControls.referenceHistoryEnabled
       && referenceHistoryPromptIsFresh(referenceHistorySnapshot, memoryRevisionSnapshot)
@@ -276,6 +280,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
+      accountability,
       memoryContextSufficient: false,
       historicalPreflightSources: historicalPreflight.sources.map((source) => ({
         messageId: source.messageId,
@@ -317,6 +322,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         toolSchemas: getInternalToolSchemaDescriptors({
           savedMemoryEnabled: memoryControls.savedMemoryEnabled,
           referenceHistoryEnabled: memoryControls.referenceHistoryEnabled,
+          accountabilityEnabled: true,
         }),
         currentUser: currentUserMessage,
         messages: history,
@@ -357,6 +363,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       canonicalMemory,
       memoryChangeHint,
       memoryControls,
+      accountability,
       memoryContextSufficient: false,
       historicalPreflightSources: historicalPreflight.sources.map((source) => ({
         messageId: source.messageId,
