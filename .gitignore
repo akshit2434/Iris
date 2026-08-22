@@ -31,3 +31,4 @@ supabase/.temp/
 *.key
 *.p12
 *.pfx
+tmp/sim/
