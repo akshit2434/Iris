@@ -14,6 +14,7 @@ export type StreamState = {
   status: StreamStatus;
   errorMessage: string | null;
   title: string | null;
+  loopLedger: { created: string[]; closed: string[] } | null;
 };
 
 export type AssistantStreamPhase = "thinking" | "streaming" | "complete" | "incomplete";
@@ -300,6 +301,7 @@ export function createStreamState(input?: {
     status: "idle",
     errorMessage: null,
     title: null,
+    loopLedger: null,
   };
 }
 
@@ -316,6 +318,7 @@ export function startOptimisticRun(state: StreamState, input: {
     lastSequence: 0,
     status: "running",
     errorMessage: null,
+    loopLedger: null,
   };
 }
 
@@ -362,6 +365,14 @@ export function reduceAgentStream(state: StreamState, event: AgentStreamEvent): 
 
   if (event.type === "tool_started" || event.type === "tool_finished") {
     return { ...nextBase, runId, status: "running", toolActivities: applyToolEvent(nextBase.toolActivities, event) };
+  }
+
+  if (event.type === "loop_ledger") {
+    return {
+      ...nextBase,
+      runId,
+      loopLedger: { created: event.created, closed: event.closed },
+    };
   }
 
   if (event.type === "completed") {

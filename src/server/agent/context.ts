@@ -56,6 +56,10 @@ export const agentContextSchema = z.object({
   }),
   accountability: z.object({
     enabled: z.boolean(),
+    recentlyClosed: z.array(z.object({
+      title: z.string().max(120),
+      closedAt: z.string(),
+    })).max(3).default([]),
     loops: z.array(z.object({
       loopId: z.string().min(1),
       title: z.string().min(1).max(OPEN_LOOP_TITLE_MAX_LENGTH),
@@ -65,7 +69,7 @@ export const agentContextSchema = z.object({
       cadenceKind: z.enum(CADENCE_KINDS).nullable(),
       createdAt: z.string().datetime({ offset: true }),
     })).max(OPEN_LOOP_CONTEXT_MAX_ITEMS),
-  }).default({ enabled: false, loops: [] }),
+  }).default({ enabled: false, loops: [], recentlyClosed: [] }),
   memoryContextSufficient: z.boolean(),
   historicalPreflightSources: z.array(z.object({
     messageId: z.string().uuid(),
@@ -158,7 +162,7 @@ export function createAgentContext(input: {
   canonicalMemory?: CanonicalMemoryContext;
   memoryChangeHint?: MemoryChangeHint;
   memoryControls?: { savedMemoryEnabled?: boolean; referenceHistoryEnabled?: boolean };
-  accountability?: { enabled: boolean; loops: OpenLoopContextEntry[] };
+  accountability?: { enabled: boolean; loops: OpenLoopContextEntry[]; recentlyClosed?: Array<{ title: string; closedAt: string }> };
   memoryContextSufficient?: boolean;
   historicalPreflightSources?: Array<{
     messageId: string;
@@ -229,9 +233,9 @@ export function buildDynamicSystemPrompt(context: AgentContext): string {
     ? "An internal historical retrieval already ran for this turn. Use relevant evidence from it silently for ordinary recall. If the user explicitly asked you to check, search, verify, or open past chats, still make the appropriate visible read-only tool call."
     : "";
   const accountabilityGuidance = context.accountability.enabled
-    ? "When accountability tracking is active: before treating a mention as a new commitment, clarify what is actually being promised, why it matters, whether capacity and timing are realistic, and how it fits alongside existing open loops; park musings as ideas instead. When the user mentions completing something, even casually mid-conversation, notice it and close the matching loop with loop_close this turn rather than silently dropping it. For routines, reflect on recent patterns instead of streaks or guilt. Respect pause and suppression requests immediately. Leisure is legitimate; never nag repetitively."
+    ? "When accountability tracking is active: before treating a mention as a new commitment, clarify what is actually being promised, why it matters, whether capacity and timing are realistic, and how it fits alongside existing open loops; park musings as ideas instead. When the user mentions completing something, even casually mid-conversation, notice it and close the matching loop with loop_close this turn rather than silently dropping it. For routines, reflect on recent patterns instead of streaks or guilt. Respect pause and suppression requests immediately. Leisure is legitimate; never nag repetitively. When summarizing current obligations, treat the open-loops block below (or a fresh loop_list result) as the only source of truth: items under Recently closed are finished and must never be listed as pending, and never invent pending work from chat history."
     : "";
-  const openLoopsPrompt = context.accountability.enabled ? formatOpenLoopsPrompt(context.accountability.loops, context.serverNow) : "";
+  const openLoopsPrompt = context.accountability.enabled ? formatOpenLoopsPrompt(context.accountability.loops, context.serverNow, context.accountability.recentlyClosed) : "";
 
   return `You are Iris, a private personal conversation layer.
 Be conversational, concise, thoughtful, and directly useful. Ask a clarifying question only when ambiguity genuinely blocks a useful answer; otherwise make a reasonable assumption and proceed.

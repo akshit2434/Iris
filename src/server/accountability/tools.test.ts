@@ -66,6 +66,8 @@ function expectNoWrites(repo: AccountabilityRepository) {
 function fakeRepository(overrides: Partial<AccountabilityRepository> = {}): AccountabilityRepository {
   return {
     listOpenLoops: vi.fn(async () => [makeLoop()]),
+    listRecentlyClosedLoops: vi.fn(async () => []),
+listLoopEventsForRun: vi.fn(async () => []),
     getOpenLoop: vi.fn(async () => makeLoop()),
     insertOpenLoop: vi.fn(async (input) => makeLoop({ id: "generated-loop", dueAt: input.dueAt ?? null, cadence: input.cadence ?? null })),
     updateOpenLoopStatus: vi.fn(async (_profileId, _loopId, _expectedUpdatedAt, patch) => makeLoop({ status: patch.event === "completed" ? "done" : patch.event === "paused" ? "paused" : "open" })),
@@ -109,7 +111,7 @@ describe("accountability tools", () => {
   it("creates a confirmed commitment with provenance and an initial check at its due time", async () => {
     const repo = fakeRepository();
     const result = await createLoop(context, { title: "Renew passport", details: "Expires in November.", kind: "commitment", dueAt: DUE_AT, confirm: true }, repo);
-    expect(result).toEqual({ kind: "loop_create", status: "created", loopId: "generated-loop", dueAt: DUE_AT });
+    expect(result).toMatchObject({ kind: "loop_create", status: "created", loopId: "generated-loop", title: expect.any(String), dueAt: DUE_AT });
     expect(repo.insertOpenLoop).toHaveBeenCalledWith(expect.objectContaining({
       profileId: "profile-a",
       title: "Renew passport",
@@ -156,14 +158,14 @@ describe("accountability tools", () => {
     const listed = await listLoops(context, {}, repo);
     expect(listed).toEqual({ kind: "loop_list", loops: [] });
     const closed = await closeLoop(context, { loopId: LOOP_ID }, repo);
-    expect(closed).toEqual({ kind: "loop_close", status: "closed", loopId: LOOP_ID, cancelledChecks: 2 });
+    expect(closed).toMatchObject({ kind: "loop_close", status: "closed", loopId: LOOP_ID, title: expect.any(String), cancelledChecks: 2 });
     expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: "completed" });
   });
 
   it("closes a completed loop with its expected revision and cancels pending checks", async () => {
     const repo = fakeRepository({ cancelPendingChecksForLoop: vi.fn(async () => 3) });
     const result = await closeLoop(context, { loopId: LOOP_ID }, repo);
-    expect(result).toEqual({ kind: "loop_close", status: "closed", loopId: LOOP_ID, cancelledChecks: 3 });
+    expect(result).toMatchObject({ kind: "loop_close", status: "closed", loopId: LOOP_ID, title: expect.any(String), cancelledChecks: 3 });
     expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: "completed" });
     expect(repo.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: LOOP_ID, kind: "completed", actor: "agent", sourceMessageId: ids.message }));
     expect(repo.cancelPendingChecksForLoop).toHaveBeenCalledWith("profile-a", LOOP_ID, expect.any(String));
@@ -178,7 +180,7 @@ describe("accountability tools", () => {
     for (const outcome of ["completed", "cancelled", "dropped"] as const) {
       const repo = fakeRepository({ cancelPendingChecksForLoop: vi.fn(async () => 1) });
       const result = await closeLoop(context, { loopId: LOOP_ID, outcome }, repo);
-      expect(result).toEqual({ kind: "loop_close", status: "closed", loopId: LOOP_ID, cancelledChecks: 1 });
+      expect(result).toMatchObject({ kind: "loop_close", status: "closed", loopId: LOOP_ID, title: expect.any(String), cancelledChecks: 1 });
       expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: outcome });
       expect(repo.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: LOOP_ID, kind: outcome }));
     }

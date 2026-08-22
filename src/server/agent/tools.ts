@@ -163,6 +163,35 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
   if (preflightResults.length === 1) {
     return { kind: "message_search" as const, query, results: preflightResults };
   }
+  const firstAttempt = await runValidatedSearch(context, input, query, threadId, limit, retrieval);
+  if (firstAttempt.results.length > 0) {
+    return { kind: "message_search" as const, query, ...firstAttempt.summary(), results: firstAttempt.results };
+  }
+  // Zero hits often means an over-restricted strategy (role filters or an
+  // exact-match mode), not absence. Escalate deterministically before
+  // telling the user nothing exists.
+  const fallbacks: Array<{ input: z.infer<typeof searchMessagesInput>; label: string }> = [];
+  const base = { ...input, roles: undefined };
+  if (input.roles?.length) fallbacks.push({ input: { ...base }, label: "broader role-free search" });
+  if ((input.matchType ?? "hybrid") !== "hybrid" || !input.roles?.length) fallbacks.push({ input: { ...base, matchType: "hybrid" as const }, label: "semantic fallback" });
+  for (const fallback of fallbacks) {
+    const attempt = await runValidatedSearch(context, fallback.input, query, threadId, limit, retrieval);
+    if (attempt.results.length > 0) {
+      console.warn(JSON.stringify({ scope: "message-search", stage: "zero_hit_escalation", profileId: context.profileId, strategy: fallback.label }));
+      return { kind: "message_search" as const, query, strategyNote: `No exact-strategy matches; recovered via ${fallback.label}.`, ...attempt.summary(), results: attempt.results };
+    }
+  }
+  return { kind: "message_search" as const, query, ...firstAttempt.summary(), results: [] };
+}
+
+async function runValidatedSearch(
+  context: AgentContext,
+  input: z.infer<typeof searchMessagesInput>,
+  query: string,
+  threadId: string | undefined,
+  limit: number,
+  retrieval: MemoryRetrieval,
+) {
   const results = await retrieval.searchMessages({
     profileId: context.profileId,
     ...input,
@@ -170,7 +199,8 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
     excludeThreadId: threadId ? undefined : context.threadId,
     query,
     limit,
-  });
+  }).catch((error: unknown) => null);
+  if (!results) return { results: [], summary: () => ({}) };
   const validatedResults = await Promise.all(results.map(async (result) => {
     if (result.profileId !== context.profileId) return null;
     const window = await retrieval.readMessages(context.profileId, result.messageId, 1).catch(() => null);
@@ -194,11 +224,8 @@ export async function searchMessages(context: AgentContext, input: z.infer<typeo
       action,
     } : null;
   }));
-  return {
-    kind: "message_search" as const,
-    query,
-    results: rankHistoricalResults(validatedResults.filter((result): result is NonNullable<typeof result> => result !== null), query),
-  };
+  const ranked = rankHistoricalResults(validatedResults.filter((result): result is NonNullable<typeof result> => result !== null), query);
+  return { results: ranked, summary: () => ({}) };
 }
 
 export async function readMessages(context: AgentContext, input: z.infer<typeof readMessagesInput>, retrieval: MemoryRetrieval) {
@@ -300,11 +327,21 @@ export async function searchMemory(context: AgentContext, input: z.infer<typeof 
   };
 }
 
-export async function patchMemory(context: AgentContext, input: z.infer<typeof memoryPatchInput>, mutation: MemoryMutationService, toolCallId: string) {
+const patchLocks = new Map<string, Promise<unknown>>();
+async function withPatchLock<T>(profileId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = patchLocks.get(profileId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(fn);
+  patchLocks.set(profileId, next.finally(() => {
+    if (patchLocks.get(profileId) === next) patchLocks.delete(profileId);
+  }));
+  return next;
+}
+
+export async function patchMemory(context: AgentContext, input: z.infer<typeof memoryPatchInput>, mutation: MemoryMutationService, toolCallId: string, retrieval?: MemoryRetrieval) {
   if (!context.currentUserMessageId || !context.agentRunId) {
     return { kind: "memory_patch" as const, status: "conflict" as const, canonicalKey: input.canonicalKey.trim(), reason: "Memory writes are available only during a persisted user turn.", candidates: [] };
   }
-  const result = await mutation.apply({
+  const mutationInput = {
     profileId: context.profileId,
     threadId: context.threadId,
     currentUserMessageId: context.currentUserMessageId,
@@ -316,16 +353,21 @@ export async function patchMemory(context: AgentContext, input: z.infer<typeof m
     mutationKind: input.mutationKind,
     category: input.category,
     valueScope: input.valueScope,
-  });
-  if (result.status !== "applied") return { kind: "memory_patch" as const, ...result };
-  return {
-    kind: "memory_patch" as const,
-    status: "applied" as const,
-    canonicalKey: result.canonicalKey,
-    itemRevision: result.revision.itemRevision,
-    profileGlobalRevision: result.revision.profileGlobalRevision,
-    revisionId: result.revision.revisionId,
   };
+  return withPatchLock(context.profileId, async () => {
+    let result = await mutation.apply(mutationInput);
+    if (result.status === "stale" && retrieval && input.mutationKind !== "create") {
+      // Parallel patches inside one run consume each other's expected
+      // revisions. Re-read the item and retry once so intra-turn writes land.
+      const current = await retrieval.readMemory(context.profileId, result.canonicalKey).catch(() => null);
+      if (current && typeof current.itemRevision === "number") {
+        const retried = await mutation.apply({ ...mutationInput, expectedItemRevision: current.itemRevision });
+        if (retried.status === "applied") console.warn(JSON.stringify({ scope: "memory-patch", stage: "auto_heal_retry", profileId: context.profileId, canonicalKey: result.canonicalKey }));
+        return { kind: "memory_patch" as const, ...retried };
+      }
+    }
+    return { kind: "memory_patch" as const, ...result };
+  });
 }
 
 export async function archiveMemory(context: AgentContext, input: z.infer<typeof memoryArchiveInput>, archive: MemoryArchiveService, toolCallId: string) {
@@ -434,7 +476,7 @@ export function createInternalTools(
     },
   );
   const memoryPatchTool = tool(
-    async (input: z.infer<typeof memoryPatchInput>, runtime: ToolRuntime<unknown, AgentContext>) => patchMemory(runtime.context, input, getMemoryMutation(), runtime.toolCallId),
+    async (input: z.infer<typeof memoryPatchInput>, runtime: ToolRuntime<unknown, AgentContext>) => patchMemory(runtime.context, input, getMemoryMutation(), runtime.toolCallId, getMemoryRetrieval()),
     {
       name: "memory_patch",
       description: "Use only when the user explicitly asks to remember, correct, or preserve a durable fact, or a stable fact clearly has future value. Search/read related memory first when uncertain. Submit plain natural-language content with the current expected item revision; do not store transient chatter, secrets, or speculative psychology. This is profile/thread scoped and read-only tools cannot be bypassed.",

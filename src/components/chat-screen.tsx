@@ -558,7 +558,7 @@ export function ChatScreen() {
         <div className="mx-auto max-w-3xl space-y-7">
           {messages.map((message) => {
             const checkinQuestions = message.role === "assistant" ? checkinQuestionsByMessage.get(message.id) : undefined;
-            return <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} checkinActions={checkinQuestions ? { questions: checkinQuestions, busyKey: answeringCheckinKey, error: checkinError, onAnswer: answerCheckin } : undefined} />;
+            return <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} loopLedger={message.id === streamState.assistantMessageId ? streamState.loopLedger : undefined} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} checkinActions={checkinQuestions ? { questions: checkinQuestions, busyKey: answeringCheckinKey, error: checkinError, onAnswer: answerCheckin } : undefined} />;
           })}
           <UnattachedToolActivities messages={messages} toolActivities={toolActivities} profileId={profileId} />
         </div>
@@ -582,7 +582,8 @@ export function ChatScreen() {
   );
 }
 
-function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete, checkinActions }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void; checkinActions?: CheckinQuickActions }>) {
+function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete, checkinActions, loopLedger }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void; checkinActions?: CheckinQuickActions; loopLedger?: { created: string[]; closed: string[] } | null }>) {
+  const ledgerVisible = Boolean(loopLedger && (loopLedger.created.length > 0 || loopLedger.closed.length > 0));
   const isUser = message.role === "user";
   const phase = assistantStreamPhase(message, active);
   const shouldAnimateEntry = Boolean(message.presentationId) && (isUser || Boolean(message.content));
@@ -622,6 +623,14 @@ function MessageBubble({ message, active, live, terminal, toolActivities, onReve
             ))}
             {checkinActions.error ? <p className="px-1 text-[11px] font-medium text-red-500">{checkinActions.error}</p> : null}
           </div>
+        ) : null}
+        {!isUser && ledgerVisible && loopLedger ? (
+          <p className="mt-1 px-1 text-[10px] font-medium text-emerald-700/80" aria-label="Tracking updates this turn">
+            {[
+              loopLedger.created.length > 0 ? `Tracked: ${loopLedger.created.join(", ")}` : null,
+              loopLedger.closed.length > 0 ? `Closed: ${loopLedger.closed.join(", ")}` : null,
+            ].filter(Boolean).join(" · ")}
+          </p>
         ) : null}
         {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>

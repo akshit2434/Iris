@@ -58,6 +58,14 @@ export type AgentStreamEvent =
     }
   | {
       version: typeof AGENT_STREAM_PROTOCOL;
+      type: "loop_ledger";
+      sequence: number;
+      runId: string;
+      created: string[];
+      closed: string[];
+    }
+  | {
+      version: typeof AGENT_STREAM_PROTOCOL;
       type: "completed";
       sequence: number;
       runId: string;

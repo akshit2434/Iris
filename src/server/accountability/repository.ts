@@ -180,12 +180,16 @@ export function normalizeSuppressionSubject(subject: string): string {
   return subject.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+export type RecentlyClosedLoopRow = { loopId: string; title: string; closedAt: string };
+
 export type AccountabilityRepository = {
   listOpenLoops(profileId: ProfileId, filter?: ListOpenLoopsFilter): Promise<OpenLoopRow[]>;
+  listRecentlyClosedLoops(profileId: ProfileId, sinceIso: string, limit: number): Promise<RecentlyClosedLoopRow[]>;
   getOpenLoop(profileId: ProfileId, loopId: string): Promise<OpenLoopRow | null>;
   insertOpenLoop(input: InsertOpenLoopInput): Promise<OpenLoopRow>;
   updateOpenLoopStatus(profileId: ProfileId, loopId: string, expectedUpdatedAt: string, patch: UpdateOpenLoopPatch): Promise<OpenLoopRow>;
   insertLoopEvent(profileId: ProfileId, input: InsertLoopEventInput): Promise<LoopEventRow>;
+  listLoopEventsForRun(profileId: ProfileId, agentRunId: string, limit?: number): Promise<Array<{ kind: string }>>;
   listDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<ScheduledCheckRow[]>;
   listDueChecksWithLoops(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
   claimDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
@@ -414,6 +418,42 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       return (data ?? []).map(toOpenLoop);
     },
 
+    async listRecentlyClosedLoops(profileId, sinceIso, limit) {
+      assertProfileId(profileId);
+      const bounded = Math.max(1, Math.min(limit, 5));
+      const { data: events, error } = await client
+        .from("loop_events")
+        .select("loop_id, kind, created_at")
+        .eq("profile_id", profileId)
+        .in("kind", ["completed", "cancelled", "dropped"])
+        .gte("created_at", sinceIso)
+        .order("created_at", { ascending: false })
+        .limit(bounded * 3);
+      if (error) throw error;
+      const seen = new Set<string>();
+      const picked = (events ?? []).filter((event) => {
+        if (seen.has(event.loop_id) || seen.size >= bounded) return false;
+        seen.add(event.loop_id);
+        return true;
+      });
+      if (picked.length === 0) return [];
+      const { data: loops, error: loopError } = await client
+        .from("open_loops")
+        .select(OPEN_LOOP_COLUMNS)
+        .eq("profile_id", profileId)
+        .in("id", picked.map((event) => event.loop_id));
+      if (loopError) throw loopError;
+      const byId = new Map((loops ?? []).map((row) => [row.id, toOpenLoop(row)]));
+      return picked
+        .map((event) => {
+          const loop = byId.get(event.loop_id);
+          if (!loop || loop.status === "open" || loop.status === "paused") return null;
+          return { loopId: loop.id, title: loop.title, closedAt: loop.closedAt ?? event.created_at };
+        })
+        .filter((entry): entry is RecentlyClosedLoopRow => entry !== null)
+        .slice(0, bounded);
+    },
+
     async getOpenLoop(profileId, loopId) {
       assertProfileId(profileId);
       return fetchOpenLoop(client, profileId, loopId);
@@ -460,6 +500,19 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       const row = (data ?? [])[0];
       if (!row) throw new StaleOpenLoopRevisionError(`Open loop "${loopId}" was updated concurrently.`);
       return toOpenLoop(row);
+    },
+
+    async listLoopEventsForRun(profileId, agentRunId, limit = 20) {
+      assertProfileId(profileId);
+      const { data, error } = await client
+        .from("loop_events")
+        .select("kind")
+        .eq("profile_id", profileId)
+        .eq("agent_run_id", agentRunId)
+        .order("created_at", { ascending: false })
+        .limit(Math.max(1, Math.min(limit, 50)));
+      if (error) throw error;
+      return (data ?? []).map((row) => ({ kind: row.kind }));
     },
 
     async insertLoopEvent(profileId, input) {
