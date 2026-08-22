@@ -5,6 +5,7 @@ import type { z } from "zod";
 import { isProfileId, type ProfileId } from "@/lib/profiles";
 import { getDatabase } from "@/server/db/client";
 import type { Database, Json } from "@/server/db/types";
+import { isBriefingLoopTitle } from "./briefing";
 import { isTerminal, nextStatusOnEvent } from "./state-machine";
 import {
   createLoopInputSchema,
@@ -12,6 +13,8 @@ import {
   type LoopEventKind,
   type OpenLoopKind,
   type OpenLoopStatus,
+  type RespondOutcome,
+  respondInputSchema,
 } from "./types";
 
 type AccountabilityDatabase = SupabaseClient<Database>;
@@ -20,6 +23,7 @@ type OpenLoopTableRow = Database["public"]["Tables"]["open_loops"]["Row"];
 type LoopEventTableRow = Database["public"]["Tables"]["loop_events"]["Row"];
 type ScheduledCheckTableRow = Database["public"]["Tables"]["scheduled_checks"]["Row"];
 type CheckinDeliveryTableRow = Database["public"]["Tables"]["checkin_deliveries"]["Row"];
+type CheckinDeliveryItemTableRow = Database["public"]["Tables"]["checkin_delivery_items"]["Row"];
 type LoopSuppressionTableRow = Database["public"]["Tables"]["loop_suppressions"]["Row"];
 
 export type ScheduledCheckStatus = "pending" | "delivered" | "merged" | "cancelled" | "expired";
@@ -102,10 +106,55 @@ export type LoopSuppressionRow = {
   liftedAt: string | null;
 };
 
+export type AttentionDeliveryItem = {
+  loopId: string;
+  title: string;
+  kind: OpenLoopKind;
+  status: OpenLoopStatus;
+  dueAt: string | null;
+  responded: boolean;
+  informational: boolean;
+};
+
+export type AttentionDelivery = {
+  deliveryId: string;
+  threadId: string;
+  messageId: string | null;
+  summary: string | null;
+  createdAt: string;
+  items: AttentionDeliveryItem[];
+};
+
+export type AttentionOverdue = { loopId: string; title: string; dueAt: string; daysOverdue: number };
+
+export type AttentionSnapshot = {
+  pendingDeliveries: AttentionDelivery[];
+  counts: { openLoops: number; overdueCommitments: number };
+  topOverdue: AttentionOverdue[];
+};
+
+export type RespondToDeliveryItemInput = {
+  deliveryId: string;
+  loopId: string;
+  outcome: RespondOutcome;
+};
+
+export type RespondToDeliveryItemResult = {
+  alreadyResponded: boolean;
+  warning?: string;
+};
+
 export class StaleOpenLoopRevisionError extends Error {
   constructor(message = "Open loop was modified concurrently; reload it and retry.") {
     super(message);
     this.name = "StaleOpenLoopRevisionError";
+  }
+}
+
+export class BriefingItemNotActionableError extends Error {
+  constructor(message = "Morning briefings are informational and cannot be answered.") {
+    super(message);
+    this.name = "BriefingItemNotActionableError";
   }
 }
 
@@ -142,20 +191,25 @@ export type AccountabilityRepository = {
   claimDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
   releaseClaims(profileId: ProfileId, checkIds: readonly string[]): Promise<void>;
   markCheckDelivered(profileId: ProfileId, checkId: string, input: MarkCheckDeliveredInput): Promise<ScheduledCheckRow>;
+  listChecksForLoop(profileId: ProfileId, loopId: string): Promise<ScheduledCheckRow[]>;
   insertScheduledCheck(profileId: ProfileId, input: InsertScheduledCheckInput): Promise<ScheduledCheckRow>;
   cancelPendingChecksForLoop(profileId: ProfileId, loopId: string, reason: string): Promise<number>;
   cancelOrphanPendingDeliveries(profileId: ProfileId, nowIso: string): Promise<number>;
   insertDelivery(profileId: ProfileId, input: { threadId: string }): Promise<CheckinDeliveryRow>;
+  insertDeliveryItems(profileId: ProfileId, deliveryId: string, loopIds: readonly string[]): Promise<void>;
   markDeliveryDelivered(profileId: ProfileId, deliveryId: string, input: { messageId: string; deliveredAt?: string }): Promise<CheckinDeliveryRow>;
   insertLoopSuppression(profileId: ProfileId, input: InsertLoopSuppressionInput): Promise<LoopSuppressionRow>;
   liftLoopSuppression(profileId: ProfileId, subject: string): Promise<number>;
   listActiveSuppressions(profileId: ProfileId): Promise<LoopSuppressionRow[]>;
+  getAttentionSnapshot(profileId: ProfileId, nowIso?: string): Promise<AttentionSnapshot>;
+  respondToDeliveryItem(profileId: ProfileId, input: RespondToDeliveryItemInput, nowIso?: string): Promise<RespondToDeliveryItemResult>;
 };
 
 const OPEN_LOOP_COLUMNS = "id, profile_id, title, details, kind, status, due_at, cadence, origin_thread_id, origin_message_id, created_at, updated_at, closed_at";
 const LOOP_EVENT_COLUMNS = "id, profile_id, loop_id, kind, detail, actor, source_thread_id, source_message_id, agent_run_id, metadata, created_at";
 const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, claimed_at, created_at";
 const CHECKIN_DELIVERY_COLUMNS = "id, profile_id, thread_id, message_id, summary, status, created_at, delivered_at, answered_at";
+const CHECKIN_DELIVERY_ITEM_COLUMNS = "delivery_id, loop_id, profile_id, response, responded, created_at";
 const LOOP_SUPPRESSION_COLUMNS = "id, profile_id, subject, reason, created_at, lifted_at";
 
 const MAX_LOOP_EVENT_DETAIL_LENGTH = 2_000;
@@ -164,6 +218,14 @@ const MAX_SUPPRESSION_REASON_LENGTH = 500;
 const CLAIM_STALE_WINDOW_MS = 10 * 60_000;
 const ORPHAN_DELIVERY_WINDOW_MS = 30 * 60_000;
 const ORPHAN_DELIVERY_REASON = "sweep_retry";
+const MS_PER_DAY = 86_400_000;
+const TOP_OVERDUE_LIMIT = 5;
+
+const OUTCOME_EVENTS: Record<RespondOutcome, LoopEventKind> = {
+  done: "completed",
+  later: "rescheduled",
+  drop: "dropped",
+};
 
 function assertProfileId(value: unknown): asserts value is ProfileId {
   if (!isProfileId(value)) throw new Error("A valid profile scope is required.");
@@ -318,12 +380,31 @@ async function joinChecksWithLoops(client: AccountabilityDatabase, profileId: Pr
   return joined;
 }
 
+async function fetchDeliveryItems(client: AccountabilityDatabase, profileId: ProfileId, deliveryIds: readonly string[]): Promise<CheckinDeliveryItemTableRow[]> {
+  if (deliveryIds.length === 0) return [];
+  const { data, error } = await client
+    .from("checkin_delivery_items")
+    .select(CHECKIN_DELIVERY_ITEM_COLUMNS)
+    .eq("profile_id", profileId)
+    .in("delivery_id", [...deliveryIds])
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+function collectOverdueCommitments(loops: OpenLoopRow[], nowMs: number): Array<OpenLoopRow & { dueAt: string }> {
+  return loops
+    .filter((loop): loop is OpenLoopRow & { dueAt: string } =>
+      loop.status === "open" && loop.kind === "commitment" && loop.dueAt !== null && !Number.isNaN(Date.parse(loop.dueAt)) && Date.parse(loop.dueAt) < nowMs)
+    .sort((left, right) => left.dueAt.localeCompare(right.dueAt));
+}
+
 export function createProductionAccountabilityRepository(): AccountabilityRepository {
   return createAccountabilityRepository(getDatabase());
 }
 
 export function createAccountabilityRepository(client: AccountabilityDatabase = getDatabase()): AccountabilityRepository {
-  return {
+  const repository: AccountabilityRepository = {
     async listOpenLoops(profileId, filter = {}) {
       assertProfileId(profileId);
       let request = client.from("open_loops").select(OPEN_LOOP_COLUMNS).eq("profile_id", profileId);
@@ -461,6 +542,18 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       return toScheduledCheck(row);
     },
 
+    async listChecksForLoop(profileId, loopId) {
+      assertProfileId(profileId);
+      const { data, error } = await client
+        .from("scheduled_checks")
+        .select(SCHEDULED_CHECK_COLUMNS)
+        .eq("profile_id", profileId)
+        .eq("loop_id", loopId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map(toScheduledCheck);
+    },
+
     async insertScheduledCheck(profileId, input) {
       assertProfileId(profileId);
       const { data: priorChecks, error: priorError } = await client
@@ -526,6 +619,15 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       if (error) throw error;
       if (!data) throw new Error("Check-in delivery insert returned no row.");
       return toDelivery(data);
+    },
+
+    async insertDeliveryItems(profileId, deliveryId, loopIds) {
+      assertProfileId(profileId);
+      if (loopIds.length === 0) return;
+      const { error } = await client
+        .from("checkin_delivery_items")
+        .insert(loopIds.map((loopId) => ({ profile_id: profileId, delivery_id: deliveryId, loop_id: loopId })));
+      if (error) throw error;
     },
 
     async markDeliveryDelivered(profileId, deliveryId, input) {
@@ -604,5 +706,133 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       if (error) throw error;
       return (data ?? []).map(toLoopSuppression);
     },
+
+    async getAttentionSnapshot(profileId, nowIso = new Date().toISOString()) {
+      assertProfileId(profileId);
+      const nowMs = Date.parse(nowIso);
+      if (Number.isNaN(nowMs)) throw new Error("A valid attention snapshot time is required.");
+      const { data: deliveryRows, error: deliveryError } = await client
+        .from("checkin_deliveries")
+        .select(CHECKIN_DELIVERY_COLUMNS)
+        .eq("profile_id", profileId)
+        .eq("status", "delivered")
+        .is("answered_at", null)
+        .order("created_at", { ascending: true });
+      if (deliveryError) throw deliveryError;
+      const deliveries = (deliveryRows ?? []).map(toDelivery);
+      const items = await fetchDeliveryItems(client, profileId, deliveries.map((delivery) => delivery.id));
+      const loops = await repository.listOpenLoops(profileId);
+      const loopsById = new Map(loops.map((loop) => [loop.id, loop]));
+      const itemsByDelivery = new Map<string, CheckinDeliveryItemTableRow[]>();
+      for (const item of items) {
+        const bucket = itemsByDelivery.get(item.delivery_id) ?? [];
+        bucket.push(item);
+        itemsByDelivery.set(item.delivery_id, bucket);
+      }
+      const pendingDeliveries: AttentionDelivery[] = [];
+      for (const delivery of deliveries) {
+        const rows = itemsByDelivery.get(delivery.id) ?? [];
+        if (rows.length === 0) continue;
+        pendingDeliveries.push({
+          deliveryId: delivery.id,
+          threadId: delivery.threadId,
+          messageId: delivery.messageId,
+          summary: delivery.summary,
+          createdAt: delivery.createdAt,
+          items: rows.flatMap((row) => {
+            const loop = loopsById.get(row.loop_id);
+            return loop ? [{ loopId: row.loop_id, title: loop.title, kind: loop.kind, status: loop.status, dueAt: loop.dueAt, responded: row.responded, informational: isBriefingLoopTitle(loop.title) }] : [];
+          }),
+        });
+      }
+      const overdue = collectOverdueCommitments(loops, nowMs);
+      return {
+        pendingDeliveries,
+        counts: {
+          openLoops: loops.filter((loop) => loop.status === "open" && !isBriefingLoopTitle(loop.title)).length,
+          overdueCommitments: overdue.length,
+        },
+        topOverdue: overdue.slice(0, TOP_OVERDUE_LIMIT).map((loop) => ({
+          loopId: loop.id,
+          title: loop.title,
+          dueAt: loop.dueAt,
+          daysOverdue: Math.floor((nowMs - Date.parse(loop.dueAt)) / MS_PER_DAY),
+        })),
+      };
+    },
+
+    async respondToDeliveryItem(profileId, input, nowIso = new Date().toISOString()) {
+      assertProfileId(profileId);
+      const validated = respondInputSchema.parse(input);
+      const current = await fetchOpenLoop(client, profileId, validated.loopId);
+      if (!current) throw new Error(`Open loop "${validated.loopId}" was not found.`);
+      if (isBriefingLoopTitle(current.title)) throw new BriefingItemNotActionableError();
+      const { data: claimedRows, error: claimError } = await client
+        .from("checkin_delivery_items")
+        .update({ responded: true, response: validated.outcome })
+        .eq("delivery_id", validated.deliveryId)
+        .eq("loop_id", validated.loopId)
+        .eq("profile_id", profileId)
+        .eq("responded", false)
+        .select(CHECKIN_DELIVERY_ITEM_COLUMNS);
+      if (claimError) throw claimError;
+      if ((claimedRows ?? []).length === 0) {
+        const { data: existingRows, error: existingError } = await client
+          .from("checkin_delivery_items")
+          .select(CHECKIN_DELIVERY_ITEM_COLUMNS)
+          .eq("delivery_id", validated.deliveryId)
+          .eq("loop_id", validated.loopId)
+          .eq("profile_id", profileId)
+          .maybeSingle();
+        if (existingError) throw existingError;
+        if (!existingRows) throw new Error(`Check-in delivery "${validated.deliveryId}" has no question for loop "${validated.loopId}".`);
+        return { alreadyResponded: true };
+      }
+      let warning: string | undefined;
+      try {
+        const outcomeEvent = OUTCOME_EVENTS[validated.outcome];
+        let nextDueAt: string | undefined;
+        if (validated.outcome === "later") {
+          const referenceMs = current.dueAt !== null && !Number.isNaN(Date.parse(current.dueAt)) ? Date.parse(current.dueAt) : Date.parse(nowIso);
+          nextDueAt = new Date(referenceMs + MS_PER_DAY).toISOString();
+        }
+        await repository.updateOpenLoopStatus(profileId, validated.loopId, current.updatedAt, {
+          event: outcomeEvent,
+          ...(nextDueAt === undefined ? {} : { dueAt: nextDueAt }),
+        });
+        await repository.insertLoopEvent(profileId, {
+          loopId: validated.loopId,
+          kind: outcomeEvent,
+          actor: "user",
+          metadata: { source: "checkin_quick_action", outcome: validated.outcome },
+        });
+        if (nextDueAt !== undefined) {
+          await repository.insertScheduledCheck(profileId, { loopId: validated.loopId, dueAt: nextDueAt });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({
+          scope: "accountability-respond",
+          stage: "post-claim-transition",
+          profileId,
+          deliveryId: validated.deliveryId,
+          loopId: validated.loopId,
+          outcome: validated.outcome,
+          error: message,
+        }));
+        warning = "Your answer was saved, but this follow-up may be out of sync.";
+      }
+      const remaining = await fetchDeliveryItems(client, profileId, [validated.deliveryId]);
+      if (!remaining.some((row) => !row.responded)) {
+        const { error: answerError } = await client
+          .from("checkin_deliveries")
+          .update({ status: "answered", answered_at: nowIso })
+          .eq("id", validated.deliveryId)
+          .eq("profile_id", profileId);
+        if (answerError) throw answerError;
+      }
+      return warning === undefined ? { alreadyResponded: false } : { alreadyResponded: false, warning };
+    },
   };
+  return repository;
 }

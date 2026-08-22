@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useId, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
@@ -14,6 +14,13 @@ import { ProfilePicker } from "@/components/profile-picker";
 import { useChatSurface } from "@/components/chat-surface-context";
 import { DelayedPagePresence } from "@/components/delayed-page-presence";
 import { buildOpenMessageHref, memoryItemRows, memorySourceRows } from "@/lib/memory-source";
+import {
+  CHECKIN_QUICK_ACTIONS,
+  pendingQuestionsByMessageId,
+  type AttentionSnapshotPayload,
+  type CheckinOutcome,
+  type PendingQuestion,
+} from "@/lib/checkin-actions";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
 import { isConfirmedNewChatPromotion, isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
@@ -37,6 +44,13 @@ import {
 } from "@/lib/agent-stream";
 
 type ThreadResponse = { thread: Thread; messages: Message[]; toolActivities?: PersistedToolEvent[] };
+
+type CheckinQuickActions = {
+  questions: PendingQuestion[];
+  busyKey: string | null;
+  error: string | null;
+  onAnswer: (question: PendingQuestion, outcome: CheckinOutcome) => Promise<void>;
+};
 
 function formatMessageTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
@@ -87,6 +101,9 @@ export function ChatScreen() {
   const streamGenerationRef = useRef(0);
   const temporaryIdRef = useRef<string | null>(null);
   const [isTemporary, setIsTemporary] = useState(false);
+  const [checkinQuestionsByMessage, setCheckinQuestionsByMessage] = useState<Map<string, PendingQuestion[]>>(() => new Map());
+  const [answeringCheckinKey, setAnsweringCheckinKey] = useState<string | null>(null);
+  const [checkinError, setCheckinError] = useState<string | null>(null);
 
   function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
     setStreamState((current) => {
@@ -103,6 +120,23 @@ export function ChatScreen() {
   useEffect(() => {
     hasMessagesRef.current = hasMessages;
   }, [hasMessages]);
+
+  const loadCheckinQuestions = useCallback(async () => {
+    try {
+      const response = await fetch("/api/accountability/attention", { cache: "no-store" });
+      const body = (await response.json()) as Partial<AttentionSnapshotPayload> & { error?: string };
+      if (!response.ok || !body.pendingDeliveries || !body.counts) throw new Error(body.error ?? "Could not load check-ins.");
+      setCheckinError(null);
+      setCheckinQuestionsByMessage(pendingQuestionsByMessageId(body as AttentionSnapshotPayload));
+    } catch {
+      setCheckinQuestionsByMessage(new Map());
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!profileId || loading || isNewChat) return;
+    void loadCheckinQuestions();
+  }, [isNewChat, loadCheckinQuestions, loading, profileId]);
 
   useEffect(() => {
     entryAnimationRef.current = false;
@@ -448,6 +482,29 @@ export function ChatScreen() {
     if (!assistant?.content) setPresentationActive(false);
   }, [presentationActive, streamState.assistantMessageId, streamState.messages, streamState.status]);
 
+  async function answerCheckin(question: PendingQuestion, outcome: CheckinOutcome) {
+    if (answeringCheckinKey) return;
+    setAnsweringCheckinKey(question.key);
+    setCheckinError(null);
+    try {
+      const response = await fetch("/api/accountability/respond", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deliveryId: question.deliveryId, loopId: question.loopId, outcome }),
+      });
+      const body = (await response.json().catch(() => null)) as { error?: string; warning?: string } | null;
+      if (!response.ok) {
+        throw new Error(body?.error ?? "Could not record your answer.");
+      }
+      if (body?.warning) setCheckinError(body.warning);
+      await loadCheckinQuestions();
+    } catch (answerError) {
+      setCheckinError(answerError instanceof Error ? answerError.message : "Could not record your answer.");
+    } finally {
+      setAnsweringCheckinKey(null);
+    }
+  }
+
   async function reloadThreadState() {
     if (!threadId) return;
     const response = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
@@ -499,7 +556,10 @@ export function ChatScreen() {
       <div ref={scrollContainerRef} className="iris-scrollbar min-w-0 w-full flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
         {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
-          {messages.map((message) => <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} />)}
+          {messages.map((message) => {
+            const checkinQuestions = message.role === "assistant" ? checkinQuestionsByMessage.get(message.id) : undefined;
+            return <MessageBubble key={message.presentationId ?? message.id} message={message} active={streamState.status === "running" && message.id === streamState.assistantMessageId} live={message.id === streamState.assistantMessageId && (presentationActive || streamState.status === "running")} terminal={message.id === streamState.assistantMessageId && (streamState.status === "completed" || streamState.status === "failed")} toolActivities={toolActivitiesForRun(toolActivities, message.role === "assistant" ? message.agentRunId : null)} onRevealComplete={message.id === streamState.assistantMessageId ? () => setPresentationActive(false) : undefined} checkinActions={checkinQuestions ? { questions: checkinQuestions, busyKey: answeringCheckinKey, error: checkinError, onAnswer: answerCheckin } : undefined} />;
+          })}
           <UnattachedToolActivities messages={messages} toolActivities={toolActivities} profileId={profileId} />
         </div>
       </div>
@@ -522,7 +582,7 @@ export function ChatScreen() {
   );
 }
 
-function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void }>) {
+function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete, checkinActions }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void; checkinActions?: CheckinQuickActions }>) {
   const isUser = message.role === "user";
   const phase = assistantStreamPhase(message, active);
   const shouldAnimateEntry = Boolean(message.presentationId) && (isUser || Boolean(message.content));
@@ -536,6 +596,33 @@ function MessageBubble({ message, active, live, terminal, toolActivities, onReve
         <div className={`text-[15px] leading-7 ${isUser ? "rounded-[24px] rounded-br-[8px] bg-[#111827] px-4 py-3 text-white shadow-[0_12px_28px_rgba(17,24,39,.12)]" : "px-1 py-1 text-slate-700"}`}>
           {message.content ? <AssistantMarkdown content={message.content} live={live} terminal={terminal} onRevealComplete={onRevealComplete} /> : phase === "thinking" && toolActivities.length === 0 ? <ThinkingIndicator /> : null}
         </div>
+        {!isUser && checkinActions && checkinActions.questions.length > 0 ? (
+          <div className="mt-2 space-y-2">
+            {checkinActions.questions.map((question) => (
+              <div key={question.key} className="rounded-[18px] bg-white/48 p-2.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,.72)]">
+                <p className="truncate text-xs font-semibold text-slate-700">{question.title}</p>
+                {question.informational ? (
+                  <p className="mt-1 text-[11px] font-medium text-slate-500">No response needed</p>
+                ) : (
+                  <div className="mt-1.5 flex gap-2">
+                    {CHECKIN_QUICK_ACTIONS.map(({ outcome, label }) => (
+                      <button
+                        key={outcome}
+                        type="button"
+                        disabled={checkinActions.busyKey !== null}
+                        onClick={() => void checkinActions.onAnswer(question, outcome)}
+                        className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${outcome === "done" ? "bg-[#111827] text-white shadow-[0_8px_18px_rgba(17,24,39,.16)]" : "bg-white/65 text-slate-600 shadow-[inset_0_0_0_1px_rgba(255,255,255,.78)]"}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {checkinActions.error ? <p className="px-1 text-[11px] font-medium text-red-500">{checkinActions.error}</p> : null}
+          </div>
+        ) : null}
         {!isUser && phase === "incomplete" ? <p className="mt-1 px-1 text-[10px] font-medium text-amber-600">Incomplete response</p> : null}
         <p className={`mt-1.5 px-1 text-[10px] text-slate-400 ${isUser ? "text-right" : "text-left"}`}><span className="sr-only">{isUser ? "You" : "Iris"} · </span>{formatMessageTime(message.createdAt)}</p>
       </div>
