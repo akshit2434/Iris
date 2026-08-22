@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
 function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
@@ -21,11 +21,13 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
     ],
     loop_events: [],
     checkin_deliveries: [],
+    checkin_delivery_items: [],
     loop_suppressions: [],
   };
   const defaults: Record<string, Record<string, unknown>> = {
     open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
+    checkin_delivery_items: { response: null, responded: false },
     loop_suppressions: { lifted_at: null },
     scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null },
     checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
@@ -489,5 +491,188 @@ describe("accountability repository", () => {
     const subjects = (await repository.listActiveSuppressions("profile-a")).map((row) => row.subject);
     expect(subjects).toEqual(["newer topic", "older topic"]);
     await expect(repository.listActiveSuppressions("profile-zzz" as never)).rejects.toThrow(/profile scope/i);
+  });
+
+  it("builds an attention snapshot of unanswered deliveries, counts, and top overdue commitments", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    rows.open_loops.push(
+      { id: "loop-overdue", profile_id: "profile-a", title: "Pay rent late fee", details: null, kind: "commitment", status: "open", due_at: "2026-08-20T12:00:00.000Z", cadence: null, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-15T10:00:00.000Z", updated_at: "2026-08-15T10:00:00.000Z", closed_at: null },
+    );
+    rows.checkin_deliveries.push(
+      { id: "delivery-open", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-1", summary: "Two questions for you", status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+      { id: "delivery-pending", profile_id: "profile-a", thread_id: "thread-1", message_id: null, summary: null, status: "pending", created_at: "2026-08-22T07:00:00.000Z", delivered_at: null, answered_at: null },
+      { id: "delivery-cancelled", profile_id: "profile-a", thread_id: "thread-1", message_id: null, summary: null, status: "cancelled", created_at: "2026-08-21T07:00:00.000Z", delivered_at: null, answered_at: null },
+      { id: "delivery-other", profile_id: "profile-b", thread_id: "thread-2", message_id: "message-2", summary: null, status: "delivered", created_at: "2026-08-22T06:00:00.000Z", delivered_at: "2026-08-22T06:05:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-open", loop_id: "loop-a", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+      { delivery_id: "delivery-open", loop_id: "loop-overdue", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:01.000Z" },
+      { delivery_id: "delivery-other", loop_id: "loop-b", profile_id: "profile-b", response: null, responded: false, created_at: "2026-08-22T06:00:00.000Z" },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const snapshot = await repository.getAttentionSnapshot("profile-a", "2026-08-22T12:00:00.000Z");
+    expect(snapshot.pendingDeliveries).toHaveLength(1);
+    expect(snapshot.pendingDeliveries[0]).toMatchObject({
+      deliveryId: "delivery-open",
+      threadId: "thread-1",
+      messageId: "message-1",
+      summary: "Two questions for you",
+      createdAt: "2026-08-22T08:00:00.000Z",
+    });
+    expect(snapshot.pendingDeliveries[0].items).toEqual([
+      { loopId: "loop-a", title: "Renew passport", kind: "commitment", status: "open", dueAt: "2026-09-01T09:00:00.000Z", responded: false },
+      { loopId: "loop-overdue", title: "Pay rent late fee", kind: "commitment", status: "open", dueAt: "2026-08-20T12:00:00.000Z", responded: false },
+    ]);
+    expect(snapshot.counts).toEqual({ openLoops: 2, overdueCommitments: 1 });
+    expect(snapshot.topOverdue).toEqual([
+      { loopId: "loop-overdue", title: "Pay rent late fee", dueAt: "2026-08-20T12:00:00.000Z", daysOverdue: 2 },
+    ]);
+    expect(calls).toContainEqual({ operation: "eq", table: "checkin_deliveries", field: "status", value: "delivered" });
+    expect(calls).toContainEqual({ operation: "is", table: "checkin_deliveries", field: "answered_at", value: null });
+    await expect(repository.getAttentionSnapshot("profile-zzz" as never, "2026-08-22T12:00:00.000Z")).rejects.toThrow(/profile scope/i);
+  });
+
+  it("caps top overdue commitments at five ordered most-overdue first", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    for (let index = 1; index <= 7; index += 1) {
+      rows.open_loops.push(
+        { id: `loop-late-${index}`, profile_id: "profile-a", title: `Late ${index}`, details: null, kind: "commitment", status: "open", due_at: `2026-08-${String(22 - index).padStart(2, "0")}T09:00:00.000Z`, cadence: null, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-01T10:00:00.000Z", updated_at: "2026-08-01T10:00:00.000Z", closed_at: null },
+      );
+    }
+    const repository = createAccountabilityRepository(database as never);
+    const snapshot = await repository.getAttentionSnapshot("profile-a", "2026-08-22T12:00:00.000Z");
+    expect(snapshot.counts.overdueCommitments).toBe(7);
+    expect(snapshot.topOverdue).toHaveLength(5);
+    expect(snapshot.topOverdue.map((entry) => entry.loopId)).toEqual(["loop-late-7", "loop-late-6", "loop-late-5", "loop-late-4", "loop-late-3"]);
+    expect(snapshot.topOverdue[0]).toMatchObject({ daysOverdue: 7 });
+  });
+
+  it("returns an empty attention snapshot when nothing needs attention", async () => {
+    const { database } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const snapshot = await repository.getAttentionSnapshot("profile-b", "2026-08-22T12:00:00.000Z");
+    expect(snapshot.pendingDeliveries).toEqual([]);
+    expect(snapshot.counts.openLoops).toBe(1);
+    expect(snapshot.counts.overdueCommitments).toBe(0);
+    expect(snapshot.topOverdue).toEqual([]);
+  });
+
+  it("closes the loop with a completed user event on done and marks the item answered", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-q", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-q", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-q", loop_id: "loop-a", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+      { delivery_id: "delivery-q", loop_id: "loop-second", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+    );
+    rows.open_loops.push(
+      { id: "loop-second", profile_id: "profile-a", title: "Book dentist", details: null, kind: "commitment", status: "open", due_at: "2026-08-22T10:00:00.000Z", cadence: null, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-18T10:00:00.000Z", updated_at: "2026-08-18T10:00:00.000Z", closed_at: null },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const result = await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-q", loopId: "loop-a", outcome: "done" }, "2026-08-22T12:00:00.000Z");
+    expect(result.alreadyResponded).toBe(false);
+    await expect(repository.getOpenLoop("profile-a", "loop-a")).resolves.toMatchObject({ status: "done" });
+    expect(rows.open_loops.find((row) => row.id === "loop-a")?.closed_at).not.toBeNull();
+    expect(rows.loop_events).toContainEqual(expect.objectContaining({ loop_id: "loop-a", kind: "completed", actor: "user" }));
+    expect(rows.checkin_delivery_items.find((row) => row.delivery_id === "delivery-q" && row.loop_id === "loop-a")).toMatchObject({ responded: true, response: "done" });
+    expect(rows.checkin_deliveries.find((row) => row.id === "delivery-q")).toMatchObject({ answered_at: null, status: "delivered" });
+    expect(calls.filter((call) => call.operation === "insert" && call.table === "scheduled_checks")).toHaveLength(0);
+  });
+
+  it("reschedules the loop one day out with a fresh check on later and answers the delivery once all items are done", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-q", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-q", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-q", loop_id: "loop-second", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+    );
+    rows.open_loops.push(
+      { id: "loop-second", profile_id: "profile-a", title: "Book dentist", details: null, kind: "commitment", status: "open", due_at: "2026-08-22T10:00:00.000Z", cadence: null, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-18T10:00:00.000Z", updated_at: "2026-08-18T10:00:00.000Z", closed_at: null },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const result = await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-q", loopId: "loop-second", outcome: "later" }, "2026-08-22T12:00:00.000Z");
+    expect(result.alreadyResponded).toBe(false);
+    await expect(repository.getOpenLoop("profile-a", "loop-second")).resolves.toMatchObject({ status: "open", dueAt: "2026-08-23T10:00:00.000Z" });
+    expect(rows.loop_events).toContainEqual(expect.objectContaining({ loop_id: "loop-second", kind: "rescheduled", actor: "user" }));
+    expect(calls.some((call) => call.operation === "insert" && call.table === "scheduled_checks")).toBe(true);
+    expect(rows.scheduled_checks.at(-1)).toMatchObject({ loop_id: "loop-second", status: "pending", due_at: "2026-08-23T10:00:00.000Z" });
+    expect(rows.checkin_deliveries.find((row) => row.id === "delivery-q")).toMatchObject({ status: "answered", answered_at: "2026-08-22T12:00:00.000Z" });
+  });
+
+  it("schedules later from now at the same time of day when the loop has no due date", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-22T12:00:00.000Z"));
+      const { database, rows } = fakeAccountabilityDatabase();
+      rows.checkin_deliveries.push(
+        { id: "delivery-nodue", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-n", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+      );
+      rows.checkin_delivery_items.push(
+        { delivery_id: "delivery-nodue", loop_id: "loop-nodue", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+      );
+      rows.open_loops.push(
+        { id: "loop-nodue", profile_id: "profile-a", title: "Sort garage", details: null, kind: "idea", status: "open", due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-18T10:00:00.000Z", updated_at: "2026-08-18T10:00:00.000Z", closed_at: null },
+      );
+      const repository = createAccountabilityRepository(database as never);
+      await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-nodue", loopId: "loop-nodue", outcome: "later" });
+      expect(rows.scheduled_checks.at(-1)).toMatchObject({ loop_id: "loop-nodue", due_at: "2026-08-23T12:00:00.000Z" });
+      expect(rows.open_loops.find((row) => row.id === "loop-nodue")?.due_at).toBe("2026-08-23T12:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the loop as terminal on drop", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-drop", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-d", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-drop", loop_id: "loop-a", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-drop", loopId: "loop-a", outcome: "drop" }, "2026-08-22T12:00:00.000Z");
+    await expect(repository.getOpenLoop("profile-a", "loop-a")).resolves.toMatchObject({ status: "dropped" });
+    expect(rows.open_loops.find((row) => row.id === "loop-a")?.closed_at).not.toBeNull();
+    expect(rows.loop_events).toContainEqual(expect.objectContaining({ loop_id: "loop-a", kind: "dropped", actor: "user" }));
+    expect(rows.checkin_deliveries.find((row) => row.id === "delivery-drop")).toMatchObject({ status: "answered" });
+  });
+
+  it("treats repeat responses to an answered item as successful no-ops", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-idem", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-i", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-idem", loop_id: "loop-a", profile_id: "profile-a", response: "done", responded: true, created_at: "2026-08-22T08:00:00.000Z" },
+    );
+    const eventsBefore = rows.loop_events.length;
+    const checksBefore = rows.scheduled_checks.length;
+    const repository = createAccountabilityRepository(database as never);
+    const result = await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-idem", loopId: "loop-a", outcome: "done" }, "2026-08-22T12:00:00.000Z");
+    expect(result.alreadyResponded).toBe(true);
+    expect(rows.loop_events).toHaveLength(eventsBefore);
+    expect(rows.scheduled_checks).toHaveLength(checksBefore);
+    await expect(repository.getOpenLoop("profile-a", "loop-a")).resolves.toMatchObject({ status: "open" });
+  });
+
+  it("rejects unknown delivery/loop pairs, cross-profile access, illegal transitions, and invalid outcomes", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-x", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-x", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-x", loop_id: "loop-done", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+      { delivery_id: "delivery-y", loop_id: "loop-a", profile_id: "profile-b", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "missing-loop", outcome: "done" })).rejects.toThrow(/no question/i);
+    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-missing", loopId: "loop-a", outcome: "done" })).rejects.toThrow(/no question/i);
+    await expect(repository.respondToDeliveryItem("profile-b", { deliveryId: "delivery-y", loopId: "loop-a", outcome: "done" })).rejects.toThrow(/no question|not found|profile scope/i);
+    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "loop-done", outcome: "done" })).rejects.toThrow(/illegal open loop transition/i);
+    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "loop-a", outcome: "someday" as never })).rejects.toThrow();
+    await expect(repository.respondToDeliveryItem("profile-zzz" as never, { deliveryId: "delivery-x", loopId: "loop-a", outcome: "done" })).rejects.toThrow(/profile scope/i);
   });
 });

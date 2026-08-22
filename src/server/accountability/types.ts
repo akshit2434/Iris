@@ -3,6 +3,7 @@ import { z } from "zod";
 export const OPEN_LOOP_KINDS = ["commitment", "routine", "idea"] as const;
 export const OPEN_LOOP_STATUSES = ["open", "paused", "done", "cancelled", "dropped"] as const;
 export const CADENCE_KINDS = ["daily", "weekly", "interval_days"] as const;
+export const RESPOND_OUTCOMES = ["done", "later", "drop"] as const;
 export const LOOP_EVENT_KINDS = [
   "created",
   "clarified",
@@ -22,9 +23,19 @@ export type OpenLoopKind = (typeof OPEN_LOOP_KINDS)[number];
 export type OpenLoopStatus = (typeof OPEN_LOOP_STATUSES)[number];
 export type CadenceKind = (typeof CADENCE_KINDS)[number];
 export type LoopEventKind = (typeof LOOP_EVENT_KINDS)[number];
+export type RespondOutcome = (typeof RESPOND_OUTCOMES)[number];
 
 export const openLoopKindSchema = z.enum(OPEN_LOOP_KINDS);
 export const openLoopStatusSchema = z.enum(OPEN_LOOP_STATUSES);
+export const respondOutcomeSchema = z.enum(RESPOND_OUTCOMES);
+
+export const respondInputSchema = z
+  .object({
+    deliveryId: z.string().min(1).max(200),
+    loopId: z.string().min(1).max(200),
+    outcome: respondOutcomeSchema,
+  })
+  .strict();
 
 export const cadenceSchema = z
   .object({

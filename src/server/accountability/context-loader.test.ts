@@ -58,6 +58,8 @@ function fakeRepository(
     insertLoopSuppression: vi.fn(async (_profileId, input) => ({ id: "suppression-1", profileId: "profile-a" as const, subject: input.subject, reason: input.reason ?? "r", createdAt: NOW, liftedAt: null })),
     liftLoopSuppression: vi.fn(async () => 1),
     listActiveSuppressions: vi.fn(async () => overrides.suppressions ?? []),
+    getAttentionSnapshot: vi.fn(async () => ({ pendingDeliveries: [], counts: { openLoops: rows.length, overdueCommitments: 0 }, topOverdue: [] })),
+    respondToDeliveryItem: vi.fn(async () => ({ alreadyResponded: false })),
   };
 }
 

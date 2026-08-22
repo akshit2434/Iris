@@ -83,6 +83,8 @@ function fakeRepository(overrides: Partial<AccountabilityRepository> = {}): Acco
     insertLoopSuppression: vi.fn(async (_profileId, input) => ({ id: "generated-suppression", profileId: "profile-a" as const, subject: input.subject, reason: input.reason ?? "User asked Iris to stop following up", createdAt: "2026-08-22T12:00:00.000Z", liftedAt: null })),
     liftLoopSuppression: vi.fn(async () => 1),
     listActiveSuppressions: vi.fn(async () => []),
+    getAttentionSnapshot: vi.fn(async () => ({ pendingDeliveries: [], counts: { openLoops: 1, overdueCommitments: 0 }, topOverdue: [] })),
+    respondToDeliveryItem: vi.fn(async () => ({ alreadyResponded: false })),
     ...overrides,
   };
 }
