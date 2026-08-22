@@ -180,7 +180,11 @@ export async function runAccountabilitySweep(input: {
 
   for (const profileId of profiles) {
     try {
-      await ensureDailyBriefingCheck({ profileId, nowIso: now, repository });
+      try {
+        await ensureDailyBriefingCheck({ profileId, nowIso: now, repository });
+      } catch (error) {
+        warnSweepFailure(profileId, "briefing_seed", error);
+      }
       const pairs = await repository.claimDueChecks(profileId, now, limitPerProfile);
       const suppressions = await repository.listActiveSuppressions(profileId);
       const suppressedSubjects = new Set(suppressions.map((suppression) => normalizeSuppressionSubject(suppression.subject)));

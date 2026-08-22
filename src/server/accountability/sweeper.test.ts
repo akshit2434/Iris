@@ -606,7 +606,20 @@ describe("accountability sweep", () => {
     expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-b", NOW);
   });
 
-  it("seeds a lazily created Morning briefing check due today at 08:00 when open loops exist", async () => {
+  it("still delivers regular nudges when briefing seeding fails", async () => {
+    const pair = makePair({ title: "Renew passport" }, { dueAt: "2026-08-22T08:00:00.000Z" });
+    const repository = fakeRepository([pair], {
+      listOpenLoops: vi.fn(async () => {
+        throw new Error("briefing seed exploded");
+      }),
+    });
+    const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, composer: async () => "nudge", threadLister: liveThreads });
+    expect(report.profiles[0]).toMatchObject({ selected: 1, delivered: 1, failed: 0 });
+    expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(repository.insertDelivery)).toHaveBeenCalledTimes(1);
+  });
+
+  it("seeds one lazily created Morning briefing check due today at 08:00 when open loops exist", async () => {
     const briefingLoop = makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null });
     const repository = fakeRepository([], {
       listOpenLoops: vi.fn(async () => [makeLoop({ title: "Buy groceries" })]),
