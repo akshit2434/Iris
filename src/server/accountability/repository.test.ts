@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createAccountabilityRepository, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
+import { createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
 function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
-  const calls: Array<{ operation: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
+  const calls: Array<{ operation: string; name?: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
   const insertedAt = "2026-08-22T12:00:00.000Z";
   const rows: Record<string, Record<string, unknown>[]> = {
     open_loops: [
@@ -11,21 +11,23 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
       { id: "loop-b", profile_id: "profile-b", title: "Book dentist", details: null, kind: "idea", status: "open", due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-18T10:00:00.000Z", updated_at: "2026-08-18T10:00:00.000Z", closed_at: null },
     ],
     scheduled_checks: [
-      { id: "check-due-late", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T10:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
-      { id: "check-due-early", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T08:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
-      { id: "check-future", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-23T09:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
-      { id: "check-other-loop", profile_id: "profile-a", loop_id: "loop-done", due_at: "2026-08-22T06:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
-      { id: "check-cancelled", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T07:00:00.000Z", status: "cancelled", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: "2026-08-21T15:00:00.000Z", cancel_reason: "superseded", created_at: "2026-08-21T10:00:00.000Z" },
-      { id: "check-b", profile_id: "profile-b", loop_id: "loop-b", due_at: "2026-08-22T05:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-due-late", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T10:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null, created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-due-early", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T08:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null, created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-future", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-23T09:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null, created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-other-loop", profile_id: "profile-a", loop_id: "loop-done", due_at: "2026-08-22T06:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null, created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-cancelled", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T07:00:00.000Z", status: "cancelled", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: "2026-08-21T15:00:00.000Z", cancel_reason: "superseded", claimed_at: null, created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-b", profile_id: "profile-b", loop_id: "loop-b", due_at: "2026-08-22T05:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null, created_at: "2026-08-21T10:00:00.000Z" },
       ...extraScheduledChecks,
     ],
     loop_events: [],
     checkin_deliveries: [],
+    loop_suppressions: [],
   };
   const defaults: Record<string, Record<string, unknown>> = {
     open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
-    scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null },
+    loop_suppressions: { lifted_at: null },
+    scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null },
     checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
   };
   let generated = 0;
@@ -34,6 +36,7 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
     const builder: Record<string, (...args: unknown[]) => unknown> = {};
     let filtered = [...rows[table]];
     let pendingPatch: Record<string, unknown> | null = null;
+    let orderSpecs: Array<{ field: string; dir: number }> = [];
     const applyPendingPatch = () => {
       if (!pendingPatch) return;
       const targets = new Set(filtered);
@@ -51,7 +54,21 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
     builder.eq = (field: unknown, value: unknown) => { calls.push({ operation: "eq", table, field: String(field), value }); filtered = filtered.filter((row) => at(row, String(field)) === value); return builder; };
     builder.in = (field: unknown, values: unknown) => { calls.push({ operation: "in", table, field: String(field), value: values }); filtered = filtered.filter((row) => (values as unknown[]).includes(at(row, String(field)))); return builder; };
     builder.lte = (field: unknown, value: unknown) => { calls.push({ operation: "lte", table, field: String(field), value }); filtered = filtered.filter((row) => String(at(row, String(field))) <= String(value)); return builder; };
-    builder.order = (field: unknown, options: unknown) => { calls.push({ operation: "order", table, field: String(field), value: options }); const direction = (options as { ascending?: boolean } | undefined)?.ascending === false ? -1 : 1; filtered = [...filtered].sort((left, right) => String(at(left, String(field))).localeCompare(String(at(right, String(field)))) * direction); return builder; };
+    builder.is = (field: unknown, value: unknown) => { calls.push({ operation: "is", table, field: String(field), value }); filtered = filtered.filter((row) => at(row, String(field)) === value); return builder; };
+    builder.lt = (field: unknown, value: unknown) => { calls.push({ operation: "lt", table, field: String(field), value }); filtered = filtered.filter((row) => String(at(row, String(field))) < String(value)); return builder; };
+    builder.or = (expr: unknown) => {
+      calls.push({ operation: "or", table, value: expr });
+      const clauses = String(expr).split(",").map((clause) => /^(.+)\.(is|lt)\.(.+)$/.exec(clause));
+      filtered = filtered.filter((row) => clauses.some((match) => {
+        if (!match) return false;
+        const [, field, op, raw] = match;
+        const cell = at(row, field);
+        if (op === "is") return cell === null || cell === undefined ? raw === "null" : false;
+        return String(cell) < raw;
+      }));
+      return builder;
+    };
+    builder.order = (field: unknown, options: unknown) => { calls.push({ operation: "order", table, field: String(field), value: options }); const direction = (options as { ascending?: boolean } | undefined)?.ascending === false ? -1 : 1; orderSpecs = [...orderSpecs, { field: String(field), dir: direction }]; filtered = [...filtered].sort((left, right) => { for (const spec of orderSpecs) { const compared = String(at(left, spec.field)).localeCompare(String(at(right, spec.field))); if (compared !== 0) return compared * spec.dir; } return 0; }); return builder; };
     builder.limit = (count: unknown) => { calls.push({ operation: "limit", table, value: count }); filtered = filtered.slice(0, Number(count)); return builder; };
     builder.maybeSingle = () => Promise.resolve({ data: filtered[0] ?? null, error: null });
     builder.single = () => Promise.resolve(filtered.length > 0 ? { data: filtered[0], error: null } : { data: null, error: { message: "no rows returned" } });
@@ -74,8 +91,30 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
   return {
     database: {
       from(table: string) { calls.push({ operation: "from", table }); return chain(table); },
+      async rpc(name: string, params: Record<string, unknown>) {
+        calls.push({ operation: "rpc", name, params });
+        if (name !== "claim_accountability_checks") return { data: [], error: null };
+        const matched = [...rows.scheduled_checks]
+          .filter((row) =>
+            at(row, "profile_id") === params.p_profile_id &&
+            at(row, "status") === "pending" &&
+            String(at(row, "due_at")) <= String(params.p_now) &&
+            (at(row, "claimed_at") === null || String(at(row, "claimed_at")) < String(params.p_stale_before)))
+          .sort((left, right) => String(at(left, "due_at")).localeCompare(String(at(right, "due_at"))) || String(at(left, "id")).localeCompare(String(at(right, "id"))))
+          .slice(0, Math.max(Number(params.p_limit ?? 8), 1));
+        const targets = new Set(matched);
+        const claimed: Record<string, unknown>[] = [];
+        rows.scheduled_checks = rows.scheduled_checks.map((row) => {
+          if (!targets.has(row)) return row;
+          const updated = { ...row, claimed_at: params.p_now };
+          claimed.push(updated);
+          return updated;
+        });
+        return { data: claimed.sort((left, right) => String(at(left, "due_at")).localeCompare(String(at(right, "due_at")))), error: null };
+      },
     },
     calls,
+    rows,
   };
 }
 
@@ -220,27 +259,120 @@ describe("accountability repository", () => {
       loopId: "loop-a",
       status: "pending",
       attemptCount: 3,
-      escalationTier: 0,
+      escalationTier: 3,
     });
-    expect(calls.find((call) => call.operation === "insert" && call.table === "scheduled_checks")?.params).toMatchObject({ attempt_count: 3 });
+    expect(calls.find((call) => call.operation === "insert" && call.table === "scheduled_checks")?.params).toMatchObject({ attempt_count: 3, escalation_tier: 3 });
+  });
+
+  it("carries a matching escalation tier into rescheduled checks so repeated asks stay varied", async () => {
+    const { database } = fakeAccountabilityDatabase([
+      { id: "check-prior-two", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-21T09:00:00.000Z", status: "delivered", attempt_count: 2, escalation_tier: 2, delivery_id: "delivery-old", delivered_at: "2026-08-21T09:30:00.000Z", cancelled_at: null, cancel_reason: null, created_at: "2026-08-20T10:00:00.000Z" },
+      { id: "check-prior-one", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-20T09:00:00.000Z", status: "cancelled", attempt_count: 1, escalation_tier: 1, delivery_id: "delivery-old", delivered_at: "2026-08-20T09:30:00.000Z", cancelled_at: "2026-08-20T15:00:00.000Z", cancel_reason: "superseded", created_at: "2026-08-19T10:00:00.000Z" },
+    ]);
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertScheduledCheck("profile-a", { loopId: "loop-a", dueAt: "2026-08-25T09:00:00.000Z" })).resolves.toMatchObject({
+      attemptCount: 2,
+      escalationTier: 2,
+    });
   });
 
   it("joins pending due checks with their parent loops regardless of loop status", async () => {
     const { database, calls } = fakeAccountabilityDatabase();
     const repository = createAccountabilityRepository(database as never);
-    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
+    await expect(repository.listDueChecksWithLoops("profile-a", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
       { check: { id: "check-other-loop" }, loop: { id: "loop-done", status: "done" } },
       { check: { id: "check-due-early" }, loop: { id: "loop-a", status: "open" } },
       { check: { id: "check-due-late" }, loop: { id: "loop-a", status: "open" } },
     ]);
     expect(calls.filter((call) => call.operation === "from")).toHaveLength(2);
     expect(calls).toContainEqual({ operation: "in", table: "open_loops", field: "id", value: ["loop-done", "loop-a"] });
-    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 1)).resolves.toMatchObject([
+    await expect(repository.listDueChecksWithLoops("profile-a", "2026-08-22T12:00:00.000Z", 1)).resolves.toMatchObject([
       { check: { id: "check-other-loop" }, loop: { id: "loop-done" } },
     ]);
-    await expect(repository.listDeliverableDueChecks("profile-b", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
+    await expect(repository.listDueChecksWithLoops("profile-b", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
       { check: { id: "check-b" }, loop: { id: "loop-b" } },
     ]);
+  });
+
+  it("claims due pending checks atomically and returns them joined with their loops", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const claimed = await repository.claimDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 2);
+    expect(claimed.map((pair) => pair.check.id)).toEqual(["check-other-loop", "check-due-early"]);
+    for (const pair of claimed) {
+      expect(pair.check.claimedAt).toBe("2026-08-22T12:00:00.000Z");
+      expect(pair.check.status).toBe("pending");
+      expect(pair.loop.id).toBe(pair.check.loopId);
+    }
+    const rpcCall = calls.find((call) => call.operation === "rpc");
+    expect(rpcCall).toMatchObject({
+      name: "claim_accountability_checks",
+      params: { p_profile_id: "profile-a", p_now: "2026-08-22T12:00:00.000Z", p_stale_before: "2026-08-22T11:50:00.000Z", p_limit: 2 },
+    });
+    await expect(repository.listDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 5)).resolves.toMatchObject([
+      { id: "check-other-loop" },
+      { id: "check-due-early" },
+      { id: "check-due-late" },
+    ]);
+    await expect(repository.claimDueChecks("profile-zzz" as never, "2026-08-22T12:00:00.000Z", 2)).rejects.toThrow(/profile scope/i);
+    await expect(repository.claimDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 0)).rejects.toThrow(/positive integers/i);
+    await expect(repository.claimDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 5)).resolves.toHaveLength(1);
+  });
+
+  it("reclaims stale claims only after the stale window while fresh claims stay invisible", async () => {
+    const { database, calls } = fakeAccountabilityDatabase([
+      { id: "check-fresh-claim", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T07:30:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: "2026-08-22T11:55:00.000Z", created_at: "2026-08-21T10:00:00.000Z" },
+      { id: "check-stale-claim", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T07:00:00.000Z", status: "pending", attempt_count: 1, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: "2026-08-22T11:40:00.000Z", created_at: "2026-08-21T10:00:00.000Z" },
+    ]);
+    const repository = createAccountabilityRepository(database as never);
+    const claimed = await repository.claimDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 10);
+    expect(claimed.map((pair) => pair.check.id)).toEqual(["check-other-loop", "check-stale-claim", "check-due-early", "check-due-late"]);
+    const stalePair = claimed.find((pair) => pair.check.id === "check-stale-claim");
+    expect(stalePair?.check.attemptCount).toBe(1);
+    expect(stalePair?.check.claimedAt).toBe("2026-08-22T12:00:00.000Z");
+    expect(claimed.some((pair) => pair.check.id === "check-fresh-claim")).toBe(false);
+    const staleRpc = calls.find((call) => call.operation === "rpc");
+    expect(String((staleRpc?.params as Record<string, unknown>).p_stale_before)).toBe("2026-08-22T11:50:00.000Z");
+  });
+
+  it("clears the claim when a check is marked delivered or cancelled", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await repository.claimDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 10);
+    const delivered = await repository.markCheckDelivered("profile-a", "check-due-early", {
+      deliveryId: "delivery-x",
+      deliveredAt: "2026-08-22T12:01:00.000Z",
+      attemptCount: 1,
+      escalationTier: 0,
+    });
+    expect(delivered.claimedAt).toBeNull();
+    const deliveredPatch = calls.filter((call) => call.operation === "update").at(-1)?.params as Record<string, unknown>;
+    expect(deliveredPatch).toMatchObject({ status: "delivered", claimed_at: null });
+    await repository.cancelPendingChecksForLoop("profile-a", "loop-a", "Loop completed by user");
+    const cancelPatch = calls.filter((call) => call.operation === "update").at(-1)?.params as Record<string, unknown>;
+    expect(cancelPatch).toMatchObject({ status: "cancelled", claimed_at: null });
+  });
+
+  it("cancels orphaned pending deliveries past the retry window with a sweep_retry marker", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-orphan", profile_id: "profile-a", thread_id: "thread-1", message_id: null, summary: null, status: "pending", created_at: "2026-08-22T11:00:00.000Z", delivered_at: null, answered_at: null },
+      { id: "delivery-fresh", profile_id: "profile-a", thread_id: "thread-1", message_id: null, summary: null, status: "pending", created_at: "2026-08-22T11:45:00.000Z", delivered_at: null, answered_at: null },
+      { id: "delivery-linked", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-1", summary: null, status: "pending", created_at: "2026-08-22T10:00:00.000Z", delivered_at: null, answered_at: null },
+      { id: "delivery-other-profile", profile_id: "profile-b", thread_id: "thread-2", message_id: null, summary: null, status: "pending", created_at: "2026-08-22T10:00:00.000Z", delivered_at: null, answered_at: null },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.cancelOrphanPendingDeliveries("profile-a", "2026-08-22T12:00:00.000Z")).resolves.toBe(1);
+    const update = calls.find((call) => call.operation === "update");
+    expect(update).toMatchObject({ table: "checkin_deliveries", params: { status: "cancelled", summary: "sweep_retry" } });
+    expect(calls).toContainEqual({ operation: "is", table: "checkin_deliveries", field: "message_id", value: null });
+    expect(calls).toContainEqual({ operation: "lt", table: "checkin_deliveries", field: "created_at", value: "2026-08-22T11:30:00.000Z" });
+    const byId = (id: string) => rows.checkin_deliveries.find((row) => row.id === id);
+    expect(byId("delivery-orphan")).toMatchObject({ status: "cancelled", summary: "sweep_retry" });
+    expect(byId("delivery-fresh")).toMatchObject({ status: "pending" });
+    expect(byId("delivery-linked")).toMatchObject({ status: "pending" });
+    expect(byId("delivery-other-profile")).toMatchObject({ status: "pending" });
+    await expect(repository.cancelOrphanPendingDeliveries("profile-zzz" as never, "2026-08-22T12:00:00.000Z")).rejects.toThrow(/profile scope/i);
   });
 
   it("transitions a pending check to delivered exactly once with delivery linkage and counters", async () => {
@@ -285,5 +417,77 @@ describe("accountability repository", () => {
     expect(completed).toMatchObject({ id: pending.id, status: "delivered", messageId: "message-9" });
     expect(completed.deliveredAt).not.toBeNull();
     await expect(repository.markDeliveryDelivered("profile-a", pending.id, { messageId: "message-10" })).rejects.toThrow(/pending/i);
+  });
+
+  it("normalizes suppression subjects and validates bounds before touching the database", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: " a " })).rejects.toThrow(/between 2 and 200/i);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: ` ${"x".repeat(201)} ` })).rejects.toThrow(/between 2 and 200/i);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: "sleep before midnight", reason: ` ${"y".repeat(501)} ` })).rejects.toThrow(/between 1 and 500/i);
+    expect(calls.filter((call) => call.table === "loop_suppressions")).toHaveLength(0);
+    const created = await repository.insertLoopSuppression("profile-a", { subject: "  Sleep   BEFORE   midnight  ", reason: " User asked to stop " });
+    expect(created).toMatchObject({
+      profileId: "profile-a",
+      subject: "sleep before midnight",
+      reason: "User asked to stop",
+      liftedAt: null,
+    });
+    expect(calls.find((call) => call.operation === "insert" && call.table === "loop_suppressions")?.params).toMatchObject({ subject: "sleep before midnight" });
+    expect(normalizeSuppressionSubject("\tSleep\tbefore\nmidnight ")).toBe("sleep before midnight");
+  });
+
+  it("updates the reason of the active row instead of duplicating on conflict", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const first = await repository.insertLoopSuppression("profile-a", { subject: "Sleep before midnight" });
+    const second = await repository.insertLoopSuppression("profile-a", { subject: "sleep   before midnight", reason: "Genuinely changed routine" });
+    expect(second.id).toBe(first.id);
+    expect(rows.loop_suppressions).toHaveLength(1);
+    expect(rows.loop_suppressions[0]).toMatchObject({ subject: "sleep before midnight", reason: "Genuinely changed routine", lifted_at: null });
+    const update = calls.filter((call) => call.operation === "update" && call.table === "loop_suppressions").at(-1);
+    expect(update?.params).toEqual({ reason: "Genuinely changed routine" });
+    expect(calls).toContainEqual({ operation: "is", table: "loop_suppressions", field: "lifted_at", value: null });
+  });
+
+  it("defaults the suppression reason when none is provided", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: "Dentist booking" })).resolves.toMatchObject({
+      subject: "dentist booking",
+      reason: "User asked Iris to stop following up",
+    });
+    expect(rows.loop_suppressions).toHaveLength(1);
+  });
+
+  it("lifts only active rows for the normalized subject and reports the count", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.liftLoopSuppression("profile-a", "never tracked")).resolves.toBe(0);
+    await repository.insertLoopSuppression("profile-a", { subject: "Sleep before midnight" });
+    await repository.insertLoopSuppression("profile-b", { subject: "Sleep before midnight" });
+    await expect(repository.liftLoopSuppression("profile-a", "  SLEEP   BEFORE MIDNIGHT ")).resolves.toBe(1);
+    expect(calls.find((call) => call.operation === "update" && call.table === "loop_suppressions")?.params).toMatchObject({ lifted_at: expect.any(String) });
+    expect(calls).toContainEqual({ operation: "eq", table: "loop_suppressions", field: "subject", value: "sleep before midnight" });
+    expect(calls).toContainEqual({ operation: "is", table: "loop_suppressions", field: "lifted_at", value: null });
+    await expect(repository.listActiveSuppressions("profile-a")).resolves.toHaveLength(0);
+    await expect(repository.listActiveSuppressions("profile-b")).resolves.toHaveLength(1);
+    await repository.insertLoopSuppression("profile-a", { subject: "Sleep before midnight", reason: "Asked again" });
+    await expect(repository.insertLoopSuppression("profile-zzz" as never, { subject: "anything at all" })).rejects.toThrow(/profile scope/i);
+    await expect(repository.liftLoopSuppression("profile-zzz" as never, "anything at all")).rejects.toThrow(/profile scope/i);
+  });
+
+  it("lists active suppressions newest first scoped to the profile", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    rows.loop_suppressions.push(
+      { id: "sup-old", profile_id: "profile-a", subject: "older topic", reason: "r", created_at: "2026-08-20T10:00:00.000Z", lifted_at: null },
+      { id: "sup-new", profile_id: "profile-a", subject: "newer topic", reason: "r", created_at: "2026-08-22T10:00:00.000Z", lifted_at: null },
+      { id: "sup-lifted", profile_id: "profile-a", subject: "lifted topic", reason: "r", created_at: "2026-08-21T10:00:00.000Z", lifted_at: "2026-08-21T11:00:00.000Z" },
+      { id: "sup-other", profile_id: "profile-b", subject: "other profile topic", reason: "r", created_at: "2026-08-22T11:00:00.000Z", lifted_at: null },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const subjects = (await repository.listActiveSuppressions("profile-a")).map((row) => row.subject);
+    expect(subjects).toEqual(["newer topic", "older topic"]);
+    await expect(repository.listActiveSuppressions("profile-zzz" as never)).rejects.toThrow(/profile scope/i);
   });
 });

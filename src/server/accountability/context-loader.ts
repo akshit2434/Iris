@@ -3,6 +3,7 @@ import "server-only";
 import type { ProfileId } from "@/lib/profiles";
 import {
   createProductionAccountabilityRepository,
+  normalizeSuppressionSubject,
   type AccountabilityRepository,
   type OpenLoopRow,
 } from "./repository";
@@ -70,8 +71,12 @@ export async function loadOpenLoopsForProfile(
 ): Promise<OpenLoopContextEntry[]> {
   const limit = Math.max(0, Math.min(options.limit ?? OPEN_LOOP_CONTEXT_MAX_ITEMS, OPEN_LOOP_CONTEXT_MAX_ITEMS));
   const rows = await repository.listOpenLoops(profileId, { statuses: [...ACTIVE_LOOP_STATUSES] });
+  if (rows.length === 0) return [];
+  const suppressions = await repository.listActiveSuppressions(profileId);
+  const suppressedSubjects = new Set(suppressions.map((suppression) => normalizeSuppressionSubject(suppression.subject)));
   return rows
     .filter(isActiveRow)
+    .filter((row) => !suppressedSubjects.has(normalizeSuppressionSubject(row.title)))
     .sort(compareForContext)
     .slice(0, limit)
     .map(toContextEntry);

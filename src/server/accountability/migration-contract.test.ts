@@ -7,6 +7,21 @@ const migration = readFileSync(
   "utf8",
 );
 
+const claimMigration = readFileSync(
+  new URL("../../../supabase/migrations/20260830000000_accountability_claim.sql", import.meta.url),
+  "utf8",
+);
+
+const claimRpcMigration = readFileSync(
+  new URL("../../../supabase/migrations/20260831000000_accountability_claim_rpc.sql", import.meta.url),
+  "utf8",
+);
+
+const deliveryLinksMigration = readFileSync(
+  new URL("../../../supabase/migrations/20260901000000_accountability_delivery_links.sql", import.meta.url),
+  "utf8",
+);
+
 describe("accountability foundation migration contract", () => {
   it("defines loop, ledger, schedule, delivery, and suppression layers", () => {
     for (const required of [
@@ -50,5 +65,68 @@ describe("accountability foundation migration contract", () => {
       "loop_suppressions",
     ];
     expect(tables.length).toBe(6);
+  });
+});
+
+describe("accountability claim migration contract", () => {
+  it("adds the claimed_at reservation column and the pending-claim index", () => {
+    for (const required of [
+      "alter table public.scheduled_checks add column if not exists claimed_at timestamptz",
+      "create index if not exists scheduled_checks_claim_idx",
+      "on public.scheduled_checks(profile_id, due_at)",
+      "where status = 'pending'",
+    ]) expect(claimMigration.toLowerCase()).toContain(required.toLowerCase());
+  });
+
+  it("keeps claimed rows inside the existing pending status shape", () => {
+    const foundation = migration.toLowerCase();
+    expect(foundation).toContain("status = 'pending' and delivered_at is null and cancelled_at is null");
+  });
+});
+
+describe("accountability claim rpc migration contract", () => {
+  it("claims through a security definer function locked to service_role", () => {
+    for (const required of [
+      "claim_accountability_checks",
+      "returns setof public.scheduled_checks",
+      "security definer",
+      "revoke all on function",
+      "grant execute on function",
+      "from public, anon, authenticated",
+      "to service_role",
+    ]) expect(claimRpcMigration.toLowerCase()).toContain(required.toLowerCase());
+  });
+
+  it("keeps the reservation predicate, ownership guard, and deterministic ordering explicit", () => {
+    for (const required of [
+      "raise exception 'Unknown profile scope'",
+      "sc.profile_id = p_profile_id",
+      "sc.status = 'pending'",
+      "sc.due_at <= p_now",
+      "(sc.claimed_at is null or sc.claimed_at < p_stale_before)",
+      "order by sc.due_at asc, sc.id asc",
+      "for update skip locked",
+      "limit greatest(coalesce(p_limit, 8), 1)",
+      "returning sc.*",
+    ]) expect(claimRpcMigration.toLowerCase()).toContain(required.toLowerCase());
+  });
+});
+
+describe("accountability delivery links migration contract", () => {
+  it("replaces the impossible composite set-null links with single-column deletable ones", () => {
+    for (const required of [
+      "drop constraint if exists scheduled_checks_delivery_fkey",
+      "drop constraint if exists checkin_deliveries_message_fkey",
+      "foreign key (delivery_id) references public.checkin_deliveries(id) on delete set null",
+      "foreign key (message_id) references public.messages(id) on delete set null",
+      "scheduled_checks_delivery_idx",
+      "on public.scheduled_checks(delivery_id) where delivery_id is not null",
+    ]) expect(deliveryLinksMigration.toLowerCase()).toContain(required.toLowerCase());
+  });
+
+  it("keeps profile scoping a query-layer responsibility, not a link constraint", () => {
+    expect(deliveryLinksMigration.toLowerCase()).toContain("profile scoping remains enforced at the query layer");
+    expect(deliveryLinksMigration.toLowerCase()).not.toContain("foreign key (message_id, profile_id, thread_id)");
+    expect(deliveryLinksMigration.toLowerCase()).not.toContain("foreign key (delivery_id, profile_id)");
   });
 });

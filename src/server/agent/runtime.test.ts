@@ -297,6 +297,7 @@ describe("internal tools", () => {
       "loop_update",
       "loop_close",
       "schedule_check",
+      "loop_suppress",
     ]);
   });
 
@@ -315,20 +316,21 @@ describe("internal tools", () => {
       "loop_update",
       "loop_close",
       "schedule_check",
+      "loop_suppress",
     ]);
   });
 
   it("hides only the tool family disabled by profile controls", () => {
     expect(createInternalTools(undefined, undefined, undefined, undefined, { savedMemoryEnabled: false }).map((internalTool) => internalTool.name)).toEqual([
       "thread_overview", "search_messages", "read_messages",
-      "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check",
+      "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress",
     ]);
     expect(getInternalToolSchemaDescriptors({ referenceHistoryEnabled: false }).map((schema) => schema.name)).toEqual([
       "thread_overview", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive",
-      "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check",
+      "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress",
     ]);
     expect(getInternalToolSchemaDescriptors({ savedMemoryEnabled: false, referenceHistoryEnabled: false }).map((schema) => schema.name)).toEqual([
-      "thread_overview", "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check",
+      "thread_overview", "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress",
     ]);
   });
 
@@ -348,7 +350,7 @@ describe("internal tools", () => {
 
   it("serializes tool schemas for token accounting without invoking a tool", () => {
     const schemas = getInternalToolSchemaDescriptors();
-    expect(schemas).toHaveLength(13);
+    expect(schemas).toHaveLength(14);
     expect(schemas.find((schema) => schema.name === "search_messages")).toMatchObject({
       name: "search_messages",
       parameters: { type: "object" },

@@ -6,6 +6,7 @@ import {
   createLoop,
   listLoops,
   scheduleCheck,
+  suppressLoop,
   updateLoop,
 } from "@/server/accountability/tools";
 import type { AccountabilityRepository, LoopEventActor, OpenLoopRow } from "@/server/accountability/repository";
@@ -48,7 +49,15 @@ function makeLoop(overrides: Partial<OpenLoopRow> = {}): OpenLoopRow {
   };
 }
 
-const WRITE_METHODS = ["insertOpenLoop", "updateOpenLoopStatus", "insertLoopEvent", "insertScheduledCheck", "cancelPendingChecksForLoop"] as const;
+const WRITE_METHODS = [
+  "insertOpenLoop",
+  "updateOpenLoopStatus",
+  "insertLoopEvent",
+  "insertScheduledCheck",
+  "cancelPendingChecksForLoop",
+  "insertLoopSuppression",
+  "liftLoopSuppression",
+] as const;
 
 function expectNoWrites(repo: AccountabilityRepository) {
   for (const method of WRITE_METHODS) expect(repo[method]).not.toHaveBeenCalled();
@@ -62,20 +71,26 @@ function fakeRepository(overrides: Partial<AccountabilityRepository> = {}): Acco
     updateOpenLoopStatus: vi.fn(async (_profileId, _loopId, _expectedUpdatedAt, patch) => makeLoop({ status: patch.event === "completed" ? "done" : patch.event === "paused" ? "paused" : "open" })),
     insertLoopEvent: vi.fn(async (_profileId, input) => ({ id: "generated-event", profileId: "profile-a" as const, loopId: input.loopId, kind: input.kind, detail: input.detail ?? null, actor: (input.actor ?? "agent") as LoopEventActor, sourceThreadId: input.sourceThreadId ?? null, sourceMessageId: input.sourceMessageId ?? null, agentRunId: input.agentRunId ?? null, metadata: input.metadata ?? {}, createdAt: "2026-08-22T12:00:00.000Z" })),
     listDueChecks: vi.fn(async () => []),
-    listDeliverableDueChecks: vi.fn(async () => []),
-    markCheckDelivered: vi.fn(async (_profileId, checkId) => ({ id: checkId, profileId: "profile-a" as const, loopId: LOOP_ID, dueAt: DUE_AT, status: "delivered" as const, attemptCount: 1, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, createdAt: "2026-08-22T12:00:00.000Z" })),
-    insertScheduledCheck: vi.fn(async (_profileId, input) => ({ id: "generated-check", profileId: "profile-a" as const, loopId: input.loopId, dueAt: input.dueAt, status: "pending" as const, attemptCount: 0, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, createdAt: "2026-08-22T12:00:00.000Z" })),
+    listDueChecksWithLoops: vi.fn(async () => []),
+    claimDueChecks: vi.fn(async () => []),
+    releaseClaims: vi.fn(async () => undefined),
+    cancelOrphanPendingDeliveries: vi.fn(async () => 0),
+    markCheckDelivered: vi.fn(async (_profileId, checkId) => ({ id: checkId, profileId: "profile-a" as const, loopId: LOOP_ID, dueAt: DUE_AT, status: "delivered" as const, attemptCount: 1, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: "2026-08-22T12:00:00.000Z" })),
+    insertScheduledCheck: vi.fn(async (_profileId, input) => ({ id: "generated-check", profileId: "profile-a" as const, loopId: input.loopId, dueAt: input.dueAt, status: "pending" as const, attemptCount: 0, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: "2026-08-22T12:00:00.000Z" })),
     cancelPendingChecksForLoop: vi.fn(async () => 2),
     insertDelivery: vi.fn(async (_profileId, input) => ({ id: "generated-delivery", profileId: "profile-a" as const, threadId: input.threadId, messageId: null, summary: null, status: "pending" as const, createdAt: "2026-08-22T12:00:00.000Z", deliveredAt: null, answeredAt: null })),
     markDeliveryDelivered: vi.fn(async (_profileId, deliveryId, input) => ({ id: deliveryId, profileId: "profile-a" as const, threadId: ids.thread, messageId: input.messageId, summary: null, status: "delivered" as const, createdAt: "2026-08-22T12:00:00.000Z", deliveredAt: "2026-08-22T12:00:00.000Z", answeredAt: null })),
+    insertLoopSuppression: vi.fn(async (_profileId, input) => ({ id: "generated-suppression", profileId: "profile-a" as const, subject: input.subject, reason: input.reason ?? "User asked Iris to stop following up", createdAt: "2026-08-22T12:00:00.000Z", liftedAt: null })),
+    liftLoopSuppression: vi.fn(async () => 1),
+    listActiveSuppressions: vi.fn(async () => []),
     ...overrides,
   };
 }
 
 describe("accountability tools", () => {
-  it("exposes exactly five tools in fixed order", () => {
+  it("exposes exactly six tools in fixed order", () => {
     const tools = createAccountabilityTools(fakeRepository());
-    expect(tools.map((tool) => tool.name)).toEqual(["loop_list", "loop_create", "loop_update", "loop_close", "schedule_check"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress"]);
   });
 
   it("gates unconfirmed creations behind clarification without writing", async () => {
@@ -126,6 +141,19 @@ describe("accountability tools", () => {
       loops: [{ id: LOOP_ID, title: "Renew passport", kind: "commitment", status: "open", dueAt: DUE_AT, updatedAt: "2026-08-20T10:00:00.000Z" }],
     });
     expect(repo.listOpenLoops).toHaveBeenCalledWith("profile-a");
+  });
+
+  it("hides suppressed subjects from loop_list while direct id operations still reach the loop", async () => {
+    const repo = fakeRepository({
+      listActiveSuppressions: vi.fn(async () => [
+        { id: "sup-1", profileId: "profile-a" as const, subject: "  renew   PASSPORT ", reason: "r", createdAt: "2026-08-22T12:00:00.000Z", liftedAt: null },
+      ]),
+    });
+    const listed = await listLoops(context, {}, repo);
+    expect(listed).toEqual({ kind: "loop_list", loops: [] });
+    const closed = await closeLoop(context, { loopId: LOOP_ID }, repo);
+    expect(closed).toEqual({ kind: "loop_close", status: "closed", loopId: LOOP_ID, cancelledChecks: 2 });
+    expect(repo.updateOpenLoopStatus).toHaveBeenCalledWith("profile-a", LOOP_ID, "2026-08-20T10:00:00.000Z", { event: "completed" });
   });
 
   it("closes a completed loop with its expected revision and cancels pending checks", async () => {
@@ -282,5 +310,74 @@ describe("accountability tools", () => {
     await expect(scheduleCheck(context, { loopId: LOOP_ID, dueAt: NEW_DUE_AT }, repo)).resolves.toMatchObject({ kind: "schedule_check", status: "error" });
     await expect(updateLoop(context, { loopId: LOOP_ID, action: "resume" }, repo)).resolves.toMatchObject({ kind: "loop_update", status: "error" });
     expectNoWrites(repo);
+  });
+
+  it("gates unconfirmed suppressions behind exception-versus-routine clarification without writing", async () => {
+    const repo = fakeRepository();
+    const result = await suppressLoop(context, { subject: "Sleep before midnight", confirm: false }, repo);
+    expect(result).toMatchObject({ kind: "loop_suppress", status: "needs_confirmation" });
+    if (result.status !== "needs_confirmation") throw new Error("expected needs_confirmation");
+    for (const theme of [/exception/i, /routine/i, /never mention/i]) expect(result.message).toMatch(theme);
+    expectNoWrites(repo);
+  });
+
+  it("suppresses a confirmed subject and appends suppressed events to matching open loops only", async () => {
+    const allLoops = [
+      makeLoop(),
+      makeLoop({ id: "loop-paused", title: "RENEW   Passport", status: "paused" }),
+      makeLoop({ id: "loop-done", title: "Renew passport", status: "done" }),
+      makeLoop({ id: "loop-other", title: "Buy groceries" }),
+    ];
+    const repo = fakeRepository({
+      listOpenLoops: vi.fn(async (_profileId, filter) => (filter?.statuses ? allLoops.filter((row) => (filter.statuses as string[]).includes(row.status)) : allLoops)),
+    });
+    const result = await suppressLoop(context, { subject: "  renew \n passport ", confirm: true }, repo);
+    expect(result).toEqual({ kind: "loop_suppress", status: "suppressed", subject: "renew passport" });
+    expect(repo.insertLoopSuppression).toHaveBeenCalledWith("profile-a", { subject: "renew passport" });
+    expect(repo.insertLoopEvent).toHaveBeenCalledTimes(2);
+    for (const loopId of [LOOP_ID, "loop-paused"]) {
+      expect(repo.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({
+        loopId,
+        kind: "suppressed",
+        detail: "renew passport",
+        actor: "agent",
+        sourceThreadId: ids.thread,
+        sourceMessageId: ids.message,
+        agentRunId: ids.run,
+      }));
+    }
+  });
+
+  it("persists a suppression even when no loop currently matches the subject", async () => {
+    const repo = fakeRepository();
+    const result = await suppressLoop(context, { subject: "Sleep before midnight", confirm: true }, repo);
+    expect(result).toMatchObject({ kind: "loop_suppress", status: "suppressed", subject: "sleep before midnight" });
+    expect(repo.insertLoopSuppression).toHaveBeenCalledTimes(1);
+    expect(repo.insertLoopEvent).not.toHaveBeenCalled();
+  });
+
+  it("lifts an active suppression without requiring the clarify gate", async () => {
+    const repo = fakeRepository({ liftLoopSuppression: vi.fn(async () => 2) });
+    const result = await suppressLoop(context, { subject: " Sleep Before Midnight ", confirm: false, lift: true }, repo);
+    expect(result).toEqual({ kind: "loop_suppress", status: "lifted", subject: "sleep before midnight", liftedCount: 2 });
+    expect(repo.liftLoopSuppression).toHaveBeenCalledWith("profile-a", "sleep before midnight");
+    expect(repo.insertLoopSuppression).not.toHaveBeenCalled();
+    expect(repo.insertLoopEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid suppression subjects and repository failures as error outputs", async () => {
+    const repo = fakeRepository();
+    await expect(suppressLoop(context, { subject: " a ", confirm: true }, repo)).resolves.toMatchObject({ kind: "loop_suppress", status: "error" });
+    expectNoWrites(repo);
+    const failing = fakeRepository({
+      insertLoopSuppression: vi.fn(async () => {
+        throw new Error("database unavailable");
+      }),
+    });
+    await expect(suppressLoop(context, { subject: "Sleep before midnight", confirm: true }, failing)).resolves.toMatchObject({
+      kind: "loop_suppress",
+      status: "error",
+      message: "database unavailable",
+    });
   });
 });
