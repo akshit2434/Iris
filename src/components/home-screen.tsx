@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Thread } from "@/lib/types";
 import { FluidReveal } from "@/components/fluid-reveal";
+import { HomeAttentionCard } from "@/components/home-attention-card";
 import { IrisMark } from "@/components/iris-mark";
 import { ProfilePicker } from "@/components/profile-picker";
 import { ThreadList } from "@/components/thread-list";
@@ -57,6 +58,8 @@ export function HomeScreen() {
         <h1 className="max-w-2xl text-[clamp(2.55rem,9.5vw,5.8rem)] font-medium leading-[.98] tracking-[-.06em] text-slate-950">What’s on your mind, {profileLabels[profileId]}?</h1>
         <IrisMark size={52} priority />
       </div>
+
+      <HomeAttentionCard />
 
       <button data-reveal type="button" onClick={createChat} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
         <span className="flex-1 text-base font-medium text-slate-500 sm:text-lg">Start a conversation</span>
