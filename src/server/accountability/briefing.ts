@@ -1,15 +1,12 @@
 const MS_PER_DAY = 86_400_000;
 const MS_PER_HOUR = 3_600_000;
 
-export const BRIEFING_LOOP_TITLE = "Morning briefing";
+export { BRIEFING_LOOP_TITLE, isBriefingLoopTitle } from "@/lib/briefing";
+
 export const BRIEFING_HOUR_UTC = 8;
 
 export type BriefingCheckRef = { status: string; dueAt: string; deliveredAt: string | null };
 export type BriefingDayWindow = { startMs: number; endMs: number };
-
-export function isBriefingLoopTitle(title: string): boolean {
-  return title === BRIEFING_LOOP_TITLE;
-}
 
 function utcDayStartMs(nowMs: number): number {
   return Math.floor(nowMs / MS_PER_DAY) * MS_PER_DAY;

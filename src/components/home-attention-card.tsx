@@ -50,10 +50,11 @@ export function HomeAttentionCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ deliveryId: question.deliveryId, loopId: question.loopId, outcome }),
       });
+      const body = (await response.json().catch(() => null)) as { error?: string; warning?: string } | null;
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
         throw new Error(body?.error ?? "Could not save that answer.");
       }
+      if (body?.warning) setActionError(body.warning);
       await loadSnapshot();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not save that answer.");
@@ -84,25 +85,29 @@ export function HomeAttentionCard() {
         {view.questions.map((question) => (
           <li key={question.key} className="rounded-[20px] bg-white/45 p-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,.72)]">
             <p className="truncate text-sm font-medium text-slate-800">{question.title}</p>
-            <div className="mt-2 flex gap-2">
-              {CHECKIN_QUICK_ACTIONS.map(({ outcome, label }) => (
-                <button
-                  key={outcome}
-                  type="button"
-                  disabled={respondingKey !== null}
-                  onClick={() => void respond(question, outcome)}
-                  className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${actionButtonClass(outcome)}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            {question.informational ? (
+              <p className="mt-1 text-xs font-medium text-slate-500">No response needed</p>
+            ) : (
+              <div className="mt-2 flex gap-2">
+                {CHECKIN_QUICK_ACTIONS.map(({ outcome, label }) => (
+                  <button
+                    key={outcome}
+                    type="button"
+                    disabled={respondingKey !== null}
+                    onClick={() => void respond(question, outcome)}
+                    className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${actionButtonClass(outcome)}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </li>
         ))}
       </ul>
       {actionError ? <p className="mt-3 px-1 text-xs font-medium text-red-600">{actionError}</p> : null}
       {view.extraCount > 0 ? (
-        <Link href={buildAttentionHref()} className="mt-3 inline-flex min-h-11 items-center px-1 text-sm font-semibold text-[#4978ed]">
+        <Link href={buildAttentionHref(snapshot ?? undefined)} className="mt-3 inline-flex min-h-11 items-center px-1 text-sm font-semibold text-[#4978ed]">
           +{view.extraCount} more
         </Link>
       ) : null}

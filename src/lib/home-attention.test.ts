@@ -39,9 +39,9 @@ describe("home attention view model", () => {
     const view = buildHomeAttentionView(snapshot());
     expect(view).toEqual({
       questions: [
-        { key: "delivery-1:loop-a", deliveryId: "delivery-1", loopId: "loop-a", title: "Renew passport" },
-        { key: "delivery-1:loop-b", deliveryId: "delivery-1", loopId: "loop-b", title: "Buy groceries" },
-        { key: "delivery-1:loop-c", deliveryId: "delivery-1", loopId: "loop-c", title: "Call plumber" },
+        { key: "delivery-1:loop-a", deliveryId: "delivery-1", loopId: "loop-a", title: "Renew passport", informational: false },
+        { key: "delivery-1:loop-b", deliveryId: "delivery-1", loopId: "loop-b", title: "Buy groceries", informational: false },
+        { key: "delivery-1:loop-c", deliveryId: "delivery-1", loopId: "loop-c", title: "Call plumber", informational: false },
       ],
       extraCount: 1,
       overdueCount: 2,
@@ -84,6 +84,14 @@ describe("accountability surfaces mount points", () => {
     const libSource = readFileSync(new URL("./checkin-actions.ts", import.meta.url), "utf8");
     for (const label of ["Done", "Not today", "Drop it"]) {
       expect(libSource).toContain(`"${label}"`);
+    }
+  });
+
+  it("renders informational briefing questions without quick-action buttons on both surfaces", () => {
+    const cardSource = readFileSync(new URL("../components/home-attention-card.tsx", import.meta.url), "utf8");
+    const chatSource = readFileSync(new URL("../components/chat-screen.tsx", import.meta.url), "utf8");
+    for (const source of [cardSource, chatSource]) {
+      expect(source).toContain("question.informational ?");
     }
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEFING_LOOP_TITLE } from "@/server/accountability/briefing";
-import { createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
+import { BriefingItemNotActionableError, createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
 function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
   const calls: Array<{ operation: string; name?: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
@@ -531,8 +531,8 @@ describe("accountability repository", () => {
       createdAt: "2026-08-22T08:00:00.000Z",
     });
     expect(snapshot.pendingDeliveries[0].items).toEqual([
-      { loopId: "loop-a", title: "Renew passport", kind: "commitment", status: "open", dueAt: "2026-09-01T09:00:00.000Z", responded: false },
-      { loopId: "loop-overdue", title: "Pay rent late fee", kind: "commitment", status: "open", dueAt: "2026-08-20T12:00:00.000Z", responded: false },
+      { loopId: "loop-a", title: "Renew passport", kind: "commitment", status: "open", dueAt: "2026-09-01T09:00:00.000Z", responded: false, informational: false },
+      { loopId: "loop-overdue", title: "Pay rent late fee", kind: "commitment", status: "open", dueAt: "2026-08-20T12:00:00.000Z", responded: false, informational: false },
     ]);
     expect(snapshot.counts).toEqual({ openLoops: 2, overdueCommitments: 1 });
     expect(snapshot.topOverdue).toEqual([
@@ -557,7 +557,7 @@ describe("accountability repository", () => {
     const repository = createAccountabilityRepository(database as never);
     const snapshot = await repository.getAttentionSnapshot("profile-a", "2026-08-22T12:00:00.000Z");
     expect(snapshot.counts).toEqual({ openLoops: 1, overdueCommitments: 0 });
-    expect(snapshot.pendingDeliveries[0]?.items).toMatchObject([{ loopId: "loop-briefing", title: BRIEFING_LOOP_TITLE }]);
+    expect(snapshot.pendingDeliveries[0]?.items).toMatchObject([{ loopId: "loop-briefing", title: BRIEFING_LOOP_TITLE, informational: true }]);
   });
 
   it("caps top overdue commitments at five ordered most-overdue first", async () => {
@@ -686,6 +686,25 @@ describe("accountability repository", () => {
     await expect(repository.getOpenLoop("profile-a", "loop-a")).resolves.toMatchObject({ status: "open" });
   });
 
+  it("claims each item exactly once so a double submit cannot re-run the transition", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    rows.checkin_deliveries.push(
+      { id: "delivery-double", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-d", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-double", loop_id: "loop-a", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const first = await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-double", loopId: "loop-a", outcome: "done" }, "2026-08-22T12:00:00.000Z");
+    expect(first).toEqual({ alreadyResponded: false });
+    const second = await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-double", loopId: "loop-a", outcome: "drop" }, "2026-08-22T12:05:00.000Z");
+    expect(second).toEqual({ alreadyResponded: true });
+    expect(rows.checkin_delivery_items[0]).toMatchObject({ responded: true, response: "done" });
+    expect(rows.loop_events).toHaveLength(1);
+    expect(rows.open_loops.find((row) => row.id === "loop-a")).toMatchObject({ status: "done" });
+    expect(calls).toContainEqual({ operation: "eq", table: "checkin_delivery_items", field: "responded", value: false });
+  });
+
   it("rejects unknown delivery/loop pairs, cross-profile access, illegal transitions, and invalid outcomes", async () => {
     const { database, rows } = fakeAccountabilityDatabase();
     rows.checkin_deliveries.push(
@@ -696,11 +715,61 @@ describe("accountability repository", () => {
       { delivery_id: "delivery-y", loop_id: "loop-a", profile_id: "profile-b", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
     );
     const repository = createAccountabilityRepository(database as never);
-    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "missing-loop", outcome: "done" })).rejects.toThrow(/no question/i);
+    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "missing-loop", outcome: "done" })).rejects.toThrow(/not found/i);
     await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-missing", loopId: "loop-a", outcome: "done" })).rejects.toThrow(/no question/i);
     await expect(repository.respondToDeliveryItem("profile-b", { deliveryId: "delivery-y", loopId: "loop-a", outcome: "done" })).rejects.toThrow(/no question|not found|profile scope/i);
-    await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "loop-done", outcome: "done" })).rejects.toThrow(/illegal open loop transition/i);
     await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-x", loopId: "loop-a", outcome: "someday" as never })).rejects.toThrow();
     await expect(repository.respondToDeliveryItem("profile-zzz" as never, { deliveryId: "delivery-x", loopId: "loop-a", outcome: "done" })).rejects.toThrow(/profile scope/i);
+  });
+
+  it("rejects outcomes against briefing items without claiming them", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { database, calls, rows } = fakeAccountabilityDatabase();
+      rows.open_loops.push(
+        { id: "loop-briefing", profile_id: "profile-a", title: BRIEFING_LOOP_TITLE, details: null, kind: "routine", status: "open", due_at: null, cadence: { kind: "daily" }, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-21T10:00:00.000Z", updated_at: "2026-08-21T10:00:00.000Z", closed_at: null },
+      );
+      rows.checkin_deliveries.push(
+        { id: "delivery-briefing", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-b", summary: "Morning briefing", status: "delivered", created_at: "2026-08-22T08:05:00.000Z", delivered_at: "2026-08-22T08:06:00.000Z", answered_at: null },
+      );
+      rows.checkin_delivery_items.push(
+        { delivery_id: "delivery-briefing", loop_id: "loop-briefing", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:05:00.000Z" },
+      );
+      const repository = createAccountabilityRepository(database as never);
+      await expect(repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-briefing", loopId: "loop-briefing", outcome: "done" }, "2026-08-22T12:00:00.000Z"))
+        .rejects.toBeInstanceOf(BriefingItemNotActionableError);
+      expect(rows.checkin_delivery_items[0]).toMatchObject({ responded: false, response: null });
+      expect(rows.loop_events).toHaveLength(0);
+      expect(calls.some((call) => call.operation === "update" && call.table === "checkin_delivery_items")).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("returns success with a warning instead of failing when the transition throws after claiming", async () => {
+    const warnCalls: string[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((line: unknown) => { warnCalls.push(String(line)); });
+    try {
+      const { database, calls, rows } = fakeAccountabilityDatabase();
+      rows.checkin_deliveries.push(
+        { id: "delivery-closed", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-c", summary: null, status: "delivered", created_at: "2026-08-22T08:00:00.000Z", delivered_at: "2026-08-22T08:01:00.000Z", answered_at: null },
+      );
+      rows.checkin_delivery_items.push(
+        { delivery_id: "delivery-closed", loop_id: "loop-done", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:00:00.000Z" },
+      );
+      const repository = createAccountabilityRepository(database as never);
+      const result = await repository.respondToDeliveryItem("profile-a", { deliveryId: "delivery-closed", loopId: "loop-done", outcome: "done" }, "2026-08-22T12:00:00.000Z");
+      expect(result.alreadyResponded).toBe(false);
+      expect(result.warning).toMatch(/out of sync/i);
+      expect(rows.checkin_delivery_items[0]).toMatchObject({ responded: true, response: "done" });
+      expect(rows.loop_events).toHaveLength(0);
+      expect(warnCalls).toHaveLength(1);
+      expect(JSON.parse(warnCalls[0])).toMatchObject({ scope: "accountability-respond", stage: "post-claim-transition", profileId: "profile-a", loopId: "loop-done", error: /illegal open loop transition/i });
+      expect(calls).toContainEqual({ operation: "eq", table: "checkin_delivery_items", field: "responded", value: false });
+      expect(rows.checkin_deliveries.find((row) => row.id === "delivery-closed")).toMatchObject({ status: "answered" });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

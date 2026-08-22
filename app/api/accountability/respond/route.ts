@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { StaleOpenLoopRevisionError, createProductionAccountabilityRepository } from "@/server/accountability/repository";
+import { BriefingItemNotActionableError, createProductionAccountabilityRepository } from "@/server/accountability/repository";
 import { respondInputSchema } from "@/server/accountability/types";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
@@ -19,8 +19,8 @@ export async function POST(request: Request) {
       if (/has no question|was not found/.test(message)) {
         return NextResponse.json({ error: "That check-in question no longer exists." }, { status: 404 });
       }
-      if (error instanceof StaleOpenLoopRevisionError || /illegal open loop transition/i.test(message)) {
-        return NextResponse.json({ error: "That loop already changed. Reload and try again." }, { status: 409 });
+      if (error instanceof BriefingItemNotActionableError) {
+        return NextResponse.json({ error: "Morning briefings are informational and don't need a response." }, { status: 409 });
       }
       throw error;
     }

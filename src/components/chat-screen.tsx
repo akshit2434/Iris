@@ -492,10 +492,11 @@ export function ChatScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ deliveryId: question.deliveryId, loopId: question.loopId, outcome }),
       });
+      const body = (await response.json().catch(() => null)) as { error?: string; warning?: string } | null;
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
         throw new Error(body?.error ?? "Could not record your answer.");
       }
+      if (body?.warning) setCheckinError(body.warning);
       await loadCheckinQuestions();
     } catch (answerError) {
       setCheckinError(answerError instanceof Error ? answerError.message : "Could not record your answer.");
@@ -600,19 +601,23 @@ function MessageBubble({ message, active, live, terminal, toolActivities, onReve
             {checkinActions.questions.map((question) => (
               <div key={question.key} className="rounded-[18px] bg-white/48 p-2.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,.72)]">
                 <p className="truncate text-xs font-semibold text-slate-700">{question.title}</p>
-                <div className="mt-1.5 flex gap-2">
-                  {CHECKIN_QUICK_ACTIONS.map(({ outcome, label }) => (
-                    <button
-                      key={outcome}
-                      type="button"
-                      disabled={checkinActions.busyKey !== null}
-                      onClick={() => void checkinActions.onAnswer(question, outcome)}
-                      className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${outcome === "done" ? "bg-[#111827] text-white shadow-[0_8px_18px_rgba(17,24,39,.16)]" : "bg-white/65 text-slate-600 shadow-[inset_0_0_0_1px_rgba(255,255,255,.78)]"}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {question.informational ? (
+                  <p className="mt-1 text-[11px] font-medium text-slate-500">No response needed</p>
+                ) : (
+                  <div className="mt-1.5 flex gap-2">
+                    {CHECKIN_QUICK_ACTIONS.map(({ outcome, label }) => (
+                      <button
+                        key={outcome}
+                        type="button"
+                        disabled={checkinActions.busyKey !== null}
+                        onClick={() => void checkinActions.onAnswer(question, outcome)}
+                        className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${outcome === "done" ? "bg-[#111827] text-white shadow-[0_8px_18px_rgba(17,24,39,.16)]" : "bg-white/65 text-slate-600 shadow-[inset_0_0_0_1px_rgba(255,255,255,.78)]"}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
             {checkinActions.error ? <p className="px-1 text-[11px] font-medium text-red-500">{checkinActions.error}</p> : null}

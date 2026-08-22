@@ -113,6 +113,7 @@ export type AttentionDeliveryItem = {
   status: OpenLoopStatus;
   dueAt: string | null;
   responded: boolean;
+  informational: boolean;
 };
 
 export type AttentionDelivery = {
@@ -140,12 +141,20 @@ export type RespondToDeliveryItemInput = {
 
 export type RespondToDeliveryItemResult = {
   alreadyResponded: boolean;
+  warning?: string;
 };
 
 export class StaleOpenLoopRevisionError extends Error {
   constructor(message = "Open loop was modified concurrently; reload it and retry.") {
     super(message);
     this.name = "StaleOpenLoopRevisionError";
+  }
+}
+
+export class BriefingItemNotActionableError extends Error {
+  constructor(message = "Morning briefings are informational and cannot be answered.") {
+    super(message);
+    this.name = "BriefingItemNotActionableError";
   }
 }
 
@@ -732,7 +741,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           createdAt: delivery.createdAt,
           items: rows.flatMap((row) => {
             const loop = loopsById.get(row.loop_id);
-            return loop ? [{ loopId: row.loop_id, title: loop.title, kind: loop.kind, status: loop.status, dueAt: loop.dueAt, responded: row.responded }] : [];
+            return loop ? [{ loopId: row.loop_id, title: loop.title, kind: loop.kind, status: loop.status, dueAt: loop.dueAt, responded: row.responded, informational: isBriefingLoopTitle(loop.title) }] : [];
           }),
         });
       }
@@ -755,44 +764,64 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
     async respondToDeliveryItem(profileId, input, nowIso = new Date().toISOString()) {
       assertProfileId(profileId);
       const validated = respondInputSchema.parse(input);
-      const { data: itemRow, error: itemError } = await client
-        .from("checkin_delivery_items")
-        .select(CHECKIN_DELIVERY_ITEM_COLUMNS)
-        .eq("delivery_id", validated.deliveryId)
-        .eq("loop_id", validated.loopId)
-        .eq("profile_id", profileId)
-        .maybeSingle();
-      if (itemError) throw itemError;
-      if (!itemRow) throw new Error(`Check-in delivery "${validated.deliveryId}" has no question for loop "${validated.loopId}".`);
-      if (itemRow.responded) return { alreadyResponded: true };
       const current = await fetchOpenLoop(client, profileId, validated.loopId);
       if (!current) throw new Error(`Open loop "${validated.loopId}" was not found.`);
-      const outcomeEvent = OUTCOME_EVENTS[validated.outcome];
-      let nextDueAt: string | undefined;
-      if (validated.outcome === "later") {
-        const referenceMs = current.dueAt !== null && !Number.isNaN(Date.parse(current.dueAt)) ? Date.parse(current.dueAt) : Date.parse(nowIso);
-        nextDueAt = new Date(referenceMs + MS_PER_DAY).toISOString();
-      }
-      await repository.updateOpenLoopStatus(profileId, validated.loopId, current.updatedAt, {
-        event: outcomeEvent,
-        ...(nextDueAt === undefined ? {} : { dueAt: nextDueAt }),
-      });
-      await repository.insertLoopEvent(profileId, {
-        loopId: validated.loopId,
-        kind: outcomeEvent,
-        actor: "user",
-        metadata: { source: "checkin_quick_action", outcome: validated.outcome },
-      });
-      if (nextDueAt !== undefined) {
-        await repository.insertScheduledCheck(profileId, { loopId: validated.loopId, dueAt: nextDueAt });
-      }
-      const { error: itemUpdateError } = await client
+      if (isBriefingLoopTitle(current.title)) throw new BriefingItemNotActionableError();
+      const { data: claimedRows, error: claimError } = await client
         .from("checkin_delivery_items")
         .update({ responded: true, response: validated.outcome })
         .eq("delivery_id", validated.deliveryId)
         .eq("loop_id", validated.loopId)
-        .eq("profile_id", profileId);
-      if (itemUpdateError) throw itemUpdateError;
+        .eq("profile_id", profileId)
+        .eq("responded", false)
+        .select(CHECKIN_DELIVERY_ITEM_COLUMNS);
+      if (claimError) throw claimError;
+      if ((claimedRows ?? []).length === 0) {
+        const { data: existingRows, error: existingError } = await client
+          .from("checkin_delivery_items")
+          .select(CHECKIN_DELIVERY_ITEM_COLUMNS)
+          .eq("delivery_id", validated.deliveryId)
+          .eq("loop_id", validated.loopId)
+          .eq("profile_id", profileId)
+          .maybeSingle();
+        if (existingError) throw existingError;
+        if (!existingRows) throw new Error(`Check-in delivery "${validated.deliveryId}" has no question for loop "${validated.loopId}".`);
+        return { alreadyResponded: true };
+      }
+      let warning: string | undefined;
+      try {
+        const outcomeEvent = OUTCOME_EVENTS[validated.outcome];
+        let nextDueAt: string | undefined;
+        if (validated.outcome === "later") {
+          const referenceMs = current.dueAt !== null && !Number.isNaN(Date.parse(current.dueAt)) ? Date.parse(current.dueAt) : Date.parse(nowIso);
+          nextDueAt = new Date(referenceMs + MS_PER_DAY).toISOString();
+        }
+        await repository.updateOpenLoopStatus(profileId, validated.loopId, current.updatedAt, {
+          event: outcomeEvent,
+          ...(nextDueAt === undefined ? {} : { dueAt: nextDueAt }),
+        });
+        await repository.insertLoopEvent(profileId, {
+          loopId: validated.loopId,
+          kind: outcomeEvent,
+          actor: "user",
+          metadata: { source: "checkin_quick_action", outcome: validated.outcome },
+        });
+        if (nextDueAt !== undefined) {
+          await repository.insertScheduledCheck(profileId, { loopId: validated.loopId, dueAt: nextDueAt });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({
+          scope: "accountability-respond",
+          stage: "post-claim-transition",
+          profileId,
+          deliveryId: validated.deliveryId,
+          loopId: validated.loopId,
+          outcome: validated.outcome,
+          error: message,
+        }));
+        warning = "Your answer was saved, but this follow-up may be out of sync.";
+      }
       const remaining = await fetchDeliveryItems(client, profileId, [validated.deliveryId]);
       if (!remaining.some((row) => !row.responded)) {
         const { error: answerError } = await client
@@ -802,7 +831,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           .eq("profile_id", profileId);
         if (answerError) throw answerError;
       }
-      return { alreadyResponded: false };
+      return warning === undefined ? { alreadyResponded: false } : { alreadyResponded: false, warning };
     },
   };
   return repository;

@@ -1,3 +1,5 @@
+import { isBriefingLoopTitle } from "@/lib/briefing";
+
 export type CheckinOutcome = "done" | "later" | "drop";
 
 export const CHECKIN_QUICK_ACTIONS: ReadonlyArray<{ outcome: CheckinOutcome; label: string }> = [
@@ -6,18 +8,11 @@ export const CHECKIN_QUICK_ACTIONS: ReadonlyArray<{ outcome: CheckinOutcome; lab
   { outcome: "drop", label: "Drop it" },
 ];
 
-const PREFILL_TEXTS: Record<CheckinOutcome, (title: string) => string> = {
-  done: (title) => `Done — ${title}`,
-  later: (title) => `Not today — ${title} will stay open`,
-  drop: (title) => `Please drop ${title} from my follow-ups`,
-};
-
-export function buildPrefill(outcome: CheckinOutcome, item: { title: string }): string {
-  return PREFILL_TEXTS[outcome](item.title);
-}
-
-export function buildAttentionHref(): string {
-  return "/chat/new";
+export function buildAttentionHref(snapshot?: Pick<AttentionSnapshotPayload, "pendingDeliveries">): string {
+  const latest = [...(snapshot?.pendingDeliveries ?? [])]
+    .filter((delivery) => delivery.items.some((item) => !item.responded))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  return latest ? `/chat/${latest.threadId}` : "/chat/new";
 }
 
 export type AttentionItemPayload = {
@@ -27,6 +22,7 @@ export type AttentionItemPayload = {
   status: string;
   dueAt: string | null;
   responded: boolean;
+  informational?: boolean;
 };
 
 export type AttentionDeliveryPayload = {
@@ -44,17 +40,27 @@ export type AttentionSnapshotPayload = {
   topOverdue: Array<{ loopId: string; title: string; dueAt: string; daysOverdue: number }>;
 };
 
-export type PendingQuestion = { key: string; deliveryId: string; loopId: string; title: string };
+export type PendingQuestion = { key: string; deliveryId: string; loopId: string; title: string; informational: boolean };
 
 function questionKey(deliveryId: string, loopId: string): string {
   return `${deliveryId}:${loopId}`;
+}
+
+function isInformationalItem(item: AttentionItemPayload): boolean {
+  return item.informational ?? isBriefingLoopTitle(item.title);
 }
 
 export function flattenPendingQuestions(snapshot: AttentionSnapshotPayload): PendingQuestion[] {
   return snapshot.pendingDeliveries.flatMap((delivery) =>
     delivery.items
       .filter((item) => !item.responded)
-      .map((item) => ({ key: questionKey(delivery.deliveryId, item.loopId), deliveryId: delivery.deliveryId, loopId: item.loopId, title: item.title })),
+      .map((item) => ({
+        key: questionKey(delivery.deliveryId, item.loopId),
+        deliveryId: delivery.deliveryId,
+        loopId: item.loopId,
+        title: item.title,
+        informational: isInformationalItem(item),
+      })),
   );
 }
 
