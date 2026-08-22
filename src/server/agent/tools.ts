@@ -224,7 +224,19 @@ async function runValidatedSearch(
       action,
     } : null;
   }));
-  const ranked = rankHistoricalResults(validatedResults.filter((result): result is NonNullable<typeof result> => result !== null), query);
+  const meaningful = validatedResults.filter((result): result is NonNullable<typeof result> => {
+    if (!result) return false;
+    // A hit that merely parrots the question back (earlier failed probes,
+    // echoed queries) is noise, not evidence: every query token present and
+    // phrased as a question.
+    const lowerExcerpt = result.excerpt.toLowerCase();
+    const contentTokens = new Set(lowerExcerpt.split(/\s+/));
+    const queryTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const echoesQuestion = result.excerpt.includes("?") || /^(what|where|when|who|why|how|wht|wats|whats)\b/.test(lowerExcerpt);
+    const coversQuery = queryTokens.length > 0 && queryTokens.every((token) => contentTokens.has(token));
+    return !(echoesQuestion && coversQuery);
+  });
+  const ranked = rankHistoricalResults(meaningful, query);
   return { results: ranked, summary: () => ({}) };
 }
 

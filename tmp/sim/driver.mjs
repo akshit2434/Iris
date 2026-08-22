@@ -184,7 +184,7 @@ async function forcedue() {
 const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === "turn") {
   const [threadKey, day, time, tag, ...textParts] = rest;
-  await turn({ threadKey, content: textParts.join(" "), day: day ? Number(day) : null, time: time || null, tag: tag === "-" ? "" : tag });
+  await turn({ threadKey, content: textParts.join(" "), day: day && day !== "-" ? Number(day) : null, time: time && time !== "-" ? time : null, tag: tag === "-" ? "" : tag });
 } else if (cmd === "sweep") await sweep();
 else if (cmd === "consolidate") await consolidate();
 else if (cmd === "forcedue") await forcedue();
