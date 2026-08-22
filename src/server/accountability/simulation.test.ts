@@ -462,6 +462,8 @@ describe("accountability multi-week simulation", () => {
     world.advanceTo(at(1, "08:30"));
     await sweepProfileA(world);
     expect(world.composerRequests).toHaveLength(0);
+    const firstAsk = world.messages.at(-1)?.content ?? "";
+    expect(firstAsk).toMatch(/Quick check/i);
 
     world.advanceTo(at(1, "12:00"));
     await world.agent.scheduleFollowUp(dentistId, at(2, "08:00"));
@@ -469,6 +471,9 @@ describe("accountability multi-week simulation", () => {
     world.advanceTo(at(2, "08:30"));
     await sweepProfileA(world);
     expect(world.composerRequests).toHaveLength(0);
+    const secondAsk = world.messages.at(-1)?.content ?? "";
+    expect(secondAsk).toMatch(/Gentle reminder/i);
+    expect(secondAsk).not.toBe(firstAsk);
 
     world.advanceTo(at(2, "12:00"));
     await world.agent.scheduleFollowUp(dentistId, at(4, "08:00"));

@@ -482,6 +482,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           due_at: input.dueAt,
           delivery_id: input.deliveryId ?? null,
           attempt_count: carriedAttempts,
+          escalation_tier: Math.min(carriedAttempts, 5),
         })
         .select(SCHEDULED_CHECK_COLUMNS)
         .single();
