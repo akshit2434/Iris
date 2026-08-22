@@ -58,7 +58,7 @@ Each phase leaves Iris usable and fully checked (`npm run check:secrets && npm r
 | --- | --- | --- |
 | A ✅ | Schema, migrations, contract tests, domain types, state machine, repository (#4) | `feature/accountability-schema` |
 | B ✅ | Agent tools (`loop_create/update/close/list`, `schedule_check`) with clarification gate (#5) | `feature/accountability-tools` |
-| C | Context injection of relevant open loops; post-turn detection seams carved out of the messages route | `feature/accountability-detection` |
+| C ✅ | Open-loop context injection + clarify/close prompt guidance (#6); detection backstop moved to Phase E reconciliation | `feature/accountability-detection` |
 | D | Sweep endpoint (worker-auth guarded), lazy sweep hook, delivery tiers, merge logic | `feature/accountability-sweep` |
 | E | Soft-close reconciliation, escalation guidance, suppressions wiring | `feature/accountability-followup` |
 | F | Home attention card, quick actions, briefing v0 | `feature/accountability-surfaces` |
