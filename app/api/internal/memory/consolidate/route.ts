@@ -9,6 +9,10 @@ import { resolveReferenceHistoryTelemetryScope } from "@/server/memory/reference
 
 export const runtime = "nodejs";
 
+// Slow local/free models routinely need more than the default 25s per worker
+// sweep; operators can raise this without touching code.
+const WORKER_MAX_DURATION_MS = Math.max(5_000, Number(process.env.MEMORY_WORKER_MAX_DURATION_MS ?? "") || 25_000);
+
 export function hasWorkerSecret(request: Request) {
   const supplied = request.headers.get("x-iris-worker-secret") ?? "";
   return compareWorkerSecret(supplied);
@@ -21,15 +25,15 @@ export async function POST(request: Request) {
     const limit = typeof body.limit === "number" && Number.isInteger(body.limit) ? Math.min(Math.max(body.limit, 1), 3) : 1;
     const workerId = `http-${crypto.randomUUID()}`;
     const consolidation = process.env.MEMORY_CONSOLIDATION_ENABLED !== "false"
-      ? await createProductionConsolidationWorker({ limit, maxDurationMs: 25_000, workerId })
+      ? await createProductionConsolidationWorker({ limit, maxDurationMs: WORKER_MAX_DURATION_MS, workerId })
       : { claimed: 0, completed: 0, skipped: 0, failed: 0, conflicts: 0, indexingErrors: 0 };
     const continuity = process.env.MEMORY_CONTINUITY_ENABLED === "true"
-      ? await createProductionThreadContinuityWorker({ limit, maxDurationMs: 25_000, workerId })
+      ? await createProductionThreadContinuityWorker({ limit, maxDurationMs: WORKER_MAX_DURATION_MS, workerId })
       : { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
     const referenceHistory = process.env.MEMORY_REFERENCE_HISTORY_ENABLED !== "false"
       ? await createProductionReferenceHistoryWorker({
           limit,
-          maxDurationMs: 25_000,
+          maxDurationMs: WORKER_MAX_DURATION_MS,
           workerId,
           observabilityFactory: async ({ job }) => {
             // A profile-wide job may synthesize messages from many threads.

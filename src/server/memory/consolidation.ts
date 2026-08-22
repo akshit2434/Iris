@@ -153,7 +153,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number) { return new Pro
 
 export async function processConsolidationJobs(options: ConsolidationWorkerOptions): Promise<ConsolidationWorkerResult> {
   const workerId = (options.workerId ?? `iris-worker-${crypto.randomUUID()}`).slice(0, 120);
-  const startedAt = Date.now(); const maxDurationMs = Math.max(1_000, Math.min(options.maxDurationMs ?? 25_000, 60_000));
+  const startedAt = Date.now(); const maxDurationMs = Math.max(1_000, Math.min(options.maxDurationMs ?? 25_000, 300_000));
   const targetedJob = options.job && options.governanceStore.claimConsolidationJob
     ? await options.governanceStore.claimConsolidationJob(options.job.profileId, options.job.id, workerId, options.leaseSeconds ?? 120)
     : null;
@@ -192,6 +192,7 @@ export async function processConsolidationJobs(options: ConsolidationWorkerOptio
       await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: conflicts === proposals.length ? "skipped" : "completed", errorCode: conflicts > 0 ? "PROPOSAL_CONFLICT" : null, errorMessage: conflicts > 0 ? `${conflicts} proposal(s) conflicted.` : null });
       if (conflicts === proposals.length) result.skipped += 1; else result.completed += 1;
     } catch (error) {
+      console.error(JSON.stringify({ scope: "memory-consolidation", stage: "job_failed", jobId: job.id, threadId: job.threadId, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }));
       const retry = job.attempts < 3;
       await options.governanceStore.finishConsolidationJob({ profileId: job.profileId, jobId: job.id, workerId, status: "failed", errorCode: "CONSOLIDATION_FAILED", errorMessage: safeWorkerError(error), retry, availableAt: retry ? new Date(Date.now() + Math.min(300_000, 30_000 * 2 ** Math.max(0, job.attempts - 1))).toISOString() : null }); result.failed += 1;
     }

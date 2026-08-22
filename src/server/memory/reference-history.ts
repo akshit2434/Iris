@@ -466,8 +466,18 @@ export function hashReferenceHistoryInput(input: {
 function parseModelJson(value: unknown) {
   const content = value && typeof value === "object" && "content" in value ? (value as { content?: unknown }).content : value;
   if (typeof content !== "string") return null;
-  const normalized = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  try { return JSON.parse(normalized) as unknown; } catch { return null; }
+  const trimmed = content.trim();
+  const candidates = [trimmed];
+  for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) candidates.push(match[1]);
+  for (const [open, close] of [["{", "}"], ["[", "]"]] as const) {
+    const first = trimmed.indexOf(open);
+    const last = trimmed.lastIndexOf(close);
+    if (first >= 0 && last > first) candidates.push(trimmed.slice(first, last + 1));
+  }
+  for (const candidate of candidates) {
+    try { return JSON.parse(candidate.trim()) as unknown; } catch { continue; }
+  }
+  return null;
 }
 
 export function createInjectedReferenceHistorySynthesizer(producer: (input: ReferenceHistorySynthesisInput) => Promise<unknown>): ReferenceHistorySynthesizer {
@@ -508,8 +518,18 @@ ${input.job.rebuildFromRaw ? "Rebuild from all supplied raw evidence; ignore the
       if (handle) await observability?.failModelCall({ handle, error });
       throw error;
     }
-    const parsed = parseModelJson(response);
-    if (!parsed) throw new Error("Reference history synthesizer returned invalid JSON.");
+    const contentOf = (r: unknown) => (r && typeof r === "object" && "content" in r ? String((r as { content?: unknown }).content ?? "") : String(r ?? ""));
+    let attemptResponse = response;
+    if (contentOf(attemptResponse).trim().length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      attemptResponse = await model.invoke(prompt, { temperature: 0.1, maxTokens: 4_000 } as never);
+    }
+    const parsed = parseModelJson(attemptResponse);
+    if (!parsed) {
+      const raw = response && typeof response === "object" && "content" in response ? String((response as { content?: unknown }).content ?? "") : String(response ?? "");
+      console.error(JSON.stringify({ scope: "reference-history-worker", stage: "synthesis_parse_failed", rawLength: raw.length, rawHead: raw.slice(0, 200) }));
+      throw new Error("Reference history synthesizer returned invalid JSON.");
+    }
     return parsed;
   });
 }
@@ -573,7 +593,7 @@ function latestVersionMismatch(job: ReferenceHistoryJob, latest: ReferenceHistor
 export async function processReferenceHistoryJobs(options: ReferenceHistoryWorkerOptions): Promise<ReferenceHistoryWorkerResult> {
   const result: ReferenceHistoryWorkerResult = { claimed: 0, completed: 0, conflicts: 0, skipped: 0, failed: 0, invalidated: 0 };
   const workerId = (options.workerId ?? `iris-reference-${crypto.randomUUID()}`).slice(0, 120);
-  const maxDurationMs = Math.max(1_000, Math.min(options.maxDurationMs ?? 25_000, 60_000));
+  const maxDurationMs = Math.max(1_000, Math.min(options.maxDurationMs ?? 25_000, 300_000));
   const startedAt = Date.now();
   const jobs = await options.store.claimReferenceHistoryJobs(workerId, options.limit ?? 1, options.leaseSeconds ?? 120);
   result.claimed = jobs.length;
@@ -664,6 +684,7 @@ export async function processReferenceHistoryJobs(options: ReferenceHistoryWorke
         result.completed += 1;
       }
     } catch (error) {
+      console.error(JSON.stringify({ scope: "reference-history-worker", stage: "job_failed", jobId: job.id, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }));
       const retry = job.attempts < 3;
       await options.store.finishReferenceHistoryJob({ profileId: job.profileId, jobId: job.id, workerId, status: "failed", errorCode: "REFERENCE_HISTORY_FAILED", errorMessage: safeWorkerError(error), retry, availableAt: retry ? new Date(Date.now() + 30_000).toISOString() : null });
       result.failed += 1;
