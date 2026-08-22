@@ -23,6 +23,7 @@ export type SweepProfileReport = {
   delivered: number;
   mergedBatches: number;
   cancelledStale: number;
+  cancelledOrphans: number;
   skippedNoThread: number;
   failed: number;
 };
@@ -92,7 +93,7 @@ export async function runAccountabilitySweep(input: {
 
   for (const profileId of profiles) {
     try {
-      const pairs = await repository.listDeliverableDueChecks(profileId, now, limitPerProfile);
+      const pairs = await repository.claimDueChecks(profileId, now, limitPerProfile);
       const deliverable = pairs.filter((pair) => pair.loop.status === "open");
       const staleLoopIds = [
         ...new Set(pairs.filter((pair) => pair.loop.status !== "open").map((pair) => pair.check.loopId)),
@@ -101,6 +102,7 @@ export async function runAccountabilitySweep(input: {
       for (const loopId of staleLoopIds) {
         cancelledStale += await repository.cancelPendingChecksForLoop(profileId, loopId, STALE_PARENT_CANCEL_REASON);
       }
+      const cancelledOrphans = await repository.cancelOrphanPendingDeliveries(profileId, now);
 
       let delivered = 0;
       let mergedBatches = 0;
@@ -112,6 +114,7 @@ export async function runAccountabilitySweep(input: {
         const threadId = threads[0]?.id ?? null;
         if (!threadId) {
           skippedNoThread = deliverable.length;
+          await repository.releaseClaims(profileId, deliverable.map((pair) => pair.check.id));
         } else {
           for (const batch of chunkIntoBatches(deliverable, SWEEP_MAX_BATCH)) {
             try {
@@ -156,6 +159,7 @@ export async function runAccountabilitySweep(input: {
         delivered,
         mergedBatches,
         cancelledStale,
+        cancelledOrphans,
         skippedNoThread,
         failed,
       });
@@ -166,6 +170,7 @@ export async function runAccountabilitySweep(input: {
         delivered: 0,
         mergedBatches: 0,
         cancelledStale: 0,
+        cancelledOrphans: 0,
         skippedNoThread: 0,
         failed: 1,
       });

@@ -4,6 +4,7 @@ import {
   composeCheckinMessage,
   composeTier0Text,
   createProductionCheckinComposer,
+  truncateAtWordBoundary,
 } from "@/server/accountability/composer";
 import {
   DEFAULT_LIMIT_PER_PROFILE,
@@ -64,6 +65,7 @@ function makeCheck(loopId: string, dueAt: string, overrides: Partial<ScheduledCh
     deliveredAt: null,
     cancelledAt: null,
     cancelReason: null,
+    claimedAt: null,
     createdAt: "2026-08-15T10:00:00.000Z",
     ...overrides,
   };
@@ -82,10 +84,13 @@ const REPOSITORY_METHODS = [
   "updateOpenLoopStatus",
   "insertLoopEvent",
   "listDueChecks",
-  "listDeliverableDueChecks",
+  "listDueChecksWithLoops",
+  "claimDueChecks",
+  "releaseClaims",
   "markCheckDelivered",
   "insertScheduledCheck",
   "cancelPendingChecksForLoop",
+  "cancelOrphanPendingDeliveries",
   "insertDelivery",
   "markDeliveryDelivered",
 ] as const;
@@ -111,13 +116,16 @@ function fakeRepository(pairs: DeliverableDueCheck[] = [], overrides: Partial<Ac
       createdAt: NOW,
     })),
     listDueChecks: vi.fn(async () => []),
-    listDeliverableDueChecks: vi.fn(async () => pairs),
+    listDueChecksWithLoops: vi.fn(async () => pairs),
+    claimDueChecks: vi.fn(async () => pairs),
+    releaseClaims: vi.fn(async () => undefined),
     markCheckDelivered: vi.fn(async (_profileId: string, checkId: string, input: { attemptCount: number; escalationTier: number }) => {
       const found = pairs.find((pair) => pair.check.id === checkId);
-      return (found?.check ?? makeCheck(checkId, NOW));
+      return { ...(found?.check ?? makeCheck(checkId, NOW)), attemptCount: input.attemptCount, escalationTier: input.escalationTier };
     }),
     insertScheduledCheck: vi.fn(async () => makeCheck("generated-check", NOW)),
     cancelPendingChecksForLoop: vi.fn(async () => 0),
+    cancelOrphanPendingDeliveries: vi.fn(async () => 0),
     insertDelivery: vi.fn(async (_profileId: string, _input: { threadId: string }) => {
       deliverySequence += 1;
       return {
@@ -201,6 +209,15 @@ describe("check-in composer", () => {
       else process.env[envKey] = previousKey;
     }
   });
+
+  it("truncates oversized generated text at the last word boundary", () => {
+    expect(truncateAtWordBoundary("short nudge", 100)).toBe("short nudge");
+    expect(truncateAtWordBoundary("alpha beta gamma delta", 15)).toBe("alpha beta");
+    expect(truncateAtWordBoundary("first line\nsecond line", 14)).toBe("first line");
+    const noSpaces = "x".repeat(50);
+    expect(truncateAtWordBoundary(noSpaces, 20)).toBe("x".repeat(20));
+    expect(truncateAtWordBoundary("ends with space ", 12)).toBe("ends with");
+  });
 });
 
 describe("accountability sweep", () => {
@@ -217,7 +234,7 @@ describe("accountability sweep", () => {
       threadLister: liveThreads,
     });
     expect(report.profiles).toHaveLength(1);
-    expect(report.profiles[0]).toEqual({ profileId: "profile-a", selected: 2, delivered: 2, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(report.profiles[0]).toEqual({ profileId: "profile-a", selected: 2, delivered: 2, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
     expect(report.at).toBe(NOW);
     expect(repository.insertDelivery).toHaveBeenCalledTimes(1);
     expect(repository.insertDelivery).toHaveBeenCalledWith("profile-a", { threadId: THREAD_ID });
@@ -332,7 +349,7 @@ describe("accountability sweep", () => {
       return { id: `message-${writes.length}` };
     });
     const repository = fakeRepository(pairs, {
-      listDeliverableDueChecks: vi.fn(async (profileId) => (profileId === "profile-a" ? pairs : [])),
+      claimDueChecks: vi.fn(async (profileId: string) => (profileId === "profile-a" ? pairs : [])),
     });
     const report = await runAccountabilitySweep({
       now: NOW,
@@ -342,7 +359,7 @@ describe("accountability sweep", () => {
       threadLister: liveThreads,
     });
     expect(report.profiles[0]).toMatchObject({ selected: 5, delivered: 1, mergedBatches: 1, failed: 1, skippedNoThread: 0 });
-    expect(report.profiles[1]).toEqual({ profileId: "profile-b", selected: 0, delivered: 0, mergedBatches: 0, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(report.profiles[1]).toEqual({ profileId: "profile-b", selected: 0, delivered: 0, mergedBatches: 0, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
     expect(repository.insertDelivery).toHaveBeenCalledTimes(2);
     expect(repository.markDeliveryDelivered).toHaveBeenCalledTimes(1);
     expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
@@ -368,8 +385,8 @@ describe("accountability sweep", () => {
     const repository = fakeRepository([]);
     const report = await runAccountabilitySweep({ now: NOW, repository, threadLister: liveThreads });
     expect(DEFAULT_LIMIT_PER_PROFILE).toBe(8);
-    expect(repository.listDeliverableDueChecks).toHaveBeenCalledWith("profile-a", NOW, 8);
-    expect(repository.listDeliverableDueChecks).toHaveBeenCalledWith("profile-b", NOW, 8);
+    expect(repository.claimDueChecks).toHaveBeenCalledWith("profile-a", NOW, 8);
+    expect(repository.claimDueChecks).toHaveBeenCalledWith("profile-b", NOW, 8);
     expect(report.profiles.map((entry) => entry.profileId)).toEqual(["profile-a", "profile-b"]);
     expect(report.profiles.every((entry) => entry.selected === 0)).toBe(true);
   });
@@ -382,6 +399,7 @@ describe("accountability sweep", () => {
     expect(report.profiles).toHaveLength(1);
     for (const entry of report.profiles) {
       expect(Object.keys(entry).sort()).toEqual([
+        "cancelledOrphans",
         "cancelledStale",
         "delivered",
         "failed",
@@ -390,10 +408,25 @@ describe("accountability sweep", () => {
         "selected",
         "skippedNoThread",
       ]);
-      for (const counter of [entry.selected, entry.delivered, entry.mergedBatches, entry.cancelledStale, entry.skippedNoThread, entry.failed]) {
+      for (const counter of [entry.selected, entry.delivered, entry.mergedBatches, entry.cancelledStale, entry.cancelledOrphans, entry.skippedNoThread, entry.failed]) {
         expect(typeof counter).toBe("number");
         expect(Number.isInteger(counter)).toBe(true);
       }
     }
+  });
+
+  it("releases claims instead of holding them when no thread is available", async () => {
+    const pairs = [makePair({ title: "No thread yet" })];
+    const repository = fakeRepository(pairs);
+    const threadLister = vi.fn(async () => []);
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister });
+    expect(repository.releaseClaims).toHaveBeenCalledWith("profile-a", [pairs[0].check.id]);
+  });
+
+  it("cancels orphaned deliveries on every profile sight", async () => {
+    const repository = fakeRepository([makePair()]);
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a", "profile-b"], repository, threadLister: liveThreads });
+    expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-a", NOW);
+    expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-b", NOW);
   });
 });

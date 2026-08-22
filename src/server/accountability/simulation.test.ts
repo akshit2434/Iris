@@ -41,7 +41,7 @@ function createAccountabilityDatabase() {
   const defaults: Record<string, Record<string, unknown>> = {
     open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
-    scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null },
+    scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null },
     checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
   };
   let generated = 0;
@@ -73,6 +73,19 @@ function createAccountabilityDatabase() {
     builder.eq = (field: unknown, value: unknown) => { filtered = filtered.filter((row) => at(row, String(field)) === value); return builder; };
     builder.in = (field: unknown, values: unknown) => { filtered = filtered.filter((row) => (values as unknown[]).includes(at(row, String(field)))); return builder; };
     builder.lte = (field: unknown, value: unknown) => { filtered = filtered.filter((row) => String(at(row, String(field))) <= String(value)); return builder; };
+    builder.is = (field: unknown, value: unknown) => { filtered = filtered.filter((row) => at(row, String(field)) === value); return builder; };
+    builder.lt = (field: unknown, value: unknown) => { filtered = filtered.filter((row) => String(at(row, String(field))) < String(value)); return builder; };
+    builder.or = (expr: unknown) => {
+      const clauses = String(expr).split(",").map((clause) => /^(.+)\.(is|lt)\.(.+)$/.exec(clause));
+      filtered = filtered.filter((row) => clauses.some((match) => {
+        if (!match) return false;
+        const [, field, op, raw] = match;
+        const cell = at(row, field);
+        if (op === "is") return raw === "null" && (cell === null || cell === undefined);
+        return String(cell) < raw;
+      }));
+      return builder;
+    };
     builder.order = (field: unknown, options: unknown) => {
       const direction = (options as { ascending?: boolean } | undefined)?.ascending === false ? -1 : 1;
       filtered = [...filtered].sort((left, right) => String(at(left, String(field))).localeCompare(String(at(right, String(field)))) * direction);
@@ -294,7 +307,7 @@ describe("accountability multi-week simulation", () => {
 
     world.advanceTo(at(4, SWEEP_TIME));
     const friday = await sweepProfileA(world);
-    expect(friday.profiles[0]).toEqual({ profileId: "profile-a", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(friday.profiles[0]).toEqual({ profileId: "profile-a", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
     expect(world.composerRequests).toHaveLength(0);
     expect(world.messages).toHaveLength(1);
     expect(world.messages[0].content).toContain("Submit OS assignment");
@@ -436,7 +449,7 @@ describe("accountability multi-week simulation", () => {
 
     world.advanceTo(at(1, SWEEP_TIME));
     const tuesday = await world.sweep({ profiles: ["profile-b"] });
-    expect(tuesday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 0, mergedBatches: 0, cancelledStale: 0, skippedNoThread: 1, failed: 0 });
+    expect(tuesday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 0, mergedBatches: 0, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 1, failed: 0 });
     expect(world.messages).toHaveLength(0);
     expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "pending", attempt_count: 0 });
 
@@ -448,7 +461,7 @@ describe("accountability multi-week simulation", () => {
     world.threads["profile-b"] = THREAD_B;
     world.advanceTo(at(3, SWEEP_TIME));
     const thursday = await world.sweep({ profiles: ["profile-b"] });
-    expect(thursday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, skippedNoThread: 0, failed: 0 });
+    expect(thursday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
     expect(world.messages).toHaveLength(1);
     expect(world.messages[0].content).toContain("Water plants");
     expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "delivered", attempt_count: 1 });
@@ -549,5 +562,112 @@ describe("accountability multi-week simulation", () => {
     await world.sweep({ profiles: ["profile-a"] });
     expect(world.messages).toHaveLength(1);
     expect(world.deliveryLog).toHaveLength(2);
+  });
+
+  it("edge: two back-to-back sweeps at the same instant share one delivery per due check", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const passportId = await world.agent.trackCommitment({ title: "Renew passport", dueAt: at(2, "08:00") });
+    const groceriesId = await world.agent.trackCommitment({ title: "Buy groceries", dueAt: at(2, "08:00") });
+
+    world.advanceTo(at(2, SWEEP_TIME));
+    const first = await world.sweep();
+    const second = await world.sweep();
+
+    expect(first.profiles).toHaveLength(2);
+    expect(second.profiles.map((entry) => entry.selected)).toEqual([0, 0]);
+    expect(world.messages).toHaveLength(1);
+    expect(world.composerRequests).toEqual([{ kind: "merged_batch", titles: ["Renew passport", "Buy groceries"] }]);
+    const expectedCheckIds = [passportId, groceriesId].flatMap((loopId) => world.checksForLoop(loopId).map((check) => String(check.id))).sort();
+    expect(world.deliveryLog.map((entry) => entry.checkId).sort()).toEqual(expectedCheckIds);
+    for (const loopId of [passportId, groceriesId]) {
+      expect(world.checksForLoop(loopId)[0]).toMatchObject({ status: "delivered", attempt_count: 1 });
+      expect(world.nudgedCount(loopId)).toBe(1);
+    }
+  });
+
+  it("edge: a crashed batch holds its claim through the stale window and retries exactly once", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const loopId = await world.agent.trackCommitment({ title: "Crash candidate", dueAt: at(2, "08:00") });
+
+    world.advanceTo(at(2, SWEEP_TIME));
+    let writeAttempts = 0;
+    const crashingWriter = async () => {
+      writeAttempts += 1;
+      throw new Error("process died mid-delivery");
+    };
+    const crashed = await runAccountabilitySweep({
+      now: world.now,
+      profiles: ["profile-a"],
+      repository: world.repository,
+      messageWriter: crashingWriter,
+      threadLister: (async () => [{ id: THREAD_A }]) as never,
+    });
+    expect(crashed.profiles[0]).toMatchObject({ selected: 1, delivered: 0, failed: 1 });
+    expect(writeAttempts).toBe(1);
+    expect(world.messages).toHaveLength(0);
+    const [claimedCheck] = world.checksForLoop(loopId);
+    expect(claimedCheck).toMatchObject({ status: "pending", attempt_count: 0, claimed_at: at(2, SWEEP_TIME) });
+
+    world.advanceTo(at(2, "09:35"));
+    const tooSoon = await world.sweep({ profiles: ["profile-a"] });
+    expect(tooSoon.profiles[0]).toMatchObject({ selected: 0, delivered: 0, cancelledOrphans: 1 });
+    expect(world.messages).toHaveLength(0);
+    expect(world.checksForLoop(loopId)[0]).toMatchObject({ status: "pending" });
+
+    world.advanceTo(at(2, "09:41"));
+    const retried = await world.sweep({ profiles: ["profile-a"] });
+    expect(retried.profiles[0]).toMatchObject({ selected: 1, delivered: 1, mergedBatches: 1 });
+    expect(world.messages).toHaveLength(1);
+    expect(world.messages[0].content).toContain("Crash candidate");
+    expect(world.checksForLoop(loopId)).toHaveLength(1);
+    expect(world.checksForLoop(loopId)[0]).toMatchObject({ status: "delivered", attempt_count: 1, delivered_at: at(2, "09:41") });
+    expect(world.nudgedCount(loopId)).toBe(1);
+  });
+
+  it("edge: orphaned pending deliveries age into cancellation with a sweep_retry marker", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const loopId = await world.agent.trackCommitment({ title: "Orphan witness", dueAt: at(2, "08:00") });
+
+    world.rows.checkin_deliveries.push({
+      id: "00000000-0000-4000-8004-000000000099",
+      profile_id: "profile-a",
+      thread_id: THREAD_A,
+      message_id: null,
+      summary: null,
+      status: "pending",
+      created_at: at(2, "08:10"),
+      delivered_at: null,
+      answered_at: null,
+    });
+
+    world.advanceTo(at(2, "08:30"));
+    const early = await world.sweep({ profiles: ["profile-a"] });
+    expect(early.profiles[0]).toMatchObject({ delivered: 1, cancelledOrphans: 0 });
+    const orphan = () => world.deliveries().find((delivery) => delivery.id === "00000000-0000-4000-8004-000000000099");
+    expect(orphan()).toMatchObject({ status: "pending" });
+    expect(world.messages.some((message) => message.content.includes("Orphan witness"))).toBe(true);
+    expect(world.checksForLoop(loopId)[0]).toMatchObject({ status: "delivered" });
+
+    world.rows.checkin_deliveries.push({
+      id: "00000000-0000-4000-8004-000000000100",
+      profile_id: "profile-a",
+      thread_id: THREAD_A,
+      message_id: null,
+      summary: null,
+      status: "pending",
+      created_at: at(0, "10:00"),
+      delivered_at: null,
+      answered_at: null,
+    });
+
+    world.advanceTo(at(2, "09:15"));
+    const cleanup = await world.sweep({ profiles: ["profile-a"] });
+    expect(cleanup.profiles[0].cancelledOrphans).toBe(2);
+    expect(orphan()).toMatchObject({ status: "cancelled", summary: "sweep_retry" });
+    expect(String(world.loopByTitle("Orphan witness")?.status)).toBe("open");
+    expect(world.nudgedCount(loopId)).toBe(1);
   });
 });

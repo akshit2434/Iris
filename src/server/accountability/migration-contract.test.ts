@@ -7,6 +7,11 @@ const migration = readFileSync(
   "utf8",
 );
 
+const claimMigration = readFileSync(
+  new URL("../../../supabase/migrations/20260830000000_accountability_claim.sql", import.meta.url),
+  "utf8",
+);
+
 describe("accountability foundation migration contract", () => {
   it("defines loop, ledger, schedule, delivery, and suppression layers", () => {
     for (const required of [
@@ -50,5 +55,21 @@ describe("accountability foundation migration contract", () => {
       "loop_suppressions",
     ];
     expect(tables.length).toBe(6);
+  });
+});
+
+describe("accountability claim migration contract", () => {
+  it("adds the claimed_at reservation column and the pending-claim index", () => {
+    for (const required of [
+      "alter table public.scheduled_checks add column if not exists claimed_at timestamptz",
+      "create index if not exists scheduled_checks_claim_idx",
+      "on public.scheduled_checks(profile_id, due_at)",
+      "where status = 'pending'",
+    ]) expect(claimMigration.toLowerCase()).toContain(required.toLowerCase());
+  });
+
+  it("keeps claimed rows inside the existing pending status shape", () => {
+    const foundation = migration.toLowerCase();
+    expect(foundation).toContain("status = 'pending' and delivered_at is null and cancelled_at is null");
   });
 });

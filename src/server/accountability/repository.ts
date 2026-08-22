@@ -67,6 +67,7 @@ export type ScheduledCheckRow = {
   deliveredAt: string | null;
   cancelledAt: string | null;
   cancelReason: string | null;
+  claimedAt: string | null;
   createdAt: string;
 };
 
@@ -120,21 +121,27 @@ export type AccountabilityRepository = {
   updateOpenLoopStatus(profileId: ProfileId, loopId: string, expectedUpdatedAt: string, patch: UpdateOpenLoopPatch): Promise<OpenLoopRow>;
   insertLoopEvent(profileId: ProfileId, input: InsertLoopEventInput): Promise<LoopEventRow>;
   listDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<ScheduledCheckRow[]>;
-  listDeliverableDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
+  listDueChecksWithLoops(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
+  claimDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
+  releaseClaims(profileId: ProfileId, checkIds: readonly string[]): Promise<void>;
   markCheckDelivered(profileId: ProfileId, checkId: string, input: MarkCheckDeliveredInput): Promise<ScheduledCheckRow>;
   insertScheduledCheck(profileId: ProfileId, input: InsertScheduledCheckInput): Promise<ScheduledCheckRow>;
   cancelPendingChecksForLoop(profileId: ProfileId, loopId: string, reason: string): Promise<number>;
+  cancelOrphanPendingDeliveries(profileId: ProfileId, nowIso: string): Promise<number>;
   insertDelivery(profileId: ProfileId, input: { threadId: string }): Promise<CheckinDeliveryRow>;
   markDeliveryDelivered(profileId: ProfileId, deliveryId: string, input: { messageId: string; deliveredAt?: string }): Promise<CheckinDeliveryRow>;
 };
 
 const OPEN_LOOP_COLUMNS = "id, profile_id, title, details, kind, status, due_at, cadence, origin_thread_id, origin_message_id, created_at, updated_at, closed_at";
 const LOOP_EVENT_COLUMNS = "id, profile_id, loop_id, kind, detail, actor, source_thread_id, source_message_id, agent_run_id, metadata, created_at";
-const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, created_at";
+const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, claimed_at, created_at";
 const CHECKIN_DELIVERY_COLUMNS = "id, profile_id, thread_id, message_id, summary, status, created_at, delivered_at, answered_at";
 
 const MAX_LOOP_EVENT_DETAIL_LENGTH = 2_000;
 const MAX_CANCEL_REASON_LENGTH = 500;
+const CLAIM_STALE_WINDOW_MS = 10 * 60_000;
+const ORPHAN_DELIVERY_WINDOW_MS = 30 * 60_000;
+const ORPHAN_DELIVERY_REASON = "sweep_retry";
 
 function assertProfileId(value: unknown): asserts value is ProfileId {
   if (!isProfileId(value)) throw new Error("A valid profile scope is required.");
@@ -203,6 +210,7 @@ function toScheduledCheck(row: ScheduledCheckTableRow): ScheduledCheckRow {
     deliveredAt: row.delivered_at,
     cancelledAt: row.cancelled_at,
     cancelReason: row.cancel_reason,
+    claimedAt: row.claimed_at ?? null,
     createdAt: row.created_at,
   };
 }
@@ -240,6 +248,24 @@ async function fetchPendingDueChecks(client: AccountabilityDatabase, profileId: 
     .limit(limit);
   if (error) throw error;
   return (data ?? []).map(toScheduledCheck);
+}
+
+async function joinChecksWithLoops(client: AccountabilityDatabase, profileId: ProfileId, checks: ScheduledCheckRow[]): Promise<DeliverableDueCheck[]> {
+  if (checks.length === 0) return [];
+  const loopIds = [...new Set(checks.map((check) => check.loopId))];
+  const { data, error } = await client
+    .from("open_loops")
+    .select(OPEN_LOOP_COLUMNS)
+    .eq("profile_id", profileId)
+    .in("id", loopIds);
+  if (error) throw error;
+  const loopsById = new Map((data ?? []).map((row) => [row.id, toOpenLoop(row)]));
+  const joined: DeliverableDueCheck[] = [];
+  for (const check of checks) {
+    const loop = loopsById.get(check.loopId);
+    if (loop) joined.push({ check, loop });
+  }
+  return joined;
 }
 
 export function createProductionAccountabilityRepository(): AccountabilityRepository {
@@ -332,23 +358,39 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       return fetchPendingDueChecks(client, profileId, nowIso, limit);
     },
 
-    async listDeliverableDueChecks(profileId, nowIso, limit) {
+    async listDueChecksWithLoops(profileId, nowIso, limit) {
       const checks = await fetchPendingDueChecks(client, profileId, nowIso, limit);
-      if (checks.length === 0) return [];
-      const loopIds = [...new Set(checks.map((check) => check.loopId))];
+      return joinChecksWithLoops(client, profileId, checks);
+    },
+
+    async claimDueChecks(profileId, nowIso, limit) {
+      assertProfileId(profileId);
+      if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Scheduled check limits must be positive integers.");
+      const staleBeforeIso = new Date(Date.parse(nowIso) - CLAIM_STALE_WINDOW_MS).toISOString();
       const { data, error } = await client
-        .from("open_loops")
-        .select(OPEN_LOOP_COLUMNS)
+        .from("scheduled_checks")
+        .update({ claimed_at: nowIso })
         .eq("profile_id", profileId)
-        .in("id", loopIds);
+        .eq("status", "pending")
+        .lte("due_at", nowIso)
+        .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeIso}`)
+        .order("due_at", { ascending: true })
+        .limit(limit)
+        .select(SCHEDULED_CHECK_COLUMNS);
       if (error) throw error;
-      const loopsById = new Map((data ?? []).map((row) => [row.id, toOpenLoop(row)]));
-      const joined: DeliverableDueCheck[] = [];
-      for (const check of checks) {
-        const loop = loopsById.get(check.loopId);
-        if (loop) joined.push({ check, loop });
-      }
-      return joined;
+      const claimed = (data ?? []).map(toScheduledCheck).sort((left, right) => left.dueAt.localeCompare(right.dueAt));
+      return joinChecksWithLoops(client, profileId, claimed);
+    },
+
+    async releaseClaims(profileId, checkIds) {
+      assertProfileId(profileId);
+      if (checkIds.length === 0) return;
+      const { error } = await client
+        .from("scheduled_checks")
+        .update({ claimed_at: null })
+        .eq("profile_id", profileId)
+        .in("id", [...checkIds]);
+      if (error) throw error;
     },
 
     async markCheckDelivered(profileId, checkId, input) {
@@ -361,6 +403,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           delivered_at: input.deliveredAt,
           attempt_count: input.attemptCount,
           escalation_tier: input.escalationTier,
+          claimed_at: null,
         })
         .eq("id", checkId)
         .eq("profile_id", profileId)
@@ -402,11 +445,26 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       const cancelReason = validateCancelReason(reason);
       const { data, error } = await client
         .from("scheduled_checks")
-        .update({ status: "cancelled", cancelled_at: new Date().toISOString(), cancel_reason: cancelReason })
+        .update({ status: "cancelled", cancelled_at: new Date().toISOString(), cancel_reason: cancelReason, claimed_at: null })
         .eq("profile_id", profileId)
         .eq("loop_id", loopId)
         .eq("status", "pending")
         .select(SCHEDULED_CHECK_COLUMNS);
+      if (error) throw error;
+      return (data ?? []).length;
+    },
+
+    async cancelOrphanPendingDeliveries(profileId, nowIso) {
+      assertProfileId(profileId);
+      const cutoffIso = new Date(Date.parse(nowIso) - ORPHAN_DELIVERY_WINDOW_MS).toISOString();
+      const { data, error } = await client
+        .from("checkin_deliveries")
+        .update({ status: "cancelled", summary: ORPHAN_DELIVERY_REASON })
+        .eq("profile_id", profileId)
+        .eq("status", "pending")
+        .is("message_id", null)
+        .lt("created_at", cutoffIso)
+        .select(CHECKIN_DELIVERY_COLUMNS);
       if (error) throw error;
       return (data ?? []).length;
     },

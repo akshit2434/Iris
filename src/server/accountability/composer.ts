@@ -13,6 +13,14 @@ export type ComposedCheckin = { text: string; tier: 0 | 1 };
 
 const COMPOSER_TIMEOUT_MS = 6000;
 const COMPOSER_MAX_TOKENS = 220;
+const COMPOSER_MAX_CHARS = 1200;
+
+export function truncateAtWordBoundary(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const sliced = text.slice(0, maxLength);
+  const boundary = Math.max(sliced.lastIndexOf(" "), sliced.lastIndexOf("\n"));
+  return (boundary > 0 ? sliced.slice(0, boundary) : sliced).trimEnd();
+}
 
 const TIER_ONE_KINDS: readonly CheckinKind[] = ["merged_batch", "routine_reflection", "catch_up"];
 
@@ -93,7 +101,7 @@ export function createProductionCheckinComposer(): CheckinComposer {
     void generation.catch(() => undefined);
     const response = await withTimeout(generation, COMPOSER_TIMEOUT_MS, controller);
     const text = typeof response.content === "string" ? response.content : String(response.content ?? "");
-    return text.trim().slice(0, 1200);
+    return truncateAtWordBoundary(text.trim(), COMPOSER_MAX_CHARS);
   };
 }
 

@@ -1042,6 +1042,7 @@ export type Database = {
           delivered_at: string | null;
           cancelled_at: string | null;
           cancel_reason: string | null;
+          claimed_at: string | null;
           created_at: string;
         };
         Insert: {
@@ -1056,6 +1057,7 @@ export type Database = {
           delivered_at?: string | null;
           cancelled_at?: string | null;
           cancel_reason?: string | null;
+          claimed_at?: string | null;
           created_at?: string;
         };
         Update: Partial<{
@@ -1070,6 +1072,7 @@ export type Database = {
           delivered_at: string | null;
           cancelled_at: string | null;
           cancel_reason: string | null;
+          claimed_at: string | null;
           created_at: string;
         }>;
         Relationships: [];
