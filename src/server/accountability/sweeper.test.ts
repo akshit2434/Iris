@@ -360,7 +360,7 @@ describe("accountability sweep", () => {
         agentRunId: null,
       }));
     }
-    expect(vi.mocked(repository.markCheckDelivered).mock.calls.every((call) => call[2].attemptCount === 1 && call[2].escalationTier === 0)).toBe(true);
+    expect(vi.mocked(repository.markCheckDelivered).mock.calls.every((call) => call[2].attemptCount === 1 && call[2].escalationTier === 1)).toBe(true);
   });
 
   it("caps every merged delivery at four items while preserving due_at order", async () => {
@@ -413,13 +413,13 @@ describe("accountability sweep", () => {
   });
 
   it("bumps attempt and escalation counters exactly once per delivery", async () => {
-    const pair = makePair({}, { attemptCount: 1, escalationTier: 0, dueAt: "2026-08-22T08:00:00.000Z" });
+    const pair = makePair({}, { attemptCount: 1, escalationTier: 1, dueAt: "2026-08-22T08:00:00.000Z" });
     const repository = fakeRepository([pair]);
     await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
     expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
     expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", pair.check.id, expect.objectContaining({
       attemptCount: 2,
-      escalationTier: 1,
+      escalationTier: 2,
     }));
   });
 
@@ -608,7 +608,7 @@ describe("accountability sweep", () => {
     expect(writtenTexts[0]).toContain("Renew passport");
     expect(writtenTexts[0]).toContain("finally submitted the passport renewal");
     expect(writtenTexts[0]).toMatch(/close/i);
-    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", overdue.check.id, expect.objectContaining({ attemptCount: 1, escalationTier: 0 }));
+    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", overdue.check.id, expect.objectContaining({ attemptCount: 1, escalationTier: 1 }));
     expect(repository.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: overdue.loop.id, kind: "nudged", actor: "system" }));
     expect(vi.mocked(repository.updateOpenLoopStatus)).not.toHaveBeenCalled();
   });
@@ -679,8 +679,40 @@ describe("accountability sweep", () => {
     expect(writtenTexts[0]).toMatch(/reschedule/);
     expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", repeated.check.id, expect.objectContaining({
       attemptCount: 3,
-      escalationTier: 2,
+      escalationTier: 3,
     }));
+  });
+
+  it("sends different text on the second ask than the first for an ignored loop", async () => {
+    const pair = makePair({ title: "Water plants" });
+    const repository = fakeRepository([pair], {
+      markCheckDelivered: vi.fn(async (_profileId: string, _checkId: string, input: { attemptCount: number; escalationTier: number }) => {
+        pair.check.attemptCount = input.attemptCount;
+        pair.check.escalationTier = input.escalationTier;
+        return { ...pair.check };
+      }),
+    });
+    const composer = vi.fn(async () => "unused");
+    const writtenTexts: string[] = [];
+    for (let sweep = 0; sweep < 2; sweep += 1) {
+      await runAccountabilitySweep({
+        now: NOW,
+        profiles: ["profile-a"],
+        repository,
+        composer,
+        messageWriter: async (input) => {
+          writtenTexts.push(input.content);
+          return { id: `message-${writtenTexts.length}` };
+        },
+        threadLister: liveThreads,
+      });
+    }
+    expect(writtenTexts).toHaveLength(2);
+    expect(writtenTexts[0]).toMatch(/Quick check/i);
+    expect(writtenTexts[1]).toMatch(/Gentle reminder/i);
+    expect(writtenTexts[0]).not.toBe(writtenTexts[1]);
+    const storedTiers = vi.mocked(repository.markCheckDelivered).mock.calls.map((call) => call[2].escalationTier);
+    expect(storedTiers).toEqual([1, 2]);
   });
 
   it("keeps the catch-up nudge when reconciliation finds no stated completion", async () => {

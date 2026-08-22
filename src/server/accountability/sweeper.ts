@@ -199,7 +199,7 @@ export async function runAccountabilitySweep(input: {
                   deliveryId: delivery.id,
                   deliveredAt: now,
                   attemptCount,
-                  escalationTier: Math.min(attemptCount - 1, MAX_ESCALATION_TIER),
+                  escalationTier: Math.min(attemptCount, MAX_ESCALATION_TIER),
                 });
                 await repository.insertLoopEvent(profileId, {
                   loopId: pair.loop.id,

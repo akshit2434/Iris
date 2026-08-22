@@ -356,7 +356,7 @@ describe("accountability multi-week simulation", () => {
     expect(world.messages[0].content).toContain("Submit OS assignment");
 
     const [check] = world.checksForLoop(assignmentId);
-    expect(check).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 0, delivered_at: at(4, SWEEP_TIME) });
+    expect(check).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 1, delivered_at: at(4, SWEEP_TIME) });
 
     world.advanceTo(at(4, "23:00"));
     const repeat = await sweepProfileA(world);
@@ -385,7 +385,7 @@ describe("accountability multi-week simulation", () => {
       expect(loopId).toBeTruthy();
       expect(world.nudgedCount(loopId)).toBe(1);
       for (const check of world.checksForLoop(loopId)) {
-        expect(check).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 0 });
+        expect(check).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 1 });
       }
     }
     expect(world.deliveryLog).toHaveLength(3);
@@ -478,7 +478,7 @@ describe("accountability multi-week simulation", () => {
     expect(world.composerRequests).toEqual([{ kind: "catch_up", titles: ["Book dentist"] }]);
 
     expect(world.deliveryLog.map((entry) => entry.input.attemptCount)).toEqual([1, 2, 3]);
-    expect(world.deliveryLog.map((entry) => entry.input.escalationTier)).toEqual([0, 1, 2]);
+    expect(world.deliveryLog.map((entry) => entry.input.escalationTier)).toEqual([1, 2, 3]);
     const attempts = world.checksForLoop(dentistId).filter((check) => check.status === "delivered");
     expect(attempts).toHaveLength(3);
     expect(attempts.every((check) => check.loop_id === dentistId)).toBe(true);
@@ -795,7 +795,7 @@ describe("accountability multi-week simulation", () => {
     expect(world.messages[0].content).toContain("submitted the OS assignment");
     expect(world.messages[0].content).toMatch(/close/i);
     expect(String(world.loopByTitle("Submit OS assignment")?.status)).toBe("open");
-    expect(world.checksForLoop(assignmentId)[0]).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 0 });
+    expect(world.checksForLoop(assignmentId)[0]).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 1 });
     expect(world.nudgedCount(assignmentId)).toBe(1);
   });
 
