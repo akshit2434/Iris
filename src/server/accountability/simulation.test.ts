@@ -7,7 +7,8 @@ import {
   type MarkCheckDeliveredInput,
 } from "@/server/accountability/repository";
 import { runAccountabilitySweep, type SweepReport } from "@/server/accountability/sweeper";
-import { closeLoop, createLoop, scheduleCheck, updateLoop } from "@/server/accountability/tools";
+import { closeLoop, createLoop, scheduleCheck, suppressLoop, updateLoop } from "@/server/accountability/tools";
+import { loadOpenLoopsForProfile } from "@/server/accountability/context-loader";
 
 vi.mock("server-only", () => ({}));
 
@@ -29,6 +30,7 @@ type Tables = {
   scheduled_checks: Record<string, unknown>[];
   loop_events: Record<string, unknown>[];
   checkin_deliveries: Record<string, unknown>[];
+  loop_suppressions: Record<string, unknown>[];
 };
 
 function createAccountabilityDatabase() {
@@ -37,12 +39,14 @@ function createAccountabilityDatabase() {
     scheduled_checks: [],
     loop_events: [],
     checkin_deliveries: [],
+    loop_suppressions: [],
   };
   const defaults: Record<string, Record<string, unknown>> = {
     open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
     scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null },
     checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
+    loop_suppressions: { lifted_at: null },
   };
   let generated = 0;
   const idPrefix: Record<string, string> = {
@@ -50,6 +54,7 @@ function createAccountabilityDatabase() {
     scheduled_checks: "2",
     loop_events: "3",
     checkin_deliveries: "4",
+    loop_suppressions: "5",
   };
   const at = (row: Record<string, unknown>, field: string) => row[field];
   const chain = (table: string) => {
@@ -218,7 +223,15 @@ function createWorld() {
       const result = await updateLoop(agentContextFor(profileId), { loopId, action: "resume" }, repository);
       expect(result).toMatchObject({ kind: "loop_update", status: "updated" });
     },
+    suppress: async (input: { subject: string; lift?: boolean }, profileId: (typeof PROFILES)[number] = "profile-a") => {
+      const result = await suppressLoop(agentContextFor(profileId), { subject: input.subject, confirm: true, ...(input.lift ? { lift: true } : {}) }, repository);
+      expect(result).toMatchObject({ kind: "loop_suppress", status: input.lift ? "lifted" : "suppressed" });
+      if (result.status === "error") throw new Error("suppress failed");
+      return result;
+    },
   };
+  const contextLoopTitles = async (profileId: (typeof PROFILES)[number] = "profile-a") =>
+    (await loadOpenLoopsForProfile(repository, profileId)).map((entry) => entry.title);
   const loops = () => db.rows.open_loops;
   const checks = () => db.rows.scheduled_checks;
   const events = () => db.rows.loop_events;
@@ -258,6 +271,7 @@ function createWorld() {
     checks,
     checksForLoop,
     composerRequests: composedRequests,
+    contextLoopTitles,
     deliveries,
     deliveryLog,
     events,
@@ -307,7 +321,7 @@ describe("accountability multi-week simulation", () => {
 
     world.advanceTo(at(4, SWEEP_TIME));
     const friday = await sweepProfileA(world);
-    expect(friday.profiles[0]).toEqual({ profileId: "profile-a", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
+    expect(friday.profiles[0]).toEqual({ profileId: "profile-a", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, suppressed: 0, failed: 0 });
     expect(world.composerRequests).toHaveLength(0);
     expect(world.messages).toHaveLength(1);
     expect(world.messages[0].content).toContain("Submit OS assignment");
@@ -449,7 +463,7 @@ describe("accountability multi-week simulation", () => {
 
     world.advanceTo(at(1, SWEEP_TIME));
     const tuesday = await world.sweep({ profiles: ["profile-b"] });
-    expect(tuesday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 0, mergedBatches: 0, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 1, failed: 0 });
+    expect(tuesday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 0, mergedBatches: 0, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 1, suppressed: 0, failed: 0 });
     expect(world.messages).toHaveLength(0);
     expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "pending", attempt_count: 0 });
 
@@ -461,7 +475,7 @@ describe("accountability multi-week simulation", () => {
     world.threads["profile-b"] = THREAD_B;
     world.advanceTo(at(3, SWEEP_TIME));
     const thursday = await world.sweep({ profiles: ["profile-b"] });
-    expect(thursday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
+    expect(thursday.profiles[0]).toEqual({ profileId: "profile-b", selected: 1, delivered: 1, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, suppressed: 0, failed: 0 });
     expect(world.messages).toHaveLength(1);
     expect(world.messages[0].content).toContain("Water plants");
     expect(world.checksForLoop(plantsId)[0]).toMatchObject({ status: "delivered", attempt_count: 1 });
@@ -522,6 +536,54 @@ describe("accountability multi-week simulation", () => {
     }
     expect(String(world.loopByTitle("Submit OS assignment")?.status)).toBe("done");
     expect(world.nudgedCount(plantsId)).toBe(0);
+  });
+
+  it("scenario 8: 'stop asking about sleep' suppresses the topic, sweeps skip its checks, and lifting resumes them", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "08:00"));
+    const sleepId = await world.agent.trackRoutine({ title: "Sleep before midnight" });
+    const assignmentId = await world.agent.trackCommitment({ title: "Submit OS assignment", dueAt: at(4, "09:00") });
+    for (const day of [1, 2, 3]) await world.agent.scheduleFollowUp(sleepId, at(day, "07:00"));
+
+    world.advanceTo(at(1, "07:30"));
+    const firstMorning = await sweepProfileA(world);
+    expect(firstMorning.profiles[0]).toMatchObject({ selected: 1, delivered: 1, suppressed: 0 });
+    expect(world.composerRequests.at(-1)).toEqual({ kind: "routine_reflection", titles: ["Sleep before midnight"] });
+
+    world.advanceTo(at(1, "12:00"));
+    const messageCountBeforeSuppression = world.messages.length;
+    const suppression = await world.agent.suppress({ subject: "  SLEEP   Before   Midnight " });
+    expect(suppression).toMatchObject({ status: "suppressed", subject: "sleep before midnight" });
+    expect(world.rows.loop_suppressions).toHaveLength(1);
+    expect(world.rows.loop_suppressions[0]).toMatchObject({ profile_id: "profile-a", subject: "sleep before midnight", lifted_at: null });
+    expect(world.events().filter((event) => event.loop_id === sleepId && event.kind === "suppressed")).toHaveLength(1);
+    expect(await world.contextLoopTitles()).toEqual(["Submit OS assignment"]);
+
+    for (const day of [2, 3]) {
+      world.advanceTo(at(day, "07:30"));
+      const silentMorning = await sweepProfileA(world);
+      expect(silentMorning.profiles[0]).toMatchObject({ selected: 0, delivered: 0, suppressed: day - 1, failed: 0 });
+      expect(world.messages).toHaveLength(messageCountBeforeSuppression);
+      expect(world.nudgedCount(sleepId)).toBe(1);
+      const sleepChecks = world.checksForLoop(sleepId);
+      expect(sleepChecks.filter((check) => check.status === "delivered")).toHaveLength(1);
+      expect(sleepChecks.every((check) => check.status === "pending" || check.status === "delivered")).toBe(true);
+    }
+
+    world.advanceTo(at(3, "20:00"));
+    expect(await world.contextLoopTitles()).not.toContain("Sleep before midnight");
+    const lift = await world.agent.suppress({ subject: "sleep   BEFORE midnight", lift: true });
+    expect(lift).toMatchObject({ status: "lifted", subject: "sleep before midnight", liftedCount: 1 });
+    expect(world.rows.loop_suppressions.filter((row) => row.lifted_at === null)).toHaveLength(0);
+    expect(await world.contextLoopTitles()).toContain("Sleep before midnight");
+
+    await world.agent.scheduleFollowUp(sleepId, at(4, "06:00"));
+    world.advanceTo(at(4, "07:30"));
+    const friday = await sweepProfileA(world);
+    expect(friday.profiles[0]).toMatchObject({ selected: 3, delivered: 3, suppressed: 0 });
+    expect(world.messages.at(-1)?.content).toContain("Sleep before midnight");
+    expect(world.checksForLoop(sleepId).every((check) => check.status === "delivered")).toBe(true);
+    expect(String(world.loops().find((loop) => loop.id === assignmentId)?.status)).toBe("open");
   });
 
   it("edge: nine checks due one morning deliver eight under the shared cap and the ninth lands next morning", async () => {

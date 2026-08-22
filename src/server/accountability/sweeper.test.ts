@@ -93,10 +93,20 @@ const REPOSITORY_METHODS = [
   "cancelOrphanPendingDeliveries",
   "insertDelivery",
   "markDeliveryDelivered",
+  "insertLoopSuppression",
+  "liftLoopSuppression",
+  "listActiveSuppressions",
 ] as const;
+
+type SuppressionSeed = { id: string; profileId: "profile-a"; subject: string; reason: string; createdAt: string; liftedAt: null };
+
+function makeSuppression(subject: string): SuppressionSeed {
+  return { id: `sup-${subject.replace(/\s+/g, "-")}`, profileId: "profile-a", subject, reason: "r", createdAt: NOW, liftedAt: null };
+}
 
 function fakeRepository(pairs: DeliverableDueCheck[] = [], overrides: Partial<AccountabilityRepository> = {}): AccountabilityRepository {
   let deliverySequence = 0;
+  const suppressions: SuppressionSeed[] = [];
   const base = {
     listOpenLoops: vi.fn(async () => []),
     getOpenLoop: vi.fn(async () => null),
@@ -151,6 +161,9 @@ function fakeRepository(pairs: DeliverableDueCheck[] = [], overrides: Partial<Ac
       deliveredAt: NOW,
       answeredAt: null,
     })),
+    insertLoopSuppression: vi.fn(async (_profileId: string, input: { subject: string }) => makeSuppression(input.subject)),
+    liftLoopSuppression: vi.fn(async () => 1),
+    listActiveSuppressions: vi.fn(async () => suppressions),
     ...overrides,
   };
   return base as unknown as AccountabilityRepository;
@@ -234,7 +247,7 @@ describe("accountability sweep", () => {
       threadLister: liveThreads,
     });
     expect(report.profiles).toHaveLength(1);
-    expect(report.profiles[0]).toEqual({ profileId: "profile-a", selected: 2, delivered: 2, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
+    expect(report.profiles[0]).toEqual({ profileId: "profile-a", selected: 2, delivered: 2, mergedBatches: 1, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, suppressed: 0, failed: 0 });
     expect(report.at).toBe(NOW);
     expect(repository.insertDelivery).toHaveBeenCalledTimes(1);
     expect(repository.insertDelivery).toHaveBeenCalledWith("profile-a", { threadId: THREAD_ID });
@@ -359,7 +372,7 @@ describe("accountability sweep", () => {
       threadLister: liveThreads,
     });
     expect(report.profiles[0]).toMatchObject({ selected: 5, delivered: 1, mergedBatches: 1, failed: 1, skippedNoThread: 0 });
-    expect(report.profiles[1]).toEqual({ profileId: "profile-b", selected: 0, delivered: 0, mergedBatches: 0, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, failed: 0 });
+    expect(report.profiles[1]).toEqual({ profileId: "profile-b", selected: 0, delivered: 0, mergedBatches: 0, cancelledStale: 0, cancelledOrphans: 0, skippedNoThread: 0, suppressed: 0, failed: 0 });
     expect(repository.insertDelivery).toHaveBeenCalledTimes(2);
     expect(repository.markDeliveryDelivered).toHaveBeenCalledTimes(1);
     expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
@@ -407,12 +420,51 @@ describe("accountability sweep", () => {
         "profileId",
         "selected",
         "skippedNoThread",
+        "suppressed",
       ]);
-      for (const counter of [entry.selected, entry.delivered, entry.mergedBatches, entry.cancelledStale, entry.cancelledOrphans, entry.skippedNoThread, entry.failed]) {
+      for (const counter of [entry.selected, entry.delivered, entry.mergedBatches, entry.cancelledStale, entry.cancelledOrphans, entry.skippedNoThread, entry.suppressed, entry.failed]) {
         expect(typeof counter).toBe("number");
         expect(Number.isInteger(counter)).toBe(true);
       }
     }
+  });
+
+  it("skips checks whose loop title matches an active suppression and releases their claims", async () => {
+    const suppressedPair = makePair({ title: "Sleep Before Midnight", kind: "routine", cadence: { kind: "daily" } });
+    const livePair = makePair({ title: "Buy groceries" }, { dueAt: "2026-08-22T09:00:00.000Z" });
+    const repository = fakeRepository([suppressedPair, livePair], {
+      listActiveSuppressions: vi.fn(async () => [makeSuppression("sleep before midnight")]),
+    });
+    const writtenTexts: string[] = [];
+    const report = await runAccountabilitySweep({
+      now: NOW,
+      profiles: ["profile-a"],
+      repository,
+      messageWriter: async (input) => {
+        writtenTexts.push(input.content);
+        return { id: `message-${writtenTexts.length}` };
+      },
+      threadLister: liveThreads,
+    });
+    expect(report.profiles[0]).toMatchObject({ selected: 1, delivered: 1, suppressed: 1, failed: 0 });
+    expect(writtenTexts.join("\n")).toContain("Buy groceries");
+    expect(writtenTexts.join("\n")).not.toContain("Sleep Before Midnight");
+    expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
+    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", livePair.check.id, expect.anything());
+    expect(repository.insertLoopEvent).toHaveBeenCalledTimes(1);
+    expect(repository.releaseClaims).toHaveBeenCalledWith("profile-a", [suppressedPair.check.id]);
+  });
+
+  it("still cancels stale pending checks on suppressed loops and counts nothing delivered for them", async () => {
+    const closedSuppressed = makePair({ title: "Old habit", status: "done", closedAt: "2026-08-21T10:00:00.000Z" });
+    const repository = fakeRepository([closedSuppressed], {
+      listActiveSuppressions: vi.fn(async () => [makeSuppression("old habit")]),
+      cancelPendingChecksForLoop: vi.fn(async () => 1),
+    });
+    const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(report.profiles[0]).toMatchObject({ selected: 0, delivered: 0, suppressed: 0, cancelledStale: 1 });
+    expect(repository.cancelPendingChecksForLoop).toHaveBeenCalledWith("profile-a", closedSuppressed.loop.id, expect.any(String));
+    expect(repository.releaseClaims).not.toHaveBeenCalled();
   });
 
   it("releases claims instead of holding them when no thread is available", async () => {

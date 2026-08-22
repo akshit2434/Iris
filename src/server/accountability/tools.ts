@@ -10,6 +10,7 @@ import {
 import { isTerminal, nextStatusOnEvent } from "./state-machine";
 import {
   createProductionAccountabilityRepository,
+  normalizeSuppressionSubject,
   type AccountabilityRepository,
   type LoopEventActor,
   type OpenLoopRow,
@@ -17,6 +18,9 @@ import {
 
 const NEEDS_CONFIRMATION_MESSAGE =
   "Nothing was saved. Before creating this loop, clarify with the user why it matters, their capacity for it, realistic timing, and conflicts with existing commitments; only call again with confirm=true once those are settled.";
+
+const SUPPRESS_NEEDS_CONFIRMATION_MESSAGE =
+  "Nothing was saved. Before suppressing follow-ups for this subject, clarify with the user whether they want a one-time exception (pause or reschedule that specific loop), a genuine routine change (close or pause the loop), or to never mention this topic again; only call again with confirm=true once that is settled.";
 
 const RESUME_CHECK_HORIZON_NOTE = "Loop resumed; next check follows its stored due time.";
 
@@ -58,6 +62,22 @@ const scheduleCheckInputSchema = z.object({
   dueAt: z.string().datetime({ offset: true }),
 });
 
+const loopSuppressInputSchema = z
+  .object({
+    subject: z.string().max(200),
+    confirm: z.boolean(),
+    lift: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const normalizedLength = normalizeSuppressionSubject(value.subject).length;
+    if (normalizedLength < 2 || normalizedLength > 200) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Suppression subjects must be between 2 and 200 characters.",
+      });
+    }
+  });
+
 export type LoopSummary = Pick<OpenLoopRow, "id" | "title" | "kind" | "status" | "dueAt"> & { updatedAt: string };
 
 export type LoopListOutput =
@@ -81,16 +101,23 @@ export type ScheduleCheckOutput =
   | { kind: "schedule_check"; status: "scheduled"; checkId: string; dueAt: string }
   | { kind: "schedule_check"; status: "error"; message: string };
 
+export type LoopSuppressOutput =
+  | { kind: "loop_suppress"; status: "needs_confirmation"; message: string }
+  | { kind: "loop_suppress"; status: "suppressed"; subject: string }
+  | { kind: "loop_suppress"; status: "lifted"; subject: string; liftedCount: number }
+  | { kind: "loop_suppress"; status: "error"; message: string };
+
 function resolveRepository(repository?: AccountabilityRepository): AccountabilityRepository {
   return repository ?? createProductionAccountabilityRepository();
 }
 
-function errorOutput<K extends "loop_list" | "loop_create" | "loop_update" | "loop_close" | "schedule_check">(kind: K, error: unknown): Extract<
+function errorOutput<K extends "loop_list" | "loop_create" | "loop_update" | "loop_close" | "schedule_check" | "loop_suppress">(kind: K, error: unknown): Extract<
   K extends "loop_list" ? LoopListOutput
     : K extends "loop_create" ? LoopCreateOutput
     : K extends "loop_update" ? LoopUpdateOutput
     : K extends "loop_close" ? LoopCloseOutput
-    : ScheduleCheckOutput,
+    : K extends "schedule_check" ? ScheduleCheckOutput
+    : LoopSuppressOutput,
   { status: "error" }
 > {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "The request could not be completed.";
@@ -252,6 +279,35 @@ export async function scheduleCheck(
   }
 }
 
+export async function suppressLoop(
+  context: AgentContext,
+  input: z.infer<typeof loopSuppressInputSchema>,
+  repository?: AccountabilityRepository,
+): Promise<LoopSuppressOutput> {
+  try {
+    const repo = resolveRepository(repository);
+    const subject = normalizeSuppressionSubject(input.subject);
+    if (input.lift) {
+      const liftedCount = await repo.liftLoopSuppression(context.profileId, subject);
+      return { kind: "loop_suppress", status: "lifted", subject, liftedCount };
+    }
+    if (!input.confirm) return { kind: "loop_suppress", status: "needs_confirmation", message: SUPPRESS_NEEDS_CONFIRMATION_MESSAGE };
+    const parsed = loopSuppressInputSchema.safeParse(input);
+    if (!parsed.success) {
+      return errorOutput("loop_suppress", new Error(parsed.error.issues[0]?.message ?? "Invalid suppression input."));
+    }
+    const suppression = await repo.insertLoopSuppression(context.profileId, { subject });
+    const loops = await repo.listOpenLoops(context.profileId, { statuses: ["open", "paused"] });
+    for (const loop of loops) {
+      if (normalizeSuppressionSubject(loop.title) !== subject) continue;
+      await repo.insertLoopEvent(context.profileId, { loopId: loop.id, kind: "suppressed", detail: suppression.subject, ...provenance(context) });
+    }
+    return { kind: "loop_suppress", status: "suppressed", subject: suppression.subject };
+  } catch (error) {
+    return errorOutput("loop_suppress", error);
+  }
+}
+
 export function createAccountabilityTools(repository?: AccountabilityRepository) {
   let resolvedRepository = repository;
   const getRepository = () => {
@@ -303,5 +359,14 @@ export function createAccountabilityTools(repository?: AccountabilityRepository)
       schema: scheduleCheckInputSchema,
     },
   );
-  return [loopListTool, loopCreateTool, loopUpdateTool, loopCloseTool, scheduleCheckTool];
+  const loopSuppressTool = tool(
+    async (input: z.infer<typeof loopSuppressInputSchema>, runtime: ToolRuntime<unknown, AgentContext>) => suppressLoop(runtime.context, input, getRepository()),
+    {
+      name: "loop_suppress",
+      description:
+        "Stop accountability follow-ups for an entire topic when the user asks not to be asked about it again, such as 'stop asking about my sleep'. Always call with confirm=false first unless you have already clarified whether they mean a one-time exception, a genuine routine change, or lasting silence on the subject; an unconfirmed call persists nothing. Suppressions are profile-wide and hide every matching loop from check-ins and context until lifted; set lift=true to resume reminders when the user asks to hear about it again.",
+      schema: loopSuppressInputSchema,
+    },
+  );
+  return [loopListTool, loopCreateTool, loopUpdateTool, loopCloseTool, scheduleCheckTool, loopSuppressTool];
 }

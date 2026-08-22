@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAccountabilityRepository, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
+import { createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
 function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
   const calls: Array<{ operation: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
@@ -21,10 +21,12 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
     ],
     loop_events: [],
     checkin_deliveries: [],
+    loop_suppressions: [],
   };
   const defaults: Record<string, Record<string, unknown>> = {
     open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
+    loop_suppressions: { lifted_at: null },
     scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, claimed_at: null },
     checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
   };
@@ -383,5 +385,77 @@ describe("accountability repository", () => {
     expect(completed).toMatchObject({ id: pending.id, status: "delivered", messageId: "message-9" });
     expect(completed.deliveredAt).not.toBeNull();
     await expect(repository.markDeliveryDelivered("profile-a", pending.id, { messageId: "message-10" })).rejects.toThrow(/pending/i);
+  });
+
+  it("normalizes suppression subjects and validates bounds before touching the database", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: " a " })).rejects.toThrow(/between 2 and 200/i);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: ` ${"x".repeat(201)} ` })).rejects.toThrow(/between 2 and 200/i);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: "sleep before midnight", reason: ` ${"y".repeat(501)} ` })).rejects.toThrow(/between 1 and 500/i);
+    expect(calls.filter((call) => call.table === "loop_suppressions")).toHaveLength(0);
+    const created = await repository.insertLoopSuppression("profile-a", { subject: "  Sleep   BEFORE   midnight  ", reason: " User asked to stop " });
+    expect(created).toMatchObject({
+      profileId: "profile-a",
+      subject: "sleep before midnight",
+      reason: "User asked to stop",
+      liftedAt: null,
+    });
+    expect(calls.find((call) => call.operation === "insert" && call.table === "loop_suppressions")?.params).toMatchObject({ subject: "sleep before midnight" });
+    expect(normalizeSuppressionSubject("\tSleep\tbefore\nmidnight ")).toBe("sleep before midnight");
+  });
+
+  it("updates the reason of the active row instead of duplicating on conflict", async () => {
+    const { database, calls, rows } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const first = await repository.insertLoopSuppression("profile-a", { subject: "Sleep before midnight" });
+    const second = await repository.insertLoopSuppression("profile-a", { subject: "sleep   before midnight", reason: "Genuinely changed routine" });
+    expect(second.id).toBe(first.id);
+    expect(rows.loop_suppressions).toHaveLength(1);
+    expect(rows.loop_suppressions[0]).toMatchObject({ subject: "sleep before midnight", reason: "Genuinely changed routine", lifted_at: null });
+    const update = calls.filter((call) => call.operation === "update" && call.table === "loop_suppressions").at(-1);
+    expect(update?.params).toEqual({ reason: "Genuinely changed routine" });
+    expect(calls).toContainEqual({ operation: "is", table: "loop_suppressions", field: "lifted_at", value: null });
+  });
+
+  it("defaults the suppression reason when none is provided", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertLoopSuppression("profile-a", { subject: "Dentist booking" })).resolves.toMatchObject({
+      subject: "dentist booking",
+      reason: "User asked Iris to stop following up",
+    });
+    expect(rows.loop_suppressions).toHaveLength(1);
+  });
+
+  it("lifts only active rows for the normalized subject and reports the count", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.liftLoopSuppression("profile-a", "never tracked")).resolves.toBe(0);
+    await repository.insertLoopSuppression("profile-a", { subject: "Sleep before midnight" });
+    await repository.insertLoopSuppression("profile-b", { subject: "Sleep before midnight" });
+    await expect(repository.liftLoopSuppression("profile-a", "  SLEEP   BEFORE MIDNIGHT ")).resolves.toBe(1);
+    expect(calls.find((call) => call.operation === "update" && call.table === "loop_suppressions")?.params).toMatchObject({ lifted_at: expect.any(String) });
+    expect(calls).toContainEqual({ operation: "eq", table: "loop_suppressions", field: "subject", value: "sleep before midnight" });
+    expect(calls).toContainEqual({ operation: "is", table: "loop_suppressions", field: "lifted_at", value: null });
+    await expect(repository.listActiveSuppressions("profile-a")).resolves.toHaveLength(0);
+    await expect(repository.listActiveSuppressions("profile-b")).resolves.toHaveLength(1);
+    await repository.insertLoopSuppression("profile-a", { subject: "Sleep before midnight", reason: "Asked again" });
+    await expect(repository.insertLoopSuppression("profile-zzz" as never, { subject: "anything at all" })).rejects.toThrow(/profile scope/i);
+    await expect(repository.liftLoopSuppression("profile-zzz" as never, "anything at all")).rejects.toThrow(/profile scope/i);
+  });
+
+  it("lists active suppressions newest first scoped to the profile", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    rows.loop_suppressions.push(
+      { id: "sup-old", profile_id: "profile-a", subject: "older topic", reason: "r", created_at: "2026-08-20T10:00:00.000Z", lifted_at: null },
+      { id: "sup-new", profile_id: "profile-a", subject: "newer topic", reason: "r", created_at: "2026-08-22T10:00:00.000Z", lifted_at: null },
+      { id: "sup-lifted", profile_id: "profile-a", subject: "lifted topic", reason: "r", created_at: "2026-08-21T10:00:00.000Z", lifted_at: "2026-08-21T11:00:00.000Z" },
+      { id: "sup-other", profile_id: "profile-b", subject: "other profile topic", reason: "r", created_at: "2026-08-22T11:00:00.000Z", lifted_at: null },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const subjects = (await repository.listActiveSuppressions("profile-a")).map((row) => row.subject);
+    expect(subjects).toEqual(["newer topic", "older topic"]);
+    await expect(repository.listActiveSuppressions("profile-zzz" as never)).rejects.toThrow(/profile scope/i);
   });
 });

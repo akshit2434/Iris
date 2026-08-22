@@ -5,6 +5,7 @@ import { createMessage, listThreads } from "@/server/db/queries";
 import { composeCheckinMessage, type CheckinComposer, type CheckinKind } from "./composer";
 import {
   createProductionAccountabilityRepository,
+  normalizeSuppressionSubject,
   type AccountabilityRepository,
   type OpenLoopRow,
 } from "./repository";
@@ -25,6 +26,7 @@ export type SweepProfileReport = {
   cancelledStale: number;
   cancelledOrphans: number;
   skippedNoThread: number;
+  suppressed: number;
   failed: number;
 };
 
@@ -94,7 +96,16 @@ export async function runAccountabilitySweep(input: {
   for (const profileId of profiles) {
     try {
       const pairs = await repository.claimDueChecks(profileId, now, limitPerProfile);
+      const suppressions = await repository.listActiveSuppressions(profileId);
+      const suppressedSubjects = new Set(suppressions.map((suppression) => normalizeSuppressionSubject(suppression.subject)));
       const deliverable = pairs.filter((pair) => pair.loop.status === "open");
+      const suppressedPairs = pairs.filter(
+        (pair) => pair.loop.status === "open" && suppressedSubjects.has(normalizeSuppressionSubject(pair.loop.title)),
+      );
+      const activeDeliverable = deliverable.filter(
+        (pair) => !suppressedSubjects.has(normalizeSuppressionSubject(pair.loop.title)),
+      );
+      if (suppressedPairs.length > 0) await repository.releaseClaims(profileId, suppressedPairs.map((pair) => pair.check.id));
       const staleLoopIds = [
         ...new Set(pairs.filter((pair) => pair.loop.status !== "open").map((pair) => pair.check.loopId)),
       ];
@@ -109,14 +120,14 @@ export async function runAccountabilitySweep(input: {
       let skippedNoThread = 0;
       let failed = 0;
 
-      if (deliverable.length > 0) {
+      if (activeDeliverable.length > 0) {
         const threads = await listThreadsFor(profileId);
         const threadId = threads[0]?.id ?? null;
         if (!threadId) {
-          skippedNoThread = deliverable.length;
-          await repository.releaseClaims(profileId, deliverable.map((pair) => pair.check.id));
+          skippedNoThread = activeDeliverable.length;
+          await repository.releaseClaims(profileId, activeDeliverable.map((pair) => pair.check.id));
         } else {
-          for (const batch of chunkIntoBatches(deliverable, SWEEP_MAX_BATCH)) {
+          for (const batch of chunkIntoBatches(activeDeliverable, SWEEP_MAX_BATCH)) {
             try {
               const kind = selectCheckinKind(batch.map((pair) => pair.loop), now);
               const composed = await composeCheckinMessage({
@@ -155,12 +166,13 @@ export async function runAccountabilitySweep(input: {
 
       reportProfiles.push({
         profileId,
-        selected: deliverable.length,
+        selected: activeDeliverable.length,
         delivered,
         mergedBatches,
         cancelledStale,
         cancelledOrphans,
         skippedNoThread,
+        suppressed: suppressedPairs.length,
         failed,
       });
     } catch {
@@ -172,6 +184,7 @@ export async function runAccountabilitySweep(input: {
         cancelledStale: 0,
         cancelledOrphans: 0,
         skippedNoThread: 0,
+        suppressed: 0,
         failed: 1,
       });
     }

@@ -4,7 +4,11 @@ This module owns the accountability domain: open loops that track commitments ma
 
 ## Sweep counters and units
 
-Sweep reports mix two counting units deliberately. `selected`, `delivered`, `cancelledStale`, `cancelledOrphans`, and `skippedNoThread` count individual scheduled checks (items), while `mergedBatches` and `failed` count delivery batches — one batch carries up to `SWEEP_MAX_BATCH` items, so a failed batch raises `failed` by exactly 1 no matter how many items it held.
+Sweep reports mix two counting units deliberately. `selected`, `delivered`, `cancelledStale`, `cancelledOrphans`, and `skippedNoThread` count individual scheduled checks (items), while `mergedBatches` and `failed` count delivery batches — one batch carries up to `SWEEP_MAX_BATCH` items, so a failed batch raises `failed` by exactly 1 no matter how many items it held. `suppressed` counts checks skipped because their loop title matches an active topic suppression; their claims are released immediately so they stay claimable once the suppression lifts.
+
+## Topic suppressions
+
+A suppression is a profile-wide "stop asking about this subject" instruction stored in `loop_suppressions`. Subjects are normalized (trimmed, whitespace-collapsed, lowercased) before storage, so matching compares loop titles to the normalized subject; only one active row per (profile, subject) exists — re-suppressing updates its reason instead of duplicating. The `loop_suppress` tool gates suppression behind clarification (one-time exception vs routine change vs never mention this topic again) and appends a `suppressed` ledger event to every open or paused loop whose title matches. Suppressed loops are excluded from the `<open-loops>` context block and skipped by sweeps; lifting via `lift: true` resumes reminders immediately.
 
 ## Claim lifecycle
 
