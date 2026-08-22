@@ -19,9 +19,11 @@ type AccountabilityDatabase = SupabaseClient<Database>;
 type OpenLoopTableRow = Database["public"]["Tables"]["open_loops"]["Row"];
 type LoopEventTableRow = Database["public"]["Tables"]["loop_events"]["Row"];
 type ScheduledCheckTableRow = Database["public"]["Tables"]["scheduled_checks"]["Row"];
+type CheckinDeliveryTableRow = Database["public"]["Tables"]["checkin_deliveries"]["Row"];
 
 export type ScheduledCheckStatus = "pending" | "delivered" | "merged" | "cancelled" | "expired";
 export type LoopEventActor = "user" | "agent" | "system";
+export type CheckinDeliveryStatus = "pending" | "delivered" | "answered" | "cancelled";
 
 export type OpenLoopRow = {
   id: string;
@@ -68,6 +70,27 @@ export type ScheduledCheckRow = {
   createdAt: string;
 };
 
+export type DeliverableDueCheck = { check: ScheduledCheckRow; loop: OpenLoopRow };
+
+export type MarkCheckDeliveredInput = {
+  deliveryId: string;
+  deliveredAt: string;
+  attemptCount: number;
+  escalationTier: number;
+};
+
+export type CheckinDeliveryRow = {
+  id: string;
+  profileId: ProfileId;
+  threadId: string;
+  messageId: string | null;
+  summary: string | null;
+  status: CheckinDeliveryStatus;
+  createdAt: string;
+  deliveredAt: string | null;
+  answeredAt: string | null;
+};
+
 export class StaleOpenLoopRevisionError extends Error {
   constructor(message = "Open loop was modified concurrently; reload it and retry.") {
     super(message);
@@ -97,13 +120,18 @@ export type AccountabilityRepository = {
   updateOpenLoopStatus(profileId: ProfileId, loopId: string, expectedUpdatedAt: string, patch: UpdateOpenLoopPatch): Promise<OpenLoopRow>;
   insertLoopEvent(profileId: ProfileId, input: InsertLoopEventInput): Promise<LoopEventRow>;
   listDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<ScheduledCheckRow[]>;
+  listDeliverableDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
+  markCheckDelivered(profileId: ProfileId, checkId: string, input: MarkCheckDeliveredInput): Promise<ScheduledCheckRow>;
   insertScheduledCheck(profileId: ProfileId, input: InsertScheduledCheckInput): Promise<ScheduledCheckRow>;
   cancelPendingChecksForLoop(profileId: ProfileId, loopId: string, reason: string): Promise<number>;
+  insertDelivery(profileId: ProfileId, input: { threadId: string }): Promise<CheckinDeliveryRow>;
+  markDeliveryDelivered(profileId: ProfileId, deliveryId: string, input: { messageId: string; deliveredAt?: string }): Promise<CheckinDeliveryRow>;
 };
 
 const OPEN_LOOP_COLUMNS = "id, profile_id, title, details, kind, status, due_at, cadence, origin_thread_id, origin_message_id, created_at, updated_at, closed_at";
 const LOOP_EVENT_COLUMNS = "id, profile_id, loop_id, kind, detail, actor, source_thread_id, source_message_id, agent_run_id, metadata, created_at";
 const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, created_at";
+const CHECKIN_DELIVERY_COLUMNS = "id, profile_id, thread_id, message_id, summary, status, created_at, delivered_at, answered_at";
 
 const MAX_LOOP_EVENT_DETAIL_LENGTH = 2_000;
 const MAX_CANCEL_REASON_LENGTH = 500;
@@ -179,10 +207,39 @@ function toScheduledCheck(row: ScheduledCheckTableRow): ScheduledCheckRow {
   };
 }
 
+function toDelivery(row: CheckinDeliveryTableRow): CheckinDeliveryRow {
+  return {
+    id: row.id,
+    profileId: row.profile_id,
+    threadId: row.thread_id,
+    messageId: row.message_id,
+    summary: row.summary,
+    status: row.status,
+    createdAt: row.created_at,
+    deliveredAt: row.delivered_at,
+    answeredAt: row.answered_at,
+  };
+}
+
 async function fetchOpenLoop(client: AccountabilityDatabase, profileId: ProfileId, loopId: string): Promise<OpenLoopRow | null> {
   const { data, error } = await client.from("open_loops").select(OPEN_LOOP_COLUMNS).eq("id", loopId).eq("profile_id", profileId).maybeSingle();
   if (error) throw error;
   return data ? toOpenLoop(data) : null;
+}
+
+async function fetchPendingDueChecks(client: AccountabilityDatabase, profileId: ProfileId, nowIso: string, limit: number): Promise<ScheduledCheckRow[]> {
+  assertProfileId(profileId);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Scheduled check limits must be positive integers.");
+  const { data, error } = await client
+    .from("scheduled_checks")
+    .select(SCHEDULED_CHECK_COLUMNS)
+    .eq("profile_id", profileId)
+    .eq("status", "pending")
+    .lte("due_at", nowIso)
+    .order("due_at", { ascending: true })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map(toScheduledCheck);
 }
 
 export function createProductionAccountabilityRepository(): AccountabilityRepository {
@@ -272,22 +329,58 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
     },
 
     async listDueChecks(profileId, nowIso, limit) {
+      return fetchPendingDueChecks(client, profileId, nowIso, limit);
+    },
+
+    async listDeliverableDueChecks(profileId, nowIso, limit) {
+      const checks = await fetchPendingDueChecks(client, profileId, nowIso, limit);
+      if (checks.length === 0) return [];
+      const loopIds = [...new Set(checks.map((check) => check.loopId))];
+      const { data, error } = await client
+        .from("open_loops")
+        .select(OPEN_LOOP_COLUMNS)
+        .eq("profile_id", profileId)
+        .in("id", loopIds);
+      if (error) throw error;
+      const loopsById = new Map((data ?? []).map((row) => [row.id, toOpenLoop(row)]));
+      const joined: DeliverableDueCheck[] = [];
+      for (const check of checks) {
+        const loop = loopsById.get(check.loopId);
+        if (loop) joined.push({ check, loop });
+      }
+      return joined;
+    },
+
+    async markCheckDelivered(profileId, checkId, input) {
       assertProfileId(profileId);
-      if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Scheduled check limits must be positive integers.");
       const { data, error } = await client
         .from("scheduled_checks")
-        .select(SCHEDULED_CHECK_COLUMNS)
+        .update({
+          status: "delivered",
+          delivery_id: input.deliveryId,
+          delivered_at: input.deliveredAt,
+          attempt_count: input.attemptCount,
+          escalation_tier: input.escalationTier,
+        })
+        .eq("id", checkId)
         .eq("profile_id", profileId)
         .eq("status", "pending")
-        .lte("due_at", nowIso)
-        .order("due_at", { ascending: true })
-        .limit(limit);
+        .select(SCHEDULED_CHECK_COLUMNS);
       if (error) throw error;
-      return (data ?? []).map(toScheduledCheck);
+      const row = (data ?? [])[0];
+      if (!row) throw new Error(`Scheduled check "${checkId}" was not pending for this profile.`);
+      return toScheduledCheck(row);
     },
 
     async insertScheduledCheck(profileId, input) {
       assertProfileId(profileId);
+      const { data: priorChecks, error: priorError } = await client
+        .from("scheduled_checks")
+        .select(SCHEDULED_CHECK_COLUMNS)
+        .eq("profile_id", profileId)
+        .eq("loop_id", input.loopId);
+      if (priorError) throw priorError;
+      const carriedAttempts = Math.max(0, ...(priorChecks ?? []).map((row) => row.attempt_count));
       const { data, error } = await client
         .from("scheduled_checks")
         .insert({
@@ -295,6 +388,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           loop_id: input.loopId,
           due_at: input.dueAt,
           delivery_id: input.deliveryId ?? null,
+          attempt_count: carriedAttempts,
         })
         .select(SCHEDULED_CHECK_COLUMNS)
         .single();
@@ -315,6 +409,37 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
         .select(SCHEDULED_CHECK_COLUMNS);
       if (error) throw error;
       return (data ?? []).length;
+    },
+
+    async insertDelivery(profileId, input) {
+      assertProfileId(profileId);
+      const { data, error } = await client
+        .from("checkin_deliveries")
+        .insert({ profile_id: profileId, thread_id: input.threadId })
+        .select(CHECKIN_DELIVERY_COLUMNS)
+        .single();
+      if (error) throw error;
+      if (!data) throw new Error("Check-in delivery insert returned no row.");
+      return toDelivery(data);
+    },
+
+    async markDeliveryDelivered(profileId, deliveryId, input) {
+      assertProfileId(profileId);
+      const { data, error } = await client
+        .from("checkin_deliveries")
+        .update({
+          status: "delivered",
+          message_id: input.messageId,
+          delivered_at: input.deliveredAt ?? new Date().toISOString(),
+        })
+        .eq("id", deliveryId)
+        .eq("profile_id", profileId)
+        .eq("status", "pending")
+        .select(CHECKIN_DELIVERY_COLUMNS);
+      if (error) throw error;
+      const row = (data ?? [])[0];
+      if (!row) throw new Error(`Check-in delivery "${deliveryId}" was not pending for this profile.`);
+      return toDelivery(row);
     },
   };
 }

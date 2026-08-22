@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { loadOpenLoopContext } from "@/server/accountability/context-loader";
 import { assertAppAccess } from "@/server/auth/gate";
 import { getSelectedProfile } from "@/server/auth/profile";
@@ -812,6 +812,14 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
         }
       },
     });
+
+    if (process.env.ACCOUNTABILITY_SWEEP_DISABLED !== "true") {
+      after(() =>
+        import("@/server/accountability/sweeper")
+          .then(({ runAccountabilitySweep }) => runAccountabilitySweep())
+          .catch(() => {}),
+      );
+    }
 
     return new Response(stream, {
       headers: {

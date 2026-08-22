@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAccountabilityRepository, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
-function fakeAccountabilityDatabase() {
+function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
   const calls: Array<{ operation: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
   const insertedAt = "2026-08-22T12:00:00.000Z";
   const rows: Record<string, Record<string, unknown>[]> = {
@@ -17,13 +17,16 @@ function fakeAccountabilityDatabase() {
       { id: "check-other-loop", profile_id: "profile-a", loop_id: "loop-done", due_at: "2026-08-22T06:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
       { id: "check-cancelled", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T07:00:00.000Z", status: "cancelled", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: "2026-08-21T15:00:00.000Z", cancel_reason: "superseded", created_at: "2026-08-21T10:00:00.000Z" },
       { id: "check-b", profile_id: "profile-b", loop_id: "loop-b", due_at: "2026-08-22T05:00:00.000Z", status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
+      ...extraScheduledChecks,
     ],
     loop_events: [],
+    checkin_deliveries: [],
   };
   const defaults: Record<string, Record<string, unknown>> = {
     open_loops: { status: "open", details: null, due_at: null, cadence: null, origin_thread_id: null, origin_message_id: null, closed_at: null },
     loop_events: { detail: null, actor: "agent", source_thread_id: null, source_message_id: null, agent_run_id: null, metadata: {} },
     scheduled_checks: { status: "pending", attempt_count: 0, escalation_tier: 0, delivery_id: null, delivered_at: null, cancelled_at: null, cancel_reason: null },
+    checkin_deliveries: { message_id: null, summary: null, status: "pending", delivered_at: null, answered_at: null },
   };
   let generated = 0;
   const at = (row: unknown, field: string) => (row as Record<string, unknown>)[field];
@@ -206,5 +209,81 @@ describe("accountability repository", () => {
       escalationTier: 0,
     });
     expect(calls.some((call) => call.operation === "insert" && call.table === "scheduled_checks")).toBe(true);
+  });
+
+  it("inherits the highest prior attempt count when rescheduling a loop's check", async () => {
+    const { database, calls } = fakeAccountabilityDatabase([
+      { id: "check-prior", profile_id: "profile-a", loop_id: "loop-a", due_at: "2026-08-22T09:00:00.000Z", status: "delivered", attempt_count: 3, escalation_tier: 2, delivery_id: "delivery-old", delivered_at: "2026-08-22T09:30:00.000Z", cancelled_at: null, cancel_reason: null, created_at: "2026-08-21T10:00:00.000Z" },
+    ]);
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.insertScheduledCheck("profile-a", { loopId: "loop-a", dueAt: "2026-08-25T09:00:00.000Z" })).resolves.toMatchObject({
+      loopId: "loop-a",
+      status: "pending",
+      attemptCount: 3,
+      escalationTier: 0,
+    });
+    expect(calls.find((call) => call.operation === "insert" && call.table === "scheduled_checks")?.params).toMatchObject({ attempt_count: 3 });
+  });
+
+  it("joins pending due checks with their parent loops regardless of loop status", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
+      { check: { id: "check-other-loop" }, loop: { id: "loop-done", status: "done" } },
+      { check: { id: "check-due-early" }, loop: { id: "loop-a", status: "open" } },
+      { check: { id: "check-due-late" }, loop: { id: "loop-a", status: "open" } },
+    ]);
+    expect(calls.filter((call) => call.operation === "from")).toHaveLength(2);
+    expect(calls).toContainEqual({ operation: "in", table: "open_loops", field: "id", value: ["loop-done", "loop-a"] });
+    await expect(repository.listDeliverableDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 1)).resolves.toMatchObject([
+      { check: { id: "check-other-loop" }, loop: { id: "loop-done" } },
+    ]);
+    await expect(repository.listDeliverableDueChecks("profile-b", "2026-08-22T12:00:00.000Z", 10)).resolves.toMatchObject([
+      { check: { id: "check-b" }, loop: { id: "loop-b" } },
+    ]);
+  });
+
+  it("transitions a pending check to delivered exactly once with delivery linkage and counters", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const delivered = await repository.markCheckDelivered("profile-a", "check-due-early", {
+      deliveryId: "delivery-x",
+      deliveredAt: "2026-08-22T12:00:00.000Z",
+      attemptCount: 2,
+      escalationTier: 1,
+    });
+    expect(delivered).toMatchObject({ id: "check-due-early", status: "delivered", deliveryId: "delivery-x", attemptCount: 2, escalationTier: 1 });
+    expect(delivered.deliveredAt).toBe("2026-08-22T12:00:00.000Z");
+    expect(calls.find((call) => call.operation === "update")?.params).toMatchObject({
+      status: "delivered",
+      delivery_id: "delivery-x",
+      attempt_count: 2,
+      escalation_tier: 1,
+    });
+    expect(calls).toContainEqual({ operation: "eq", table: "scheduled_checks", field: "status", value: "pending" });
+    await expect(repository.markCheckDelivered("profile-a", "check-due-early", {
+      deliveryId: "delivery-y",
+      deliveredAt: "2026-08-22T13:00:00.000Z",
+      attemptCount: 3,
+      escalationTier: 2,
+    })).rejects.toThrow(/pending/i);
+    await expect(repository.markCheckDelivered("profile-zzz" as never, "check-due-early", {
+      deliveryId: "delivery-x",
+      deliveredAt: "2026-08-22T12:00:00.000Z",
+      attemptCount: 2,
+      escalationTier: 1,
+    })).rejects.toThrow(/profile scope/i);
+  });
+
+  it("creates pending deliveries and completes them with their message linkage", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const pending = await repository.insertDelivery("profile-a", { threadId: "thread-1" });
+    expect(pending).toMatchObject({ profileId: "profile-a", threadId: "thread-1", status: "pending", messageId: null });
+    expect(calls.some((call) => call.operation === "insert" && call.table === "checkin_deliveries")).toBe(true);
+    const completed = await repository.markDeliveryDelivered("profile-a", pending.id, { messageId: "message-9" });
+    expect(completed).toMatchObject({ id: pending.id, status: "delivered", messageId: "message-9" });
+    expect(completed.deliveredAt).not.toBeNull();
+    await expect(repository.markDeliveryDelivered("profile-a", pending.id, { messageId: "message-10" })).rejects.toThrow(/pending/i);
   });
 });

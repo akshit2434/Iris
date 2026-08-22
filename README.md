@@ -68,6 +68,8 @@ OPENROUTER_API_KEY=your-server-only-openrouter-key
 OPENROUTER_MODEL=openai/gpt-5.6-luna
 # Optional; defaults to OPENROUTER_MODEL for the one small first-turn title request.
 # OPENROUTER_TITLE_MODEL=openai/gpt-5.6-luna
+# Optional; set to true to skip the automatic post-turn accountability sweep.
+# ACCOUNTABILITY_SWEEP_DISABLED=false
 # Optional development tracing (keep disabled unless a private tracing project is configured).
 LANGCHAIN_TRACING_V2=false
 # LANGCHAIN_API_KEY=your-server-only-langsmith-key
