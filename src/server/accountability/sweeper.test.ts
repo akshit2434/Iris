@@ -20,6 +20,10 @@ import type {
   OpenLoopRow,
   ScheduledCheckRow,
 } from "@/server/accountability/repository";
+import type {
+  CommitmentSearchClient,
+  CompletionClassifier,
+} from "@/server/accountability/reconciler";
 
 vi.mock("@/server/db/queries", () => ({
   createMessage: vi.fn(async (input: { id: string }) => ({ ...input, createdAt: "2026-08-22T08:30:00.000Z" })),
@@ -209,6 +213,32 @@ describe("check-in composer", () => {
     const text = composeTier0Text({ kind: "catch_up", loops: [{ title: "Tax filing" }, { title: "Dentist booking" }] });
     expect(text).toContain("their dates");
     expect(text).toContain("pick them up");
+  });
+
+  it("composes the soft-close confirmation as deterministic Tier 0 text citing a bounded excerpt", async () => {
+    const composer = vi.fn(async () => "model text");
+    const result = await composeCheckinMessage({
+      kind: "soft_close_confirm",
+      loops: [{ title: "Renew passport", evidenceExcerpt: "finally submitted the passport renewal this morning btw" }],
+      composer,
+    });
+    expect(result.tier).toBe(0);
+    expect(result.text).toContain("Renew passport");
+    expect(result.text).toContain("finally submitted the passport renewal");
+    expect(result.text).toMatch(/close/i);
+    expect(composer).not.toHaveBeenCalled();
+  });
+
+  it("caps soft-close evidence at eighty characters and falls back without an excerpt", () => {
+    const quoted = composeTier0Text({
+      kind: "soft_close_confirm",
+      loops: [{ title: "Renew passport", evidenceExcerpt: "x".repeat(300) }],
+    });
+    expect(quoted).not.toContain("x".repeat(81));
+    expect(quoted).toContain("Renew passport");
+    const fallback = composeTier0Text({ kind: "soft_close_confirm", loops: [{ title: "Renew passport" }] });
+    expect(fallback).toMatch(/did you get to Renew passport/i);
+    expect(fallback).not.toMatch(/"/);
   });
 
   it("builds the production composer like the title model factory", () => {
@@ -480,5 +510,106 @@ describe("accountability sweep", () => {
     await runAccountabilitySweep({ now: NOW, profiles: ["profile-a", "profile-b"], repository, threadLister: liveThreads });
     expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-a", NOW);
     expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-b", NOW);
+  });
+
+  it("soft-closes an overdue commitment whose completion was already stated elsewhere instead of nagging", async () => {
+    const overdue = makePair({ title: "Renew passport", dueAt: "2026-08-19T09:00:00.000Z" });
+    const repository = fakeRepository([overdue]);
+    const retrieval: CommitmentSearchClient = vi.fn(async () => [{
+      messageId: "00000000-0000-4000-8000-000000000010",
+      threadId: "00000000-0000-4000-8000-000000000011",
+      content: "finally submitted the passport renewal yesterday btw",
+      createdAt: "2026-08-20T14:00:00.000Z",
+    }]);
+    const classifier: CompletionClassifier = vi.fn(async () => ({ completed: true, confidence: 0.9 }));
+    const composer = vi.fn(async () => "model nudge text");
+    const writtenTexts: string[] = [];
+    const report = await runAccountabilitySweep({
+      now: NOW,
+      profiles: ["profile-a"],
+      repository,
+      composer,
+      messageWriter: async (input) => {
+        writtenTexts.push(input.content);
+        return { id: `message-${writtenTexts.length}` };
+      },
+      threadLister: liveThreads,
+      retrieval,
+      classifier,
+    });
+    expect(report.profiles[0]).toMatchObject({ selected: 1, delivered: 1, mergedBatches: 1, failed: 0 });
+    expect(retrieval).toHaveBeenCalledWith(expect.objectContaining({ query: "Renew passport", from: overdue.loop.createdAt, limit: 3 }));
+    expect(classifier).toHaveBeenCalledTimes(1);
+    expect(composer).not.toHaveBeenCalled();
+    expect(writtenTexts).toHaveLength(1);
+    expect(writtenTexts[0]).toContain("Renew passport");
+    expect(writtenTexts[0]).toContain("finally submitted the passport renewal");
+    expect(writtenTexts[0]).toMatch(/close/i);
+    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", overdue.check.id, expect.objectContaining({ attemptCount: 1, escalationTier: 0 }));
+    expect(repository.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: overdue.loop.id, kind: "nudged", actor: "system" }));
+    expect(vi.mocked(repository.updateOpenLoopStatus)).not.toHaveBeenCalled();
+  });
+
+  it("keeps the catch-up nudge when reconciliation finds no stated completion", async () => {
+    const overdue = makePair({ title: "Late loop", dueAt: "2026-08-18T09:00:00.000Z" });
+    const repository = fakeRepository([overdue]);
+    const retrieval: CommitmentSearchClient = vi.fn(async () => [{
+      messageId: "00000000-0000-4000-8000-000000000010",
+      threadId: "00000000-0000-4000-8000-000000000011",
+      content: "thinking about the late loop again",
+      createdAt: "2026-08-20T14:00:00.000Z",
+    }]);
+    const classifier: CompletionClassifier = vi.fn(async () => ({ completed: false, confidence: 0.9 }));
+    const composer = vi.fn(async () => "catch-up text");
+    const writtenTexts: string[] = [];
+    await runAccountabilitySweep({
+      now: NOW,
+      profiles: ["profile-a"],
+      repository,
+      composer,
+      messageWriter: async (input) => {
+        writtenTexts.push(input.content);
+        return { id: `message-${writtenTexts.length}` };
+      },
+      threadLister: liveThreads,
+      retrieval,
+      classifier,
+    });
+    expect(classifier).toHaveBeenCalledTimes(1);
+    expect(composer).toHaveBeenCalledWith(expect.objectContaining({ kind: "catch_up" }));
+    expect(writtenTexts.join("\n")).toBe("catch-up text");
+    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", overdue.check.id, expect.anything());
+  });
+
+  it("never spends search or model calls on commitments inside the two-day window", async () => {
+    const fresh = makePair({ title: "Fresh loop", dueAt: "2026-08-21T09:00:00.000Z" });
+    const routine = makePair({ title: "Weekly review", kind: "routine", cadence: { kind: "weekly" }, dueAt: "2026-08-10T09:00:00.000Z" });
+    const repository = fakeRepository([fresh, routine]);
+    const retrieval: CommitmentSearchClient = vi.fn(async () => []);
+    const classifier: CompletionClassifier = vi.fn(async () => ({ completed: true, confidence: 1 }));
+    const composer = vi.fn(async () => "composed");
+    const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, composer, threadLister: liveThreads, retrieval, classifier });
+    expect(report.profiles[0]).toMatchObject({ selected: 2, delivered: 2 });
+    expect(retrieval).not.toHaveBeenCalled();
+    expect(classifier).not.toHaveBeenCalled();
+  });
+
+  it("falls back to normal nudges when the production reconciliation seams cannot be built", async () => {
+    const envKey = "OPENROUTER_" + "API_KEY";
+    const previousKey = process.env[envKey];
+    delete process.env[envKey];
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    try {
+      const overdue = makePair({ title: "Late loop", dueAt: "2026-08-18T09:00:00.000Z" });
+      const repository = fakeRepository([overdue]);
+      const composer = vi.fn(async () => "catch-up text");
+      const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, composer, threadLister: liveThreads });
+      expect(report.profiles[0]).toMatchObject({ selected: 1, delivered: 1, failed: 0 });
+      expect(composer).toHaveBeenCalledWith(expect.objectContaining({ kind: "catch_up" }));
+    } finally {
+      if (previousKey === undefined) delete process.env[envKey];
+      else process.env[envKey] = previousKey;
+    }
   });
 });

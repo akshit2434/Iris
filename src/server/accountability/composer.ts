@@ -3,9 +3,9 @@ import "server-only";
 import { ChatOpenRouter } from "@langchain/openrouter";
 import { getConfiguredModelName } from "@/server/agent";
 
-export type CheckinKind = "single_commitment" | "merged_batch" | "routine_reflection" | "catch_up";
+export type CheckinKind = "single_commitment" | "merged_batch" | "routine_reflection" | "catch_up" | "soft_close_confirm";
 
-export type CheckinLoopRef = { title: string };
+export type CheckinLoopRef = { title: string; evidenceExcerpt?: string };
 
 export type CheckinComposer = (input: { kind: CheckinKind; loops: CheckinLoopRef[] }) => Promise<string>;
 
@@ -14,6 +14,7 @@ export type ComposedCheckin = { text: string; tier: 0 | 1 };
 const COMPOSER_TIMEOUT_MS = 6000;
 const COMPOSER_MAX_TOKENS = 220;
 const COMPOSER_MAX_CHARS = 1200;
+export const SOFT_CLOSE_EXCERPT_MAX_CHARS = 80;
 
 export function truncateAtWordBoundary(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
@@ -50,6 +51,12 @@ export function composeTier0Text(input: { kind: CheckinKind; loops: CheckinLoopR
       const plural = titles.length > 1;
       const subject = `${joinedTitles(titles)} ${plural ? "slipped past their dates" : "slipped past its date"} — no judgment.`;
       return `${subject} Want to pick ${plural ? "them" : "it"} up today, or should we find a better time?`;
+    }
+    case "soft_close_confirm": {
+      const excerpt = input.loops.find((loop) => loop.evidenceExcerpt)?.evidenceExcerpt;
+      if (!excerpt) return composeTier0Text({ kind: "single_commitment", loops: input.loops });
+      const quoted = truncateAtWordBoundary(excerpt, SOFT_CLOSE_EXCERPT_MAX_CHARS);
+      return `Saw you mention finishing ${joinedTitles(titles)} — "${quoted}". Want me to close it out?`;
     }
     case "single_commitment":
     default:

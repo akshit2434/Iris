@@ -7,6 +7,11 @@ import {
   type MarkCheckDeliveredInput,
 } from "@/server/accountability/repository";
 import { runAccountabilitySweep, type SweepReport } from "@/server/accountability/sweeper";
+import type {
+  CommitmentSearchClient,
+  CompletionClassifier,
+  ReconciliationCandidate,
+} from "@/server/accountability/reconciler";
 import { closeLoop, createLoop, scheduleCheck, suppressLoop, updateLoop } from "@/server/accountability/tools";
 import { loadOpenLoopsForProfile } from "@/server/accountability/context-loader";
 
@@ -157,6 +162,18 @@ function createWorld() {
     return { id };
   };
   const threadLister = async (profileId: (typeof PROFILES)[number]) => (threads[profileId] ? [{ id: threads[profileId] }] : []);
+  const searchCalls: Array<{ profileId: string; query: string; from: string | null }> = [];
+  const classifyCalls: Array<{ title: string; candidates: ReconciliationCandidate[] }> = [];
+  let historyCandidates: ReconciliationCandidate[] = [];
+  let classification: { completed: boolean; confidence: number } = { completed: false, confidence: 0 };
+  const retrieval: CommitmentSearchClient = async (input) => {
+    searchCalls.push({ profileId: input.profileId, query: input.query, from: input.from ?? null });
+    return historyCandidates;
+  };
+  const classifier: CompletionClassifier = async (input) => {
+    classifyCalls.push(input);
+    return classification;
+  };
   const sweep = async (options: { profiles?: Array<(typeof PROFILES)[number]>; limitPerProfile?: number } = {}) => {
     const report = await runAccountabilitySweep({
       now: currentNow(),
@@ -166,6 +183,8 @@ function createWorld() {
       composer,
       messageWriter,
       threadLister: threadLister as never,
+      retrieval,
+      classifier,
     });
     reports.push({ now: currentNow(), report });
     assertInvariants();
@@ -279,6 +298,16 @@ function createWorld() {
     loopByTitle,
     messages: writtenMessages,
     nudgedCount,
+    reconcile: {
+      searchCalls,
+      classifyCalls,
+      setHistory(candidates: ReconciliationCandidate[]) {
+        historyCandidates = candidates;
+      },
+      setClassification(next: { completed: boolean; confidence: number }) {
+        classification = next;
+      },
+    },
     reports,
     repository,
     rows: db.rows,
@@ -731,5 +760,86 @@ describe("accountability multi-week simulation", () => {
     expect(orphan()).toMatchObject({ status: "cancelled", summary: "sweep_retry" });
     expect(String(world.loopByTitle("Orphan witness")?.status)).toBe("open");
     expect(world.nudgedCount(loopId)).toBe(1);
+  });
+
+  it("scenario 10: a completion mentioned casually days earlier turns the overdue sweep into a soft-close confirm", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const assignmentId = await world.agent.trackCommitment({ title: "Submit OS assignment", dueAt: at(1, "08:00") });
+
+    world.advanceTo(at(2, "15:00"));
+    const casualThreadMessageId = "00000000-0000-4000-8000-0000000000e1";
+    world.reconcile.setHistory([{
+      messageId: casualThreadMessageId,
+      threadId: THREAD_B,
+      content: "btw I finally submitted the OS assignment this morning",
+      createdAt: at(2, "15:00"),
+    }]);
+    world.reconcile.setClassification({ completed: true, confidence: 0.92 });
+
+    const [loopRow] = world.loops();
+    expect(loopRow).toMatchObject({ title: "Submit OS assignment", status: "open", created_at: "2026-08-01T00:00:00.000Z" });
+
+    world.advanceTo(at(4, SWEEP_TIME));
+    const late = await sweepProfileA(world);
+    expect(late.profiles[0]).toMatchObject({ selected: 1, delivered: 1, failed: 0 });
+    expect(world.composerRequests).toHaveLength(0);
+    expect(world.reconcile.searchCalls).toEqual([
+      { profileId: "profile-a", query: "Submit OS assignment", from: String(loopRow.created_at) },
+    ]);
+    expect(world.reconcile.classifyCalls).toEqual([
+      { title: "Submit OS assignment", candidates: [expect.objectContaining({ messageId: casualThreadMessageId })] },
+    ]);
+    expect(world.messages).toHaveLength(1);
+    expect(world.messages[0].content).toContain("Submit OS assignment");
+    expect(world.messages[0].content).toContain("submitted the OS assignment");
+    expect(world.messages[0].content).toMatch(/close/i);
+    expect(String(world.loopByTitle("Submit OS assignment")?.status)).toBe("open");
+    expect(world.checksForLoop(assignmentId)[0]).toMatchObject({ status: "delivered", attempt_count: 1, escalation_tier: 0 });
+    expect(world.nudgedCount(assignmentId)).toBe(1);
+  });
+
+  it("scenario 11: when reconciliation finds no stated completion the overdue sweep stays a normal catch-up nudge", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    await world.agent.trackCommitment({ title: "Book dentist", dueAt: at(1, "08:00") });
+
+    world.advanceTo(at(4, SWEEP_TIME));
+    world.reconcile.setHistory([{
+      messageId: "00000000-0000-4000-8000-0000000000e2",
+      threadId: THREAD_B,
+      content: "still thinking about which dentist to pick",
+      createdAt: at(3, "12:00"),
+    }]);
+    world.reconcile.setClassification({ completed: false, confidence: 0.9 });
+
+    const overdue = await sweepProfileA(world);
+    expect(overdue.profiles[0]).toMatchObject({ selected: 1, delivered: 1, failed: 0 });
+    expect(world.reconcile.classifyCalls).toHaveLength(1);
+    expect(world.composerRequests).toEqual([{ kind: "catch_up", titles: ["Book dentist"] }]);
+    expect(world.messages).toHaveLength(1);
+    expect(world.messages[0].content).toBe("[catch_up] Book dentist");
+    expect(String(world.loopByTitle("Book dentist")?.status)).toBe("open");
+    expect(world.checksForLoop(String(world.loopByTitle("Book dentist")?.id))[0]).toMatchObject({ status: "delivered" });
+  });
+
+  it("edge: a low-confidence completion never soft-closes and still nudges normally", async () => {
+    const world = createWorld();
+    world.advanceTo(at(0, "10:00"));
+    const loopId = await world.agent.trackCommitment({ title: "Renew passport", dueAt: at(1, "08:00") });
+
+    world.advanceTo(at(4, SWEEP_TIME));
+    world.reconcile.setHistory([{
+      messageId: "00000000-0000-4000-8000-0000000000e3",
+      threadId: THREAD_B,
+      content: "passport stuff is maybe handled?",
+      createdAt: at(3, "09:00"),
+    }]);
+    world.reconcile.setClassification({ completed: true, confidence: 0.55 });
+
+    const uncertain = await sweepProfileA(world);
+    expect(uncertain.profiles[0]).toMatchObject({ delivered: 1 });
+    expect(world.composerRequests).toEqual([{ kind: "catch_up", titles: ["Renew passport"] }]);
+    expect(String(world.loops().find((loop) => loop.id === loopId)?.status)).toBe("open");
   });
 });

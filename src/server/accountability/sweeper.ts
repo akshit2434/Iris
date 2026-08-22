@@ -2,13 +2,28 @@ import "server-only";
 
 import { PROFILE_IDS, type ProfileId } from "@/lib/profiles";
 import { createMessage, listThreads } from "@/server/db/queries";
-import { composeCheckinMessage, type CheckinComposer, type CheckinKind } from "./composer";
+import {
+  composeCheckinMessage,
+  type CheckinComposer,
+  type CheckinKind,
+  type CheckinLoopRef,
+} from "./composer";
 import {
   createProductionAccountabilityRepository,
   normalizeSuppressionSubject,
   type AccountabilityRepository,
+  type DeliverableDueCheck,
   type OpenLoopRow,
 } from "./repository";
+import {
+  createProductionCommitmentRetrieval,
+  createProductionCompletionClassifier,
+  isReconciliationEligible,
+  reconcileOverdueCommitments,
+  type CompletionClassifier,
+  type CommitmentSearchClient,
+  type SoftClosePlan,
+} from "./reconciler";
 
 export const SWEEP_MAX_BATCH = 4;
 export const DEFAULT_LIMIT_PER_PROFILE = 8;
@@ -82,6 +97,8 @@ export async function runAccountabilitySweep(input: {
   composer?: CheckinComposer;
   messageWriter?: SweepMessageWriter;
   threadLister?: SweepThreadLister;
+  retrieval?: CommitmentSearchClient;
+  classifier?: CompletionClassifier;
 } = {}): Promise<SweepReport> {
   const now = input.now ?? new Date().toISOString();
   const profiles = input.profiles ?? [...PROFILE_IDS];
@@ -90,6 +107,20 @@ export async function runAccountabilitySweep(input: {
   const composer = input.composer;
   const writeMessage = input.messageWriter ?? createDefaultMessageWriter();
   const listThreadsFor = input.threadLister ?? createDefaultThreadLister();
+
+  let reconciliationSeams: { retrieval: CommitmentSearchClient; classifier: CompletionClassifier } | null | undefined;
+  function resolveReconciliationSeams() {
+    if (reconciliationSeams !== undefined) return reconciliationSeams;
+    try {
+      reconciliationSeams = {
+        retrieval: input.retrieval ?? createProductionCommitmentRetrieval(),
+        classifier: input.classifier ?? createProductionCompletionClassifier(),
+      };
+    } catch {
+      reconciliationSeams = null;
+    }
+    return reconciliationSeams;
+  }
 
   const reportProfiles: SweepProfileReport[] = [];
 
@@ -115,6 +146,27 @@ export async function runAccountabilitySweep(input: {
       }
       const cancelledOrphans = await repository.cancelOrphanPendingDeliveries(profileId, now);
 
+      const softClosePlans = new Map<string, SoftClosePlan>();
+      const reconciliationTargets = activeDeliverable.filter((pair) => isReconciliationEligible(pair.loop, now));
+      if (reconciliationTargets.length > 0) {
+        const seams = resolveReconciliationSeams();
+        if (seams) {
+          try {
+            const plans = await reconcileOverdueCommitments({
+              profileId,
+              loops: reconciliationTargets.map((pair) => pair.loop),
+              now,
+              retrieval: seams.retrieval,
+              classifier: seams.classifier,
+            });
+            for (const [loopId, plan] of plans) softClosePlans.set(loopId, plan);
+          } catch {
+            softClosePlans.clear();
+          }
+        }
+      }
+      const normalPairs = activeDeliverable.filter((pair) => !softClosePlans.has(pair.loop.id));
+
       let delivered = 0;
       let mergedBatches = 0;
       let skippedNoThread = 0;
@@ -127,14 +179,9 @@ export async function runAccountabilitySweep(input: {
           skippedNoThread = activeDeliverable.length;
           await repository.releaseClaims(profileId, activeDeliverable.map((pair) => pair.check.id));
         } else {
-          for (const batch of chunkIntoBatches(activeDeliverable, SWEEP_MAX_BATCH)) {
+          const deliverBatch = async (batch: DeliverableDueCheck[], kind: CheckinKind, loops: CheckinLoopRef[]) => {
             try {
-              const kind = selectCheckinKind(batch.map((pair) => pair.loop), now);
-              const composed = await composeCheckinMessage({
-                kind,
-                loops: batch.map((pair) => ({ title: pair.loop.title })),
-                composer,
-              });
+              const composed = await composeCheckinMessage({ kind, loops, composer });
               const delivery = await repository.insertDelivery(profileId, { threadId });
               const message = await writeMessage({ profileId, threadId, content: composed.text });
               await repository.markDeliveryDelivered(profileId, delivery.id, { messageId: message.id });
@@ -160,6 +207,18 @@ export async function runAccountabilitySweep(input: {
             } catch {
               failed += 1;
             }
+          };
+
+          for (const pair of activeDeliverable) {
+            const plan = softClosePlans.get(pair.loop.id);
+            if (!plan) continue;
+            await deliverBatch([pair], "soft_close_confirm", [
+              { title: pair.loop.title, evidenceExcerpt: plan.excerpt },
+            ]);
+          }
+          for (const batch of chunkIntoBatches(normalPairs, SWEEP_MAX_BATCH)) {
+            const kind = selectCheckinKind(batch.map((pair) => pair.loop), now);
+            await deliverBatch(batch, kind, batch.map((pair) => ({ title: pair.loop.title })));
           }
         }
       }
