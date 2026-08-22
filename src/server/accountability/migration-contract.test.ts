@@ -12,6 +12,11 @@ const claimMigration = readFileSync(
   "utf8",
 );
 
+const claimRpcMigration = readFileSync(
+  new URL("../../../supabase/migrations/20260831000000_accountability_claim_rpc.sql", import.meta.url),
+  "utf8",
+);
+
 describe("accountability foundation migration contract", () => {
   it("defines loop, ledger, schedule, delivery, and suppression layers", () => {
     for (const required of [
@@ -71,5 +76,33 @@ describe("accountability claim migration contract", () => {
   it("keeps claimed rows inside the existing pending status shape", () => {
     const foundation = migration.toLowerCase();
     expect(foundation).toContain("status = 'pending' and delivered_at is null and cancelled_at is null");
+  });
+});
+
+describe("accountability claim rpc migration contract", () => {
+  it("claims through a security definer function locked to service_role", () => {
+    for (const required of [
+      "claim_accountability_checks",
+      "returns setof public.scheduled_checks",
+      "security definer",
+      "revoke all on function",
+      "grant execute on function",
+      "from public, anon, authenticated",
+      "to service_role",
+    ]) expect(claimRpcMigration.toLowerCase()).toContain(required.toLowerCase());
+  });
+
+  it("keeps the reservation predicate, ownership guard, and deterministic ordering explicit", () => {
+    for (const required of [
+      "raise exception 'Unknown profile scope'",
+      "sc.profile_id = p_profile_id",
+      "sc.status = 'pending'",
+      "sc.due_at <= p_now",
+      "(sc.claimed_at is null or sc.claimed_at < p_stale_before)",
+      "order by sc.due_at asc, sc.id asc",
+      "for update skip locked",
+      "limit greatest(coalesce(p_limit, 8), 1)",
+      "returning sc.*",
+    ]) expect(claimRpcMigration.toLowerCase()).toContain(required.toLowerCase());
   });
 });

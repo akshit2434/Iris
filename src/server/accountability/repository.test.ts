@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
 function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
-  const calls: Array<{ operation: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
+  const calls: Array<{ operation: string; name?: string; table?: string; field?: string; value?: unknown; params?: unknown }> = [];
   const insertedAt = "2026-08-22T12:00:00.000Z";
   const rows: Record<string, Record<string, unknown>[]> = {
     open_loops: [
@@ -91,6 +91,27 @@ function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown
   return {
     database: {
       from(table: string) { calls.push({ operation: "from", table }); return chain(table); },
+      async rpc(name: string, params: Record<string, unknown>) {
+        calls.push({ operation: "rpc", name, params });
+        if (name !== "claim_accountability_checks") return { data: [], error: null };
+        const matched = [...rows.scheduled_checks]
+          .filter((row) =>
+            at(row, "profile_id") === params.p_profile_id &&
+            at(row, "status") === "pending" &&
+            String(at(row, "due_at")) <= String(params.p_now) &&
+            (at(row, "claimed_at") === null || String(at(row, "claimed_at")) < String(params.p_stale_before)))
+          .sort((left, right) => String(at(left, "due_at")).localeCompare(String(at(right, "due_at"))) || String(at(left, "id")).localeCompare(String(at(right, "id"))))
+          .slice(0, Math.max(Number(params.p_limit ?? 8), 1));
+        const targets = new Set(matched);
+        const claimed: Record<string, unknown>[] = [];
+        rows.scheduled_checks = rows.scheduled_checks.map((row) => {
+          if (!targets.has(row)) return row;
+          const updated = { ...row, claimed_at: params.p_now };
+          claimed.push(updated);
+          return updated;
+        });
+        return { data: claimed.sort((left, right) => String(at(left, "due_at")).localeCompare(String(at(right, "due_at")))), error: null };
+      },
     },
     calls,
     rows,
@@ -283,19 +304,11 @@ describe("accountability repository", () => {
       expect(pair.check.status).toBe("pending");
       expect(pair.loop.id).toBe(pair.check.loopId);
     }
-    const update = calls.find((call) => call.operation === "update");
-    expect(update).toMatchObject({ table: "scheduled_checks", params: { claimed_at: "2026-08-22T12:00:00.000Z" } });
-    expect(calls).toContainEqual({ operation: "eq", table: "scheduled_checks", field: "status", value: "pending" });
-    expect(calls).toContainEqual({ operation: "lte", table: "scheduled_checks", field: "due_at", value: "2026-08-22T12:00:00.000Z" });
-    expect(calls.find((call) => call.operation === "or")?.value).toContain("claimed_at.is.null");
-    expect(calls.find((call) => call.operation === "or")?.value).toContain("claimed_at.lt.2026-08-22T11:50");
-    expect(calls).toContainEqual({ operation: "order", table: "scheduled_checks", field: "due_at", value: { ascending: true } });
-    expect(calls).toContainEqual({ operation: "order", table: "scheduled_checks", field: "id", value: { ascending: true } });
-    const dueAtOrderIndex = calls.findIndex((call) => call.operation === "order" && call.field === "due_at");
-    const idOrderIndex = calls.findIndex((call) => call.operation === "order" && call.field === "id");
-    expect(dueAtOrderIndex).toBeGreaterThanOrEqual(0);
-    expect(idOrderIndex).toBeGreaterThan(dueAtOrderIndex);
-    expect(calls).toContainEqual({ operation: "limit", table: "scheduled_checks", value: 2 });
+    const rpcCall = calls.find((call) => call.operation === "rpc");
+    expect(rpcCall).toMatchObject({
+      name: "claim_accountability_checks",
+      params: { p_profile_id: "profile-a", p_now: "2026-08-22T12:00:00.000Z", p_stale_before: "2026-08-22T11:50:00.000Z", p_limit: 2 },
+    });
     await expect(repository.listDueChecks("profile-a", "2026-08-22T12:00:00.000Z", 5)).resolves.toMatchObject([
       { id: "check-other-loop" },
       { id: "check-due-early" },
@@ -318,8 +331,8 @@ describe("accountability repository", () => {
     expect(stalePair?.check.attemptCount).toBe(1);
     expect(stalePair?.check.claimedAt).toBe("2026-08-22T12:00:00.000Z");
     expect(claimed.some((pair) => pair.check.id === "check-fresh-claim")).toBe(false);
-    const orCall = calls.find((call) => call.operation === "or");
-    expect(String(orCall?.value)).toContain("claimed_at.lt.2026-08-22T11:50:00.000Z");
+    const staleRpc = calls.find((call) => call.operation === "rpc");
+    expect(String((staleRpc?.params as Record<string, unknown>).p_stale_before)).toBe("2026-08-22T11:50:00.000Z");
   });
 
   it("clears the claim when a check is marked delivered or cancelled", async () => {

@@ -1289,6 +1289,10 @@ export type Database = {
         Args: { p_worker_id: string; p_limit?: number; p_lease_seconds?: number };
         Returns: Array<Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]>;
       };
+      claim_accountability_checks: {
+        Args: { p_profile_id: "profile-a" | "profile-b"; p_now: string; p_stale_before: string; p_limit: number };
+        Returns: Array<Database["public"]["Tables"]["scheduled_checks"]["Row"]>;
+      };
       claim_memory_consolidation_job: {
         Args: { p_profile_id: "profile-a" | "profile-b"; p_job_id: string; p_worker_id: string; p_lease_seconds?: number };
         Returns: Array<Database["public"]["Tables"]["memory_consolidation_jobs"]["Row"]>;

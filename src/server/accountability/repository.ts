@@ -417,17 +417,12 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       assertProfileId(profileId);
       if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Scheduled check limits must be positive integers.");
       const staleBeforeIso = new Date(Date.parse(nowIso) - CLAIM_STALE_WINDOW_MS).toISOString();
-      const { data, error } = await client
-        .from("scheduled_checks")
-        .update({ claimed_at: nowIso })
-        .eq("profile_id", profileId)
-        .eq("status", "pending")
-        .lte("due_at", nowIso)
-        .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeIso}`)
-        .order("due_at", { ascending: true })
-        .order("id", { ascending: true })
-        .limit(limit)
-        .select(SCHEDULED_CHECK_COLUMNS);
+      const { data, error } = await client.rpc("claim_accountability_checks", {
+        p_profile_id: profileId,
+        p_now: nowIso,
+        p_stale_before: staleBeforeIso,
+        p_limit: limit,
+      });
       if (error) throw error;
       const claimed = (data ?? []).map(toScheduledCheck).sort((left, right) => left.dueAt.localeCompare(right.dueAt));
       return joinChecksWithLoops(client, profileId, claimed);

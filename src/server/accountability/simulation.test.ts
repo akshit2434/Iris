@@ -127,7 +127,29 @@ function createAccountabilityDatabase() {
     return builder;
   };
   return {
-    client: { from(table: string) { return chain(table); } },
+    client: {
+      from(table: string) { return chain(table); },
+      async rpc(name: string, params: Record<string, unknown>) {
+        if (name !== "claim_accountability_checks") return { data: [], error: null };
+        const matched = [...rows.scheduled_checks]
+          .filter((row) =>
+            at(row, "profile_id") === params.p_profile_id &&
+            at(row, "status") === "pending" &&
+            String(at(row, "due_at")) <= String(params.p_now) &&
+            (at(row, "claimed_at") === null || String(at(row, "claimed_at")) < String(params.p_stale_before)))
+          .sort((left, right) => String(at(left, "due_at")).localeCompare(String(at(right, "due_at"))) || String(at(left, "id")).localeCompare(String(at(right, "id"))))
+          .slice(0, Math.max(Number(params.p_limit ?? 8), 1));
+        const targets = new Set(matched);
+        const claimed: Record<string, unknown>[] = [];
+        rows.scheduled_checks = rows.scheduled_checks.map((row) => {
+          if (!targets.has(row)) return row;
+          const updated = { ...row, claimed_at: params.p_now };
+          claimed.push(updated);
+          return updated;
+        });
+        return { data: claimed.sort((left, right) => String(at(left, "due_at")).localeCompare(String(at(right, "due_at")))), error: null };
+      },
+    },
     rows,
   };
 }

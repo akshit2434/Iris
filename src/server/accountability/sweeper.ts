@@ -90,7 +90,9 @@ function createDefaultThreadLister(): SweepThreadLister {
 }
 
 function warnSweepFailure(profileId: ProfileId, stage: string, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error
+    ? error.message
+    : (() => { try { return JSON.stringify(error); } catch { return String(error); } })();
   console.warn(JSON.stringify({ scope: "accountability-sweep", stage, profileId, error: message }));
 }
 
