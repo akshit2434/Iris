@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { ProfileId } from "@/lib/profiles";
+import { isBriefingLoopTitle } from "./briefing";
 import {
   createProductionAccountabilityRepository,
   normalizeSuppressionSubject,
@@ -76,6 +77,7 @@ export async function loadOpenLoopsForProfile(
   const suppressedSubjects = new Set(suppressions.map((suppression) => normalizeSuppressionSubject(suppression.subject)));
   return rows
     .filter(isActiveRow)
+    .filter((row) => !isBriefingLoopTitle(row.title))
     .filter((row) => !suppressedSubjects.has(normalizeSuppressionSubject(row.title)))
     .sort(compareForContext)
     .slice(0, limit)

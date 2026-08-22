@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createMessage, listThreads } from "@/server/db/queries";
+import { BRIEFING_LOOP_TITLE } from "@/server/accountability/briefing";
 import {
   composeCheckinMessage,
   composeTier0Text,
@@ -156,8 +157,9 @@ function fakeRepository(pairs: DeliverableDueCheck[] = [], overrides: Partial<Ac
         answeredAt: null,
       };
     }),
-    insertDeliveryItems: vi.fn(async () => undefined),
-    markDeliveryDelivered: vi.fn(async (_profileId: string, deliveryId: string, input: { messageId: string }) => ({
+  insertDeliveryItems: vi.fn(async () => undefined),
+  listChecksForLoop: vi.fn(async () => []),
+  markDeliveryDelivered: vi.fn(async (_profileId: string, deliveryId: string, input: { messageId: string }) => ({
       id: deliveryId,
       profileId: "profile-a" as const,
       threadId: THREAD_ID,
@@ -602,6 +604,119 @@ describe("accountability sweep", () => {
     await runAccountabilitySweep({ now: NOW, profiles: ["profile-a", "profile-b"], repository, threadLister: liveThreads });
     expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-a", NOW);
     expect(repository.cancelOrphanPendingDeliveries).toHaveBeenCalledWith("profile-b", NOW);
+  });
+
+  it("seeds a lazily created Morning briefing check due today at 08:00 when open loops exist", async () => {
+    const briefingLoop = makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null });
+    const repository = fakeRepository([], {
+      listOpenLoops: vi.fn(async () => [makeLoop({ title: "Buy groceries" })]),
+      insertOpenLoop: vi.fn(async () => briefingLoop),
+    });
+    const report = await runAccountabilitySweep({ now: "2026-08-21T06:30:00.000Z", profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertOpenLoop).toHaveBeenCalledWith(expect.objectContaining({
+      profileId: "profile-a",
+      title: BRIEFING_LOOP_TITLE,
+      kind: "routine",
+      cadence: { kind: "daily" },
+    }));
+    expect(repository.insertScheduledCheck).toHaveBeenCalledWith("profile-a", { loopId: "loop-briefing", dueAt: "2026-08-21T08:00:00.000Z" });
+    expect(report.profiles[0]).toMatchObject({ selected: 0, delivered: 0, failed: 0 });
+  });
+
+  it("targets tomorrow 08:00 when today's briefing slot is already past and still delivers the same sweep's other checks", async () => {
+    const briefingLoop = makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null });
+    const repository = fakeRepository([makePair({ title: "Renew passport" }, { dueAt: "2026-08-22T08:00:00.000Z" })], {
+      listOpenLoops: vi.fn(async () => [makeLoop({ title: "Buy groceries" }), briefingLoop]),
+      insertOpenLoop: vi.fn(async () => briefingLoop),
+      listChecksForLoop: vi.fn(async () => []),
+    });
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, composer: async () => "nudge", threadLister: liveThreads });
+    expect(repository.insertScheduledCheck).toHaveBeenCalledWith("profile-a", { loopId: "loop-briefing", dueAt: "2026-08-23T08:00:00.000Z" });
+    expect(repository.markCheckDelivered).toHaveBeenCalledTimes(1);
+  });
+
+  it("never seeds a briefing when the only open loop is the reserved one", async () => {
+    const repository = fakeRepository([], {
+      listOpenLoops: vi.fn(async () => [makeLoop({ title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null })]),
+    });
+    await runAccountabilitySweep({ now: "2026-08-21T06:30:00.000Z", profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertOpenLoop).not.toHaveBeenCalled();
+    expect(repository.insertScheduledCheck).not.toHaveBeenCalled();
+  });
+
+  it("cancels pending briefing checks once no non-briefing loop remains open", async () => {
+    const repository = fakeRepository([], {
+      listOpenLoops: vi.fn(async () => [makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null })]),
+      listChecksForLoop: vi.fn(async () => [makeCheck("loop-briefing", "2026-08-21T08:00:00.000Z", { id: "check-orphan-briefing" })]),
+      cancelPendingChecksForLoop: vi.fn(async () => 1),
+    });
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.cancelPendingChecksForLoop).toHaveBeenCalledWith("profile-a", "loop-briefing", expect.stringMatching(/no open loops/i));
+    expect(repository.insertOpenLoop).not.toHaveBeenCalled();
+    expect(repository.insertScheduledCheck).not.toHaveBeenCalled();
+  });
+
+  it("skips reseeding while a briefing check is pending or was delivered today, then resumes the next day", async () => {
+    const briefingLoop = makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null });
+    let currentBriefingChecks: ScheduledCheckRow[] = [makeCheck("loop-briefing", "2026-08-22T08:00:00.000Z")];
+    const repository = fakeRepository([], {
+      listOpenLoops: vi.fn(async () => [makeLoop({ title: "Buy groceries" })]),
+      insertOpenLoop: vi.fn(async () => briefingLoop),
+      listChecksForLoop: vi.fn(async (_profileId: string, loopId: string) =>
+        loopId === "loop-briefing" ? currentBriefingChecks : []) as never,
+    });
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertScheduledCheck).not.toHaveBeenCalled();
+
+    currentBriefingChecks = [{
+      ...makeCheck("loop-briefing", "2026-08-22T08:00:00.000Z"),
+      status: "delivered",
+      deliveredAt: "2026-08-22T08:05:00.000Z",
+    }];
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertScheduledCheck).not.toHaveBeenCalled();
+
+    currentBriefingChecks = [{
+      ...makeCheck("loop-briefing", "2026-08-21T08:00:00.000Z"),
+      status: "delivered",
+      deliveredAt: "2026-08-21T09:00:00.000Z",
+    }];
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertScheduledCheck).toHaveBeenCalledWith("profile-a", { loopId: "loop-briefing", dueAt: "2026-08-23T08:00:00.000Z" });
+  });
+
+  it("supersedes a stale unclaimed briefing check from an earlier day instead of delivering it late", async () => {
+    const briefingLoop = makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null });
+    const repository = fakeRepository([], {
+      listOpenLoops: vi.fn(async () => [makeLoop({ title: "Buy groceries" })]),
+      insertOpenLoop: vi.fn(async () => briefingLoop),
+      listChecksForLoop: vi.fn(async () => [
+        makeCheck("loop-briefing", "2026-08-20T08:00:00.000Z", { id: "check-stale" }),
+      ]),
+      cancelPendingChecksForLoop: vi.fn(async () => 1),
+    });
+    await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.cancelPendingChecksForLoop).toHaveBeenCalledWith("profile-a", "loop-briefing", expect.stringMatching(/superseded/i));
+    expect(repository.insertScheduledCheck).toHaveBeenCalledWith("profile-a", { loopId: "loop-briefing", dueAt: "2026-08-23T08:00:00.000Z" });
+  });
+
+  it("does not resurrect a closed or paused briefing loop", async () => {
+    const repository = fakeRepository([], {
+      listOpenLoops: vi.fn(async () => [
+        makeLoop({ title: "Buy groceries" }),
+        makeLoop({ title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, status: "dropped", closedAt: NOW }),
+      ]),
+    });
+    await runAccountabilitySweep({ now: "2026-08-21T06:30:00.000Z", profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertOpenLoop).not.toHaveBeenCalled();
+    expect(repository.insertScheduledCheck).not.toHaveBeenCalled();
+  });
+
+  it("keeps sweeping when the reserved title matches no rows because profiles start clean", async () => {
+    const repository = fakeRepository([]);
+    const report = await runAccountabilitySweep({ now: NOW, profiles: ["profile-a"], repository, threadLister: liveThreads });
+    expect(repository.insertOpenLoop).not.toHaveBeenCalled();
+    expect(report.profiles[0]).toMatchObject({ failed: 0 });
   });
 
   it("soft-closes an overdue commitment whose completion was already stated elsewhere instead of nagging", async () => {

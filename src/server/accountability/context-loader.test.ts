@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { formatOpenLoopsPrompt, loadOpenLoopsForProfile, OPEN_LOOP_CONTEXT_MAX_ITEMS, OPEN_LOOP_TITLE_MAX_LENGTH } from "@/server/accountability/context-loader";
+import { BRIEFING_LOOP_TITLE } from "@/server/accountability/briefing";
 import type { AccountabilityRepository, OpenLoopRow } from "@/server/accountability/repository";
 
 const NOW = "2026-08-22T12:00:00.000Z";
@@ -52,6 +53,7 @@ function fakeRepository(
     cancelOrphanPendingDeliveries: vi.fn(async () => 0),
     markCheckDelivered: vi.fn(async (_profileId, checkId) => ({ id: checkId, profileId: "profile-a" as const, loopId: "loop-a", dueAt: NOW, status: "delivered" as const, attemptCount: 1, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: NOW })),
     insertScheduledCheck: vi.fn(async (_profileId, input) => ({ id: "check-1", profileId: "profile-a" as const, loopId: input.loopId, dueAt: input.dueAt, status: "pending" as const, attemptCount: 0, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: NOW })),
+    listChecksForLoop: vi.fn(async () => []),
     cancelPendingChecksForLoop: vi.fn(async () => 0),
     insertDelivery: vi.fn(async (_profileId, input) => ({ id: "delivery-1", profileId: "profile-a" as const, threadId: input.threadId, messageId: null, summary: null, status: "pending" as const, createdAt: NOW, deliveredAt: null, answeredAt: null })),
     insertDeliveryItems: vi.fn(async () => undefined),
@@ -134,6 +136,19 @@ describe("open loop context loader", () => {
     expect(repo.listActiveSuppressions).toHaveBeenCalledWith("profile-a");
     expect(entries.map((entry) => entry.loopId)).toEqual(["loop-a", "loop-other"]);
     expect(entries.some((entry) => entry.title === "Sleep BEFORE   Midnight")).toBe(false);
+  });
+
+  it("excludes the reserved Morning briefing loop from prompt context without consuming the limit budget", async () => {
+    const rows = [
+      makeLoop({ id: "loop-briefing", title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" }, dueAt: null }),
+      ...Array.from({ length: OPEN_LOOP_CONTEXT_MAX_ITEMS }, (_, index) =>
+        makeLoop({ id: `loop-${String(index).padStart(2, "0")}`, title: `Task ${index}`, dueAt: `2026-09-${String(index + 1).padStart(2, "0")}T09:00:00.000Z` })),
+    ];
+    const entries = await loadOpenLoopsForProfile(fakeRepository(rows), "profile-a");
+    expect(entries.some((entry) => entry.title === BRIEFING_LOOP_TITLE)).toBe(false);
+    expect(entries).toHaveLength(OPEN_LOOP_CONTEXT_MAX_ITEMS);
+    expect(entries.every((entry) => entry.loopId !== "loop-briefing")).toBe(true);
+    expect(await loadOpenLoopsForProfile(fakeRepository([makeLoop({ title: BRIEFING_LOOP_TITLE, kind: "routine", cadence: { kind: "daily" } })]), "profile-a")).toEqual([]);
   });
 
   it("keeps loops when no suppressions are active and applies the limit after filtering", async () => {

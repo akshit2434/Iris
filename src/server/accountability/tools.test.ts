@@ -76,6 +76,7 @@ function fakeRepository(overrides: Partial<AccountabilityRepository> = {}): Acco
     releaseClaims: vi.fn(async () => undefined),
     cancelOrphanPendingDeliveries: vi.fn(async () => 0),
     markCheckDelivered: vi.fn(async (_profileId, checkId) => ({ id: checkId, profileId: "profile-a" as const, loopId: LOOP_ID, dueAt: DUE_AT, status: "delivered" as const, attemptCount: 1, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: "2026-08-22T12:00:00.000Z" })),
+    listChecksForLoop: vi.fn(async () => []),
     insertScheduledCheck: vi.fn(async (_profileId, input) => ({ id: "generated-check", profileId: "profile-a" as const, loopId: input.loopId, dueAt: input.dueAt, status: "pending" as const, attemptCount: 0, escalationTier: 0, deliveryId: null, deliveredAt: null, cancelledAt: null, cancelReason: null, claimedAt: null, createdAt: "2026-08-22T12:00:00.000Z" })),
     cancelPendingChecksForLoop: vi.fn(async () => 2),
     insertDelivery: vi.fn(async (_profileId, input) => ({ id: "generated-delivery", profileId: "profile-a" as const, threadId: input.threadId, messageId: null, summary: null, status: "pending" as const, createdAt: "2026-08-22T12:00:00.000Z", deliveredAt: null, answeredAt: null })),

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BRIEFING_LOOP_TITLE } from "@/server/accountability/briefing";
 import { createAccountabilityRepository, normalizeSuppressionSubject, StaleOpenLoopRevisionError } from "@/server/accountability/repository";
 
 function fakeAccountabilityDatabase(extraScheduledChecks: Record<string, unknown>[] = []) {
@@ -493,6 +494,16 @@ describe("accountability repository", () => {
     await expect(repository.listActiveSuppressions("profile-zzz" as never)).rejects.toThrow(/profile scope/i);
   });
 
+  it("lists every stored check for one loop scoped to the profile", async () => {
+    const { database, calls } = fakeAccountabilityDatabase();
+    const repository = createAccountabilityRepository(database as never);
+    const checks = await repository.listChecksForLoop("profile-a", "loop-a");
+    expect(checks.map((check) => check.id)).toEqual(["check-due-late", "check-due-early", "check-future", "check-cancelled"]);
+    expect(calls).toContainEqual({ operation: "eq", table: "scheduled_checks", field: "profile_id", value: "profile-a" });
+    expect(calls).toContainEqual({ operation: "eq", table: "scheduled_checks", field: "loop_id", value: "loop-a" });
+    await expect(repository.listChecksForLoop("profile-b", "loop-a")).resolves.toHaveLength(0);
+  });
+
   it("builds an attention snapshot of unanswered deliveries, counts, and top overdue commitments", async () => {
     const { database, calls, rows } = fakeAccountabilityDatabase();
     rows.open_loops.push(
@@ -530,6 +541,23 @@ describe("accountability repository", () => {
     expect(calls).toContainEqual({ operation: "eq", table: "checkin_deliveries", field: "status", value: "delivered" });
     expect(calls).toContainEqual({ operation: "is", table: "checkin_deliveries", field: "answered_at", value: null });
     await expect(repository.getAttentionSnapshot("profile-zzz" as never, "2026-08-22T12:00:00.000Z")).rejects.toThrow(/profile scope/i);
+  });
+
+  it("keeps the reserved Morning briefing loop out of Home open-loop counts but not out of pending questions", async () => {
+    const { database, rows } = fakeAccountabilityDatabase();
+    rows.open_loops.push(
+      { id: "loop-briefing", profile_id: "profile-a", title: BRIEFING_LOOP_TITLE, details: null, kind: "routine", status: "open", due_at: null, cadence: { kind: "daily" }, origin_thread_id: null, origin_message_id: null, created_at: "2026-08-21T10:00:00.000Z", updated_at: "2026-08-21T10:00:00.000Z", closed_at: null },
+    );
+    rows.checkin_deliveries.push(
+      { id: "delivery-briefing", profile_id: "profile-a", thread_id: "thread-1", message_id: "message-b", summary: "Morning briefing", status: "delivered", created_at: "2026-08-22T08:05:00.000Z", delivered_at: "2026-08-22T08:06:00.000Z", answered_at: null },
+    );
+    rows.checkin_delivery_items.push(
+      { delivery_id: "delivery-briefing", loop_id: "loop-briefing", profile_id: "profile-a", response: null, responded: false, created_at: "2026-08-22T08:05:00.000Z" },
+    );
+    const repository = createAccountabilityRepository(database as never);
+    const snapshot = await repository.getAttentionSnapshot("profile-a", "2026-08-22T12:00:00.000Z");
+    expect(snapshot.counts).toEqual({ openLoops: 1, overdueCommitments: 0 });
+    expect(snapshot.pendingDeliveries[0]?.items).toMatchObject([{ loopId: "loop-briefing", title: BRIEFING_LOOP_TITLE }]);
   });
 
   it("caps top overdue commitments at five ordered most-overdue first", async () => {

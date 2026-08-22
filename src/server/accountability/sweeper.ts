@@ -24,6 +24,14 @@ import {
   type CommitmentSearchClient,
   type SoftClosePlan,
 } from "./reconciler";
+import {
+  BRIEFING_LOOP_TITLE,
+  briefingDayWindow,
+  hasBlockingBriefingCheck,
+  isBriefingLoopTitle,
+  isStaleBriefingCheck,
+  nextBriefingDueAt,
+} from "./briefing";
 
 export const SWEEP_MAX_BATCH = 4;
 export const DEFAULT_LIMIT_PER_PROFILE = 8;
@@ -96,6 +104,44 @@ function warnSweepFailure(profileId: ProfileId, stage: string, error: unknown): 
   console.warn(JSON.stringify({ scope: "accountability-sweep", stage, profileId, error: message }));
 }
 
+const STALE_BRIEFING_CANCEL_REASON = "Superseded by the next scheduled morning briefing";
+const NO_BRIEFABLE_LOOPS_CANCEL_REASON = "No open loops remain to summarize";
+
+export async function ensureDailyBriefingCheck(input: {
+  profileId: ProfileId;
+  nowIso: string;
+  repository: AccountabilityRepository;
+}): Promise<void> {
+  const loops = await input.repository.listOpenLoops(input.profileId);
+  const briefingLoop = loops.find((loop) => isBriefingLoopTitle(loop.title));
+  if (!loops.some((loop) => loop.status === "open" && !isBriefingLoopTitle(loop.title))) {
+    if (briefingLoop && briefingLoop.status === "open") {
+      await input.repository.cancelPendingChecksForLoop(input.profileId, briefingLoop.id, NO_BRIEFABLE_LOOPS_CANCEL_REASON);
+    }
+    return;
+  }
+  let active = briefingLoop;
+  if (active && active.status !== "open") return;
+  if (!active) {
+    active = await input.repository.insertOpenLoop({
+      profileId: input.profileId,
+      title: BRIEFING_LOOP_TITLE,
+      kind: "routine",
+      cadence: { kind: "daily" },
+    });
+  }
+  const checks = await input.repository.listChecksForLoop(input.profileId, active.id);
+  const window = briefingDayWindow(input.nowIso);
+  if (checks.some((check) => isStaleBriefingCheck(check, window))) {
+    await input.repository.cancelPendingChecksForLoop(input.profileId, active.id, STALE_BRIEFING_CANCEL_REASON);
+  }
+  if (hasBlockingBriefingCheck(checks, window)) return;
+  await input.repository.insertScheduledCheck(input.profileId, {
+    loopId: active.id,
+    dueAt: nextBriefingDueAt(input.nowIso),
+  });
+}
+
 export async function runAccountabilitySweep(input: {
   now?: string;
   profiles?: ProfileId[];
@@ -134,6 +180,7 @@ export async function runAccountabilitySweep(input: {
 
   for (const profileId of profiles) {
     try {
+      await ensureDailyBriefingCheck({ profileId, nowIso: now, repository });
       const pairs = await repository.claimDueChecks(profileId, now, limitPerProfile);
       const suppressions = await repository.listActiveSuppressions(profileId);
       const suppressedSubjects = new Set(suppressions.map((suppression) => normalizeSuppressionSubject(suppression.subject)));

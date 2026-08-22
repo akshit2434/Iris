@@ -5,6 +5,7 @@ import type { z } from "zod";
 import { isProfileId, type ProfileId } from "@/lib/profiles";
 import { getDatabase } from "@/server/db/client";
 import type { Database, Json } from "@/server/db/types";
+import { isBriefingLoopTitle } from "./briefing";
 import { isTerminal, nextStatusOnEvent } from "./state-machine";
 import {
   createLoopInputSchema,
@@ -181,6 +182,7 @@ export type AccountabilityRepository = {
   claimDueChecks(profileId: ProfileId, nowIso: string, limit: number): Promise<DeliverableDueCheck[]>;
   releaseClaims(profileId: ProfileId, checkIds: readonly string[]): Promise<void>;
   markCheckDelivered(profileId: ProfileId, checkId: string, input: MarkCheckDeliveredInput): Promise<ScheduledCheckRow>;
+  listChecksForLoop(profileId: ProfileId, loopId: string): Promise<ScheduledCheckRow[]>;
   insertScheduledCheck(profileId: ProfileId, input: InsertScheduledCheckInput): Promise<ScheduledCheckRow>;
   cancelPendingChecksForLoop(profileId: ProfileId, loopId: string, reason: string): Promise<number>;
   cancelOrphanPendingDeliveries(profileId: ProfileId, nowIso: string): Promise<number>;
@@ -531,6 +533,18 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       return toScheduledCheck(row);
     },
 
+    async listChecksForLoop(profileId, loopId) {
+      assertProfileId(profileId);
+      const { data, error } = await client
+        .from("scheduled_checks")
+        .select(SCHEDULED_CHECK_COLUMNS)
+        .eq("profile_id", profileId)
+        .eq("loop_id", loopId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map(toScheduledCheck);
+    },
+
     async insertScheduledCheck(profileId, input) {
       assertProfileId(profileId);
       const { data: priorChecks, error: priorError } = await client
@@ -726,7 +740,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
       return {
         pendingDeliveries,
         counts: {
-          openLoops: loops.filter((loop) => loop.status === "open").length,
+          openLoops: loops.filter((loop) => loop.status === "open" && !isBriefingLoopTitle(loop.title)).length,
           overdueCommitments: overdue.length,
         },
         topOverdue: overdue.slice(0, TOP_OVERDUE_LIMIT).map((loop) => ({
