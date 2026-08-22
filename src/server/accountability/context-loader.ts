@@ -54,7 +54,7 @@ function compareForContext(left: OpenLoopRow, right: OpenLoopRow): number {
 function toContextEntry(row: OpenLoopRow & { status: OpenLoopContextEntry["status"] }): OpenLoopContextEntry {
   return {
     loopId: row.id,
-    title: row.title.slice(0, OPEN_LOOP_TITLE_MAX_LENGTH),
+    title: row.title.replace(/[\r\n]+/g, " ").slice(0, OPEN_LOOP_TITLE_MAX_LENGTH),
     kind: row.kind,
     status: row.status,
     dueAt: row.dueAt,
