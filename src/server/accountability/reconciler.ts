@@ -25,7 +25,7 @@ export type CommitmentSearchClient = (input: {
   limit: number;
 }) => Promise<ReconciliationCandidate[]>;
 
-export type CompletionClassification = { completed: boolean; confidence: number };
+export type CompletionClassification = { completed: boolean; confidence: number; supportingIndex?: number | null };
 
 export type CompletionClassifier = (input: {
   title: string;
@@ -83,7 +83,7 @@ export async function reconcileOverdueCommitments(input: {
       if (!classification.completed || classification.confidence < SOFT_CLOSE_CONFIDENCE_THRESHOLD) continue;
       plans.set(loop.id, {
         loopId: loop.id,
-        excerpt: excerptForSoftClose(candidates[0]?.content ?? ""),
+        excerpt: excerptForSoftClose(supportingCandidate(candidates, classification)?.content ?? ""),
         confidence: classification.confidence,
       });
     } catch {
@@ -116,20 +116,20 @@ export function createProductionCompletionClassifier(): CompletionClassifier {
     apiKey,
     model: process.env.OPENROUTER_TITLE_MODEL ?? getConfiguredModelName(),
     temperature: 0,
-    maxTokens: 24,
+    maxTokens: 48,
     stop: ["\n"],
     modelKwargs: { reasoning: { effort: "none" } },
   });
 
   return async ({ title, candidates }) => {
     const transcript = candidates
-      .map((candidate) => `- (${candidate.createdAt}) ${candidate.content.replace(/\s+/g, " ").slice(0, 300)}`)
+      .map((candidate, index) => `- [${index}] (${candidate.createdAt}) ${candidate.content.replace(/\s+/g, " ").slice(0, 300)}`)
       .join("\n");
     const response = await model.invoke([
       {
         role: "system",
         content:
-          'You decide whether chat history shows the user already finished a specific commitment. Reply with strict minified JSON only: {"completed":boolean,"confidence":number} where confidence is between 0 and 1. Mentioning the task without finishing it counts as not completed.',
+          'You decide whether chat history shows the user already finished a specific commitment. Reply with strict minified JSON only: {"completed":boolean,"confidence":number,"supportingIndex":number} where confidence is between 0 and 1 and supportingIndex is the 0-based entry that states the completion (use 0 when unsure). Mentioning the task without finishing it counts as not completed.',
       },
       {
         role: "user",
@@ -137,20 +137,39 @@ export function createProductionCompletionClassifier(): CompletionClassifier {
       },
     ]);
     const text = typeof response.content === "string" ? response.content : String(response.content ?? "");
-    return parseClassification(text);
+    return parseClassification(text, candidates.length);
   };
 }
 
-function parseClassification(text: string): CompletionClassification {
+function supportingCandidate(
+  candidates: ReconciliationCandidate[],
+  classification: CompletionClassification,
+): ReconciliationCandidate | undefined {
+  const index = classification.supportingIndex;
+  if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= candidates.length) {
+    return candidates[0];
+  }
+  return candidates[index] ?? candidates[0];
+}
+
+/**
+ * Any malformed field degrades to a below-threshold confidence: reconciliation
+ * is fail-closed and only ever soft-closes on explicit, well-formed evidence.
+ */
+export function parseClassification(text: string, candidateCount: number): CompletionClassification {
   try {
-    const parsed = JSON.parse(text.trim()) as { completed?: unknown; confidence?: unknown };
+    const parsed = JSON.parse(text.trim()) as { completed?: unknown; confidence?: unknown; supportingIndex?: unknown };
     if (typeof parsed.completed !== "boolean") return { completed: false, confidence: 0 };
-    const confidence = typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
-      ? Math.min(Math.max(parsed.confidence, 0), 1)
-      : parsed.completed
-        ? SOFT_CLOSE_CONFIDENCE_THRESHOLD
+    const confidence =
+      typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
+        ? Math.min(Math.max(parsed.confidence, 0), 1)
         : 0;
-    return { completed: parsed.completed, confidence };
+    const rawIndex = parsed.supportingIndex;
+    const supportingIndex =
+      typeof rawIndex === "number" && Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < candidateCount
+        ? rawIndex
+        : null;
+    return { completed: parsed.completed, confidence, supportingIndex };
   } catch {
     return { completed: false, confidence: 0 };
   }

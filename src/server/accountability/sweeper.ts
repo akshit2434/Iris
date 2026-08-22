@@ -89,6 +89,11 @@ function createDefaultThreadLister(): SweepThreadLister {
   return async (profileId) => (await listThreads(profileId)).map((thread) => ({ id: thread.id }));
 }
 
+function warnSweepFailure(profileId: ProfileId, stage: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(JSON.stringify({ scope: "accountability-sweep", stage, profileId, error: message }));
+}
+
 export async function runAccountabilitySweep(input: {
   now?: string;
   profiles?: ProfileId[];
@@ -109,15 +114,16 @@ export async function runAccountabilitySweep(input: {
   const listThreadsFor = input.threadLister ?? createDefaultThreadLister();
 
   let reconciliationSeams: { retrieval: CommitmentSearchClient; classifier: CompletionClassifier } | null | undefined;
-  function resolveReconciliationSeams() {
+  function resolveReconciliationSeams(profileId: ProfileId) {
     if (reconciliationSeams !== undefined) return reconciliationSeams;
     try {
       reconciliationSeams = {
         retrieval: input.retrieval ?? createProductionCommitmentRetrieval(),
         classifier: input.classifier ?? createProductionCompletionClassifier(),
       };
-    } catch {
+    } catch (error) {
       reconciliationSeams = null;
+      warnSweepFailure(profileId, "reconciliation_seams", error);
     }
     return reconciliationSeams;
   }
@@ -149,7 +155,7 @@ export async function runAccountabilitySweep(input: {
       const softClosePlans = new Map<string, SoftClosePlan>();
       const reconciliationTargets = activeDeliverable.filter((pair) => isReconciliationEligible(pair.loop, now));
       if (reconciliationTargets.length > 0) {
-        const seams = resolveReconciliationSeams();
+        const seams = resolveReconciliationSeams(profileId);
         if (seams) {
           try {
             const plans = await reconcileOverdueCommitments({
@@ -160,8 +166,9 @@ export async function runAccountabilitySweep(input: {
               classifier: seams.classifier,
             });
             for (const [loopId, plan] of plans) softClosePlans.set(loopId, plan);
-          } catch {
+          } catch (error) {
             softClosePlans.clear();
+            warnSweepFailure(profileId, "reconciliation", error);
           }
         }
       }
@@ -181,7 +188,8 @@ export async function runAccountabilitySweep(input: {
         } else {
           const deliverBatch = async (batch: DeliverableDueCheck[], kind: CheckinKind, loops: CheckinLoopRef[]) => {
             try {
-              const composed = await composeCheckinMessage({ kind, loops, composer });
+              const escalationTier = Math.max(...batch.map((pair) => pair.check.escalationTier));
+              const composed = await composeCheckinMessage({ kind, loops, escalationTier, composer });
               const delivery = await repository.insertDelivery(profileId, { threadId });
               const message = await writeMessage({ profileId, threadId, content: composed.text });
               await repository.markDeliveryDelivered(profileId, delivery.id, { messageId: message.id });
@@ -204,8 +212,9 @@ export async function runAccountabilitySweep(input: {
               }
               mergedBatches += 1;
               delivered += batch.length;
-            } catch {
+            } catch (error) {
               failed += 1;
+              warnSweepFailure(profileId, "delivery", error);
             }
           };
 
@@ -234,7 +243,7 @@ export async function runAccountabilitySweep(input: {
         suppressed: suppressedPairs.length,
         failed,
       });
-    } catch {
+    } catch (error) {
       reportProfiles.push({
         profileId,
         selected: 0,
@@ -246,6 +255,7 @@ export async function runAccountabilitySweep(input: {
         suppressed: 0,
         failed: 1,
       });
+      warnSweepFailure(profileId, "profile", error);
     }
   }
 

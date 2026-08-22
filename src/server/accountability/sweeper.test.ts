@@ -4,6 +4,7 @@ import {
   composeCheckinMessage,
   composeTier0Text,
   createProductionCheckinComposer,
+  toneTierForEscalation,
   truncateAtWordBoundary,
 } from "@/server/accountability/composer";
 import {
@@ -241,6 +242,68 @@ describe("check-in composer", () => {
     expect(fallback).not.toMatch(/"/);
   });
 
+  it("clamps escalation tiers into three tone buckets", () => {
+    expect(toneTierForEscalation(0)).toBe(0);
+    expect(toneTierForEscalation(1)).toBe(1);
+    expect(toneTierForEscalation(2)).toBe(2);
+    expect(toneTierForEscalation(5)).toBe(2);
+    expect(toneTierForEscalation(-1)).toBe(0);
+    expect(toneTierForEscalation(Number.NaN)).toBe(0);
+  });
+
+  it("softens to a gentle reminder at tier 1 and asks what changed with reschedule-or-drop at tier 2", async () => {
+    const gentle = composeTier0Text({ kind: "single_commitment", loops: [{ title: "Renew passport" }], escalationTier: 1 });
+    expect(gentle).toMatch(/gentle/i);
+    expect(gentle).toContain("Renew passport");
+    const slipping = await composeCheckinMessage({
+      kind: "single_commitment",
+      loops: [{ title: "Renew passport" }],
+      escalationTier: 2,
+      composer: async () => {
+        throw new Error("model down");
+      },
+    });
+    expect(slipping.tier).toBe(0);
+    expect(slipping.text).toMatch(/keeps slipping/i);
+    expect(slipping.text).toMatch(/still important/i);
+    expect(slipping.text).toMatch(/reschedule/);
+    expect(slipping.text).toMatch(/drop/);
+    for (const text of [gentle, slipping.text]) {
+      expect(text).not.toMatch(/streak|lazy|failed|disappoint|scold/i);
+    }
+  });
+
+  it("reflects on the routine pattern instead of nagging when routines keep slipping", () => {
+    const text = composeTier0Text({ kind: "routine_reflection", loops: [{ title: "Weekly review" }], escalationTier: 3 });
+    expect(text).toContain("Weekly review");
+    expect(text).toMatch(/still working for you/i);
+    expect(text).toMatch(/adjust the rhythm/);
+    expect(text).not.toMatch(/streak/i);
+  });
+
+  it("varies soft-close phrasing once a prior confirmation went unanswered", () => {
+    const firstAsk = composeTier0Text({
+      kind: "soft_close_confirm",
+      loops: [{ title: "Renew passport", evidenceExcerpt: "finally submitted the passport renewal this morning btw" }],
+      escalationTier: 0,
+    });
+    expect(firstAsk).toMatch(/want me to close it out/i);
+    const repeat = composeTier0Text({
+      kind: "soft_close_confirm",
+      loops: [{ title: "Renew passport", evidenceExcerpt: "finally submitted the passport renewal this morning btw" }],
+      escalationTier: 2,
+    });
+    expect(repeat).toMatch(/still seeing/i);
+    expect(repeat).toMatch(/close it for good/i);
+    expect(repeat).not.toBe(firstAsk);
+  });
+
+  it("passes the batch escalation tier through to the injected composer", async () => {
+    const composer = vi.fn(async () => "model nudge");
+    await composeCheckinMessage({ kind: "merged_batch", loops: [{ title: "A" }], escalationTier: 3, composer });
+    expect(composer).toHaveBeenCalledWith(expect.objectContaining({ escalationTier: 3 }));
+  });
+
   it("builds the production composer like the title model factory", () => {
     const envKey = "OPENROUTER_" + "API_KEY";
     const previousKey = process.env[envKey];
@@ -281,7 +344,7 @@ describe("accountability sweep", () => {
     expect(report.at).toBe(NOW);
     expect(repository.insertDelivery).toHaveBeenCalledTimes(1);
     expect(repository.insertDelivery).toHaveBeenCalledWith("profile-a", { threadId: THREAD_ID });
-    expect(composer).toHaveBeenCalledWith({ kind: "merged_batch", loops: [{ title: "Renew passport" }, { title: "Buy groceries" }] });
+    expect(composer).toHaveBeenCalledWith(expect.objectContaining({ kind: "merged_batch", loops: [{ title: "Renew passport" }, { title: "Buy groceries" }] }));
     expect(repository.markDeliveryDelivered).toHaveBeenCalledWith("profile-a", "delivery-1", { messageId: expect.any(String) });
     expect(repository.markCheckDelivered).toHaveBeenCalledTimes(2);
     const deliveries = vi.mocked(repository.markCheckDelivered).mock.calls.map((call) => call[2].deliveryId);
@@ -548,6 +611,76 @@ describe("accountability sweep", () => {
     expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", overdue.check.id, expect.objectContaining({ attemptCount: 1, escalationTier: 0 }));
     expect(repository.insertLoopEvent).toHaveBeenCalledWith("profile-a", expect.objectContaining({ loopId: overdue.loop.id, kind: "nudged", actor: "system" }));
     expect(vi.mocked(repository.updateOpenLoopStatus)).not.toHaveBeenCalled();
+  });
+
+  it("delivers a soft-close confirm and a normal merged batch as separate ordered messages in one sweep", async () => {
+    const overdue = makePair({ title: "Renew passport", dueAt: "2026-08-19T09:00:00.000Z" });
+    const morning = makePair({ title: "Buy groceries" }, { dueAt: "2026-08-22T08:00:00.000Z" });
+    const evening = makePair({ title: "Call plumber" }, { dueAt: "2026-08-22T09:00:00.000Z" });
+    const repository = fakeRepository([overdue, morning, evening]);
+    const retrieval: CommitmentSearchClient = vi.fn(async () => [{
+      messageId: "00000000-0000-4000-8000-000000000010",
+      threadId: "00000000-0000-4000-8000-000000000011",
+      content: "finally submitted the passport renewal yesterday btw",
+      createdAt: "2026-08-20T14:00:00.000Z",
+    }]);
+    const classifier: CompletionClassifier = vi.fn(async () => ({ completed: true, confidence: 0.9, supportingIndex: 0 }));
+    const composer = vi.fn(async ({ loops }: { loops: Array<{ title: string }> }) => `${loops.map((loop) => loop.title).join(" + ")} nudge`);
+    const writtenTexts: string[] = [];
+    const report = await runAccountabilitySweep({
+      now: NOW,
+      profiles: ["profile-a"],
+      repository,
+      composer,
+      messageWriter: async (input) => {
+        writtenTexts.push(input.content);
+        return { id: `message-${writtenTexts.length}` };
+      },
+      threadLister: liveThreads,
+      retrieval,
+      classifier,
+    });
+    expect(report.profiles[0]).toMatchObject({ selected: 3, delivered: 3, mergedBatches: 2, failed: 0 });
+    expect(repository.insertDelivery).toHaveBeenCalledTimes(2);
+    expect(writtenTexts).toHaveLength(2);
+    expect(writtenTexts[0]).toContain("Renew passport");
+    expect(writtenTexts[0]).toContain("finally submitted the passport renewal");
+    expect(writtenTexts[0]).toMatch(/close/i);
+    expect(writtenTexts[1]).toBe("Buy groceries + Call plumber nudge");
+    expect(composer).toHaveBeenCalledTimes(1);
+    expect(composer).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "merged_batch",
+      escalationTier: 0,
+      loops: [{ title: "Buy groceries" }, { title: "Call plumber" }],
+    }));
+    const deliveredOrder = vi.mocked(repository.markCheckDelivered).mock.calls.map((call) => call[1]);
+    expect(deliveredOrder).toEqual([overdue.check.id, morning.check.id, evening.check.id]);
+  });
+
+  it("escalates deterministic wording from stored check state without waking the model", async () => {
+    const repeated = makePair({ title: "Renew passport" }, { attemptCount: 2, escalationTier: 2 });
+    const repository = fakeRepository([repeated]);
+    const composer = vi.fn(async () => "unused");
+    const writtenTexts: string[] = [];
+    const report = await runAccountabilitySweep({
+      now: NOW,
+      profiles: ["profile-a"],
+      repository,
+      composer,
+      messageWriter: async (input) => {
+        writtenTexts.push(input.content);
+        return { id: `message-${writtenTexts.length}` };
+      },
+      threadLister: liveThreads,
+    });
+    expect(report.profiles[0]).toMatchObject({ selected: 1, delivered: 1, failed: 0 });
+    expect(composer).not.toHaveBeenCalled();
+    expect(writtenTexts[0]).toMatch(/keeps slipping/i);
+    expect(writtenTexts[0]).toMatch(/reschedule/);
+    expect(repository.markCheckDelivered).toHaveBeenCalledWith("profile-a", repeated.check.id, expect.objectContaining({
+      attemptCount: 3,
+      escalationTier: 2,
+    }));
   });
 
   it("keeps the catch-up nudge when reconciliation finds no stated completion", async () => {

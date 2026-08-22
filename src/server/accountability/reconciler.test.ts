@@ -6,6 +6,7 @@ import {
   createProductionCommitmentRetrieval,
   excerptForSoftClose,
   isReconciliationEligible,
+  parseClassification,
   reconcileOverdueCommitments,
   type CompletionClassifier,
   type ReconciliationCandidate,
@@ -109,6 +110,60 @@ describe("soft-close reconciliation", () => {
       });
       expect(plans.size).toBe(0);
     }
+  });
+
+  it("quotes the candidate the classifier flagged as supporting evidence", async () => {
+    const first = candidate({ messageId: "00000000-0000-4000-8000-0000000000c1", content: "still thinking about renewing that passport" });
+    const second = candidate({
+      messageId: "00000000-0000-4000-8000-0000000000c2",
+      content: "actually submitted the passport renewal this morning, so glad that's done",
+    });
+    const retrieval = vi.fn(async () => [first, second]);
+    const classifier = vi.fn(async (input: { candidates: ReconciliationCandidate[] }) => ({
+      completed: true,
+      confidence: 0.91,
+      supportingIndex: input.candidates.indexOf(second),
+    }));
+    const plans = await reconcileOverdueCommitments({
+      profileId: "profile-a",
+      loops: [makeLoop()],
+      now: NOW,
+      retrieval,
+      classifier,
+    });
+    expect(plans.get("00000000-0000-4000-8000-0000000000a1")?.excerpt).toContain("actually submitted the passport renewal");
+  });
+
+  it("falls back to the first candidate when the supporting index is missing or out of range", async () => {
+    const retrieval = vi.fn(async () => [
+      candidate({ content: "first message about the passport" }),
+      candidate({ content: "second message about the passport" }),
+    ]);
+    for (const supportingIndex of [undefined, null, 7, -1, 1.5]) {
+      const classifier: CompletionClassifier = async () => ({ completed: true, confidence: 0.85, supportingIndex: supportingIndex as number | null | undefined });
+      const plans = await reconcileOverdueCommitments({
+        profileId: "profile-a",
+        loops: [makeLoop()],
+        now: NOW,
+        retrieval,
+        classifier,
+      });
+      expect(plans.get("00000000-0000-4000-8000-0000000000a1")?.excerpt).toBe("first message about the passport");
+    }
+  });
+
+  it("parses malformed classifier output fail-closed below the soft-close threshold", () => {
+    expect(parseClassification("the user definitely finished it", 2)).toEqual({ completed: false, confidence: 0 });
+    expect(parseClassification('{"confidence":0.9}', 2)).toEqual({ completed: false, confidence: 0 });
+    expect(parseClassification('{"completed":"yes","confidence":0.9}', 2)).toEqual({ completed: false, confidence: 0 });
+    const missingConfidence = parseClassification('{"completed":true,"supportingIndex":0}', 2);
+    expect(missingConfidence.confidence).toBeLessThan(SOFT_CLOSE_CONFIDENCE_THRESHOLD);
+    const stringConfidence = parseClassification('{"completed":true,"confidence":"high"}', 2);
+    expect(stringConfidence.confidence).toBeLessThan(SOFT_CLOSE_CONFIDENCE_THRESHOLD);
+    const valid = parseClassification('{"completed":true,"confidence":0.93,"supportingIndex":1}', 2);
+    expect(valid).toEqual({ completed: true, confidence: 0.93, supportingIndex: 1 });
+    const outOfRange = parseClassification('{"completed":true,"confidence":0.93,"supportingIndex":9}', 2);
+    expect(outOfRange.supportingIndex).toBeNull();
   });
 
   it("treats retrieval and classifier failures as not-completed instead of failing the sweep", async () => {
