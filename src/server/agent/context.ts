@@ -53,6 +53,7 @@ export const agentContextSchema = z.object({
   memoryControls: z.object({
     savedMemoryEnabled: z.boolean(),
     referenceHistoryEnabled: z.boolean(),
+    webSearchEnabled: z.boolean().default(true),
   }),
   accountability: z.object({
     enabled: z.boolean(),
@@ -161,7 +162,7 @@ export function createAgentContext(input: {
   agentRunId?: string | null;
   canonicalMemory?: CanonicalMemoryContext;
   memoryChangeHint?: MemoryChangeHint;
-  memoryControls?: { savedMemoryEnabled?: boolean; referenceHistoryEnabled?: boolean };
+  memoryControls?: { savedMemoryEnabled?: boolean; referenceHistoryEnabled?: boolean; webSearchEnabled?: boolean };
   accountability?: { enabled: boolean; loops: OpenLoopContextEntry[]; recentlyClosed?: Array<{ title: string; closedAt: string }> };
   memoryContextSufficient?: boolean;
   historicalPreflightSources?: Array<{
@@ -200,6 +201,7 @@ export function createAgentContext(input: {
     memoryControls: {
       savedMemoryEnabled: input.memoryControls?.savedMemoryEnabled ?? true,
       referenceHistoryEnabled: input.memoryControls?.referenceHistoryEnabled ?? true,
+      webSearchEnabled: input.memoryControls?.webSearchEnabled ?? true,
     },
     accountability: input.accountability,
     memoryContextSufficient: input.memoryContextSufficient ?? false,
@@ -249,7 +251,7 @@ The current moment is:
 - UTC offset: ${context.utcOffset}
 Answer date/time questions directly from this context. User-local time is context, not a tool; do not call a tool for it.
 Only claim to have used a tool when a tool result is present in this run. Do not invent memory or external context.
-Saved-memory reference is ${context.memoryControls.savedMemoryEnabled ? "enabled" : "disabled"}; cross-chat reference history is ${context.memoryControls.referenceHistoryEnabled ? "enabled" : "disabled"}. Respect these controls.${accountabilityGuidance ? `\n${accountabilityGuidance}` : ""}
+Saved-memory reference is ${context.memoryControls.savedMemoryEnabled ? "enabled" : "disabled"}; cross-chat reference history is ${context.memoryControls.referenceHistoryEnabled ? "enabled" : "disabled"}. Respect these controls.${context.memoryControls.webSearchEnabled ? " Live web search is available through web_search for current events and external evidence; cite result URLs inline and never claim to have opened a page." : ""}${accountabilityGuidance ? `\n${accountabilityGuidance}` : ""}
 ${context.temporaryChat ? "This is a temporary chat. Do not claim that messages, tool events, memory, reference history, summaries, or indexes were saved. Saved memory and cross-chat history are unavailable in this chat." : ""}
 Memory lookup order:
 1. The prefilled canonical memory is curated, profile-scoped, and trustworthy as current state, but it is deliberately small and may be incomplete. If it directly answers the user, use it without a lookup.
