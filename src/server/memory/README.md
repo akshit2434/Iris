@@ -106,3 +106,19 @@ needed by the current server. A local reset is not required for that upgrade.
 The default runtime remains low-cost: semantic search/indexing and background
 workers are opt-in. Ordinary chat does not make an embedding or consolidation
 model call.
+
+## Lifecycle workers
+
+Beyond the governed store, this module runs background workers driven through
+`app/api/internal/memory/consolidate` (worker-secret guarded):
+
+- `consolidation.ts` proposes durable memory candidates from finished runs
+  ("dreaming") through the governed proposal pipeline.
+- `compaction.ts` maintains thread-continuity checkpoints for long threads.
+- `reference-history.ts` synthesizes per-profile reference documents that
+  ground fresh threads without raw-history scans.
+- `reconciliation.ts` surfaces memory changes between visits; `indexer.ts`
+  maintains the replaceable semantic index.
+
+Worker time bounds are tunable via `MEMORY_WORKER_MAX_DURATION_MS` for slow
+local or free models. See `docs/OPERATIONS.md`.

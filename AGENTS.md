@@ -4,6 +4,7 @@ This file is the operating guide for automated coding work in this repository.
 
 ## Before changing code
 
+- Orient with `docs/ARCHITECTURE.md` (system map) and `docs/OPERATIONS.md` (env vars, workers, scheduling) before non-trivial changes.
 - If `iris_context_pack/` exists locally, read the relevant files before changing product behavior. It is private local context and must remain untracked.
 - Keep implementation inside the current milestone in `BUILD_PLAN.md`.
 - Run `git status -sb` first and preserve unrelated work.

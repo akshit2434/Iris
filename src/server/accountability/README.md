@@ -17,3 +17,22 @@ Before composing any nudge for an open commitment overdue beyond two days, the s
 ## Claim lifecycle
 
 Before composing anything, each sweep atomically claims due checks: `claimDueChecks` flips eligible rows to claimed through a single conditional update guarded on profile, pending status, due date, and a stale-claim window, so concurrent sweeps can never select the same rows. Successful deliveries clear the claim when they mark the check delivered; a deterministic skip (no thread yet) releases it immediately. If a sweep crashes mid-batch, claimed rows simply wait — they become claimable again once the ten-minute stale window passes, and the retry re-composes from scratch, which makes delivery at-least-once. Pending deliveries that never received a message are cancelled with a `sweep_retry` marker once they age past thirty minutes.
+
+## Missed-commitment scanner
+
+After each persisted chat turn whose run produced no `loop_create`, a bounded
+background scan (small model, strict JSON, at most two titles per turn) checks
+whether the user stated obligations that never became loops. Recovered
+obligations are inserted as open commitments with provenance and a scheduled
+check, so they re-enter the normal pipeline instead of vanishing. The scanner
+never runs for temporary chats, dedupes against open-loop titles, and is
+disabled via `ACCOUNTABILITY_SCANNER_DISABLED`.
+
+## Recently-closed context grounding
+
+The `<open-loops>` prompt block includes a Recently closed section (closures
+from the last 48 hours, capped at three) plus a grounding rule: current-state
+summaries must treat that block or a fresh `loop_list` as the only source of
+truth, so closed work is never resurrected as pending from chat history.
+Successful turns also emit a `loop_ledger` stream event (created/closed titles)
+that the UI renders as an authoritative tracking chip.
