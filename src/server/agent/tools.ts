@@ -10,6 +10,7 @@ import { createMemoryArchiveService, type MemoryArchiveService } from "@/server/
 import { createSupabaseMemoryStore } from "@/server/memory/repository";
 import { createAccountabilityTools } from "@/server/accountability/tools";
 import type { AccountabilityRepository } from "@/server/accountability/repository";
+import { createWebSearchTool } from "@/server/tools/tavily";
 import { buildOpenMessageAction } from "@/lib/memory-source";
 
 export type ThreadOverview = {
@@ -37,6 +38,8 @@ export type InternalToolOptions = {
   referenceHistoryEnabled?: boolean;
   /** Profile-level accountability loop control. */
   accountabilityEnabled?: boolean;
+  /** Live web search via Tavily; also requires TAVILY_API_KEY in the environment. */
+  webSearchEnabled?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -506,12 +509,13 @@ export function createInternalTools(
     },
   );
 
+  const webSearchTools = options.webSearchEnabled === false || !process.env.TAVILY_API_KEY ? [] : [createWebSearchTool()];
   const historicalTools = options.referenceHistoryEnabled === false ? [] : [searchMessagesTool, readMessagesTool];
   const memoryTools = options.savedMemoryEnabled === false
     ? []
     : [memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool];
   const accountabilityTools = options.accountabilityEnabled === false ? [] : createAccountabilityTools(accountabilityRepository);
-  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools] as const;
+  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools, ...webSearchTools] as const;
 }
 
 /**

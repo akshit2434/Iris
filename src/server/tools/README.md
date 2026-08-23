@@ -1,3 +1,7 @@
 # Tools boundary
 
-Reserved for future internal and external tools. Milestone 1 intentionally exposes no tools to the agent.
+Hosts external tool integrations for the Iris agent runtime.
+
+- `tavily.ts` — live web search via the Tavily REST API. Registered only when
+  `TAVILY_API_KEY` is configured and `webSearchEnabled` is not disabled.
+  Server-only; the key never reaches the browser.

@@ -523,7 +523,7 @@ export function summarizeToolResult(activity: ToolActivity) {
 }
 
 export function toolDetail(activity: ToolActivity) {
-  if (["current_time", "thread_overview", "history_preflight", "search_messages", "read_messages", "memory_context", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive", "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress"].includes(activity.toolName)) return null;
+  if (["current_time", "thread_overview", "history_preflight", "search_messages", "read_messages", "memory_context", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive", "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress", "web_search"].includes(activity.toolName)) return null;
   const value: SafeJson | undefined = activity.output ?? activity.input;
   if (!value || typeof value !== "object") return null;
   return JSON.stringify(value, null, 2).slice(0, 1600);

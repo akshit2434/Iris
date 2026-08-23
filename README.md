@@ -66,6 +66,8 @@ IRIS_APP_PIN=replace-with-a-private-pin
 SUPABASE_URL=http://127.0.0.1:56321
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
 OPENROUTER_API_KEY=your-server-only-openrouter-key
+# Optional live web search via Tavily (server-only). Get a key at tavily.com.
+TAVILY_API_KEY=
 OPENROUTER_MODEL=openai/gpt-5.6-luna
 # Optional; defaults to OPENROUTER_MODEL for the one small first-turn title request.
 # OPENROUTER_TITLE_MODEL=openai/gpt-5.6-luna

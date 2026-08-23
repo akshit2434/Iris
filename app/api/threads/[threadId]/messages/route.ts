@@ -213,6 +213,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       referenceHistoryEnabled: false,
       updatedAt: new Date(0).toISOString(),
     }));
+  const webSearchEnabled = Boolean(process.env.TAVILY_API_KEY);
     const [history, threadContextRow, memoryRevisionSnapshot, memoryControls] = await Promise.all([
       getThreadMessages(profileId, threadId),
       getThreadContext(profileId, threadId),
@@ -279,7 +280,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       agentRunId: run.id,
       canonicalMemory,
       memoryChangeHint,
-      memoryControls,
+      memoryControls: { ...memoryControls, webSearchEnabled: webSearchEnabled },
       accountability,
       memoryContextSufficient: false,
       historicalPreflightSources: historicalPreflight.sources.map((source) => ({
@@ -323,6 +324,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           savedMemoryEnabled: memoryControls.savedMemoryEnabled,
           referenceHistoryEnabled: memoryControls.referenceHistoryEnabled,
           accountabilityEnabled: true,
+          webSearchEnabled,
         }),
         currentUser: currentUserMessage,
         messages: history,
@@ -362,7 +364,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       agentRunId: run.id,
       canonicalMemory,
       memoryChangeHint,
-      memoryControls,
+      memoryControls: { ...memoryControls, webSearchEnabled: webSearchEnabled },
       accountability,
       memoryContextSufficient: false,
       historicalPreflightSources: historicalPreflight.sources.map((source) => ({
