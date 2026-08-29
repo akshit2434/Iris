@@ -31,6 +31,7 @@ The system prompt is assembled per turn (`buildDynamicSystemPrompt`): temporal c
 | `src/server/memory/` | Governed memory (proposals -> revisions -> sources), retrieval (lexical + semantic), consolidation/"dreaming", compaction, reference history, reconciliation | Raw `messages` are immutable source history; everything derived is replaceable. Optimistic revisions + idempotency keys on every mutation. |
 | `src/server/accountability/` | Open loops (commitment/routine/idea), scheduled checks, merged check-in deliveries, suppressions, soft-close reconciliation, escalation tone, briefing | Person-scoped, not thread-scoped; thread IDs are provenance only. Atomic claim RPC makes sweeps concurrency-safe. See module README + `docs/MILESTONE_4_ACCOUNTABILITY.md`. |
 | `src/server/tools/` | External tool integrations (`tavily.ts` web search) | Env-gated registration; REST, no SDK dependency. |
+| `src/server/files/` | Profile-scoped file metadata, private Storage access, upload/read/open tools | Server-only Supabase Storage access; reads are capability-gated and signed URLs are short-lived. |
 | `src/server/db/` | Server-only Supabase client, queries, generated-style `Database` types | Every query carries `profile_id`. |
 | `src/server/auth/` | PIN gate + profile cookie resolution | |
 | `src/components/`, `src/lib/` | Mobile-first UI; client stream reducer (`agent-stream.ts`) mirrors the server protocol | |
@@ -40,6 +41,7 @@ The system prompt is assembled per turn (`buildDynamicSystemPrompt`): temporal c
 - **Chat/agent:** `profiles`, `threads`, `messages` (immutable raw history), `agent_runs`, `agent_events`, `thread_context`.
 - **Memory:** `memory_items` + `_revisions` + `_sources`, `memory_suppressions`, `message_semantic_index`, consolidation/continuity/reference-history job tables, `profile_memory_settings`.
 - **Accountability:** `open_loops`, `loop_events` (append-only), `scheduled_checks`, `checkin_deliveries` + `_items`, `loop_suppressions`.
+- **Files/artifacts:** `files` metadata plus private `iris-files` Storage bucket; uploaded files and generated artifacts share the row shape and are distinguished by `record_kind`.
 
 All tables: RLS enabled, revoked from `public/anon/authenticated`, composite `(id, profile_id)` foreign keys, append-only ledgers protected by immutability triggers. Migrations are contract-tested against SQL shape without a live database.
 

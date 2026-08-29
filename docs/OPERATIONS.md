@@ -12,6 +12,8 @@ Runtime configuration, background workers, scheduling, and live verification for
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Server-only database connection. Never prefix with `NEXT_PUBLIC_`. |
 | `OPENROUTER_API_KEY` | Server-only model access. |
 
+The files migration creates the private `iris-files` Supabase Storage bucket. No additional application secret is required; the server-only Supabase service-role client performs storage operations and issues short-lived signed URLs.
+
 ### Model selection
 
 | Variable | Default | Purpose |
@@ -47,7 +49,7 @@ Runtime configuration, background workers, scheduling, and live verification for
 
 ### Script-only (not used by the app server)
 
-`IRIS_RUN_LIVE_MEMORY_ACCEPTANCE`, `IRIS_ACCOUNTABILITY_BASE_URL`, `IRIS_ALLOW_REMOTE_LIVE_ACCOUNTABILITY`, `IRIS_LIVE_ACCEPTANCE_RESULT_FILE` — used by `scripts/live-*.mjs` acceptance harnesses.
+`IRIS_RUN_LIVE_MEMORY_ACCEPTANCE`, `IRIS_ACCOUNTABILITY_BASE_URL`, `IRIS_ALLOW_REMOTE_LIVE_ACCOUNTABILITY`, `IRIS_RUN_LIVE_FILES_ACCEPTANCE`, `IRIS_FILES_BASE_URL`, `IRIS_ALLOW_REMOTE_LIVE_FILES`, `IRIS_LIVE_ACCEPTANCE_RESULT_FILE` — used by `scripts/live-*.mjs` acceptance harnesses.
 
 ## Background worker endpoints
 
@@ -69,14 +71,17 @@ Both endpoints are POST-only, authenticated by the `x-iris-worker-secret` header
 
 ## Live acceptance
 
-Deterministic unit/contract tests never touch the network. Two optional live harnesses verify real provider + database behavior against a **local** Supabase instance:
+Deterministic unit/contract tests never touch the network. Optional live harnesses verify real provider + database behavior against a **local** Supabase instance:
 
 ```bash
 node scripts/live-memory-acceptance.mjs          # memory write/read round-trip
 node scripts/live-accountability-acceptance.mjs  # loop -> sweep -> delivery -> assertions
+IRIS_RUN_LIVE_FILES_ACCEPTANCE=1 node scripts/live-files-acceptance.mjs # multipart upload -> real LLM file task -> cleanup
 ```
 
-Both self-skip with a clear reason when credentials or a local server are missing, and refuse to seed remote databases without `IRIS_ALLOW_REMOTE_LIVE_ACCOUNTABILITY=1`.
+The live harnesses are opt-in. The files harness requires a reachable Iris server, local Supabase, and an OpenRouter key; set `IRIS_ALLOW_REMOTE_LIVE_FILES=1` only if you deliberately want to use a remote database with synthetic data. It uploads and deletes a tagged file, checks profile isolation, and caps the real model request count.
+
+For a realistic persistent-chat smoke test, start the app, authenticate in the browser, and send several normal follow-ups in the same thread. The verified local scenario used five prompts: narrow a fictional project, convert it into a schedule, challenge the plan, recover from lost time, and produce a final brief. The test thread and its accountability delivery were removed afterward; the synthetic wording was intentionally rejected by memory consolidation rather than saved as personal memory.
 
 ## Troubleshooting notes (from live operation)
 

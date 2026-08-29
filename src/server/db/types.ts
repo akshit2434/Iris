@@ -1104,6 +1104,51 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      files: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          name: string;
+          storage_path: string;
+          mime_type: string;
+          size_bytes: number;
+          record_kind: "upload" | "artifact";
+          source_thread_id: string | null;
+          source_message_id: string | null;
+          metadata: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          name: string;
+          storage_path: string;
+          mime_type: string;
+          size_bytes: number;
+          record_kind?: "upload" | "artifact";
+          source_thread_id?: string | null;
+          source_message_id?: string | null;
+          metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          name: string;
+          storage_path: string;
+          mime_type: string;
+          size_bytes: number;
+          record_kind: "upload" | "artifact";
+          source_thread_id: string | null;
+          source_message_id: string | null;
+          metadata: Json;
+          created_at: string;
+          updated_at: string;
+        }>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {

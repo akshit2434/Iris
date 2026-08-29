@@ -12,6 +12,8 @@ import { createAccountabilityTools } from "@/server/accountability/tools";
 import type { AccountabilityRepository } from "@/server/accountability/repository";
 import { createWebSearchTool } from "@/server/tools/tavily";
 import { buildOpenMessageAction } from "@/lib/memory-source";
+import { createFileTools } from "@/server/files/tools";
+import type { FileRepository } from "@/server/files/repository";
 
 export type ThreadOverview = {
   title: string;
@@ -40,6 +42,8 @@ export type InternalToolOptions = {
   accountabilityEnabled?: boolean;
   /** Live web search via Tavily; also requires TAVILY_API_KEY in the environment. */
   webSearchEnabled?: boolean;
+  /** Profile-scoped file and artifact tools. Disabled unless explicitly granted. */
+  filesEnabled?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -417,6 +421,7 @@ export function createInternalTools(
   memoryArchive?: MemoryArchiveService,
   options: InternalToolOptions = {},
   accountabilityRepository?: AccountabilityRepository,
+  fileRepository?: FileRepository,
 ) {
   const isReturnDirect = (toolName: string) => options.returnDirectTools?.includes(toolName) ?? false;
   let resolvedMemoryRetrieval = memoryRetrieval;
@@ -515,7 +520,8 @@ export function createInternalTools(
     ? []
     : [memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool];
   const accountabilityTools = options.accountabilityEnabled === false ? [] : createAccountabilityTools(accountabilityRepository);
-  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools, ...webSearchTools] as const;
+  const fileTools = options.filesEnabled === true ? createFileTools(fileRepository) : [];
+  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools, ...fileTools, ...webSearchTools] as const;
 }
 
 /**

@@ -357,6 +357,32 @@ describe("internal tools", () => {
     });
   });
 
+  it("keeps file and artifact tools behind an explicit capability", () => {
+    expect(createInternalTools().map((internalTool) => internalTool.name)).not.toContain("file_read");
+    expect(createInternalTools(undefined, undefined, undefined, undefined, { filesEnabled: true }).map((internalTool) => internalTool.name)).toEqual([
+      "thread_overview",
+      "search_messages",
+      "read_messages",
+      "memory_list",
+      "memory_read",
+      "memory_search",
+      "memory_patch",
+      "memory_archive",
+      "loop_list",
+      "loop_create",
+      "loop_update",
+      "loop_close",
+      "schedule_check",
+      "loop_suppress",
+      "file_list",
+      "file_search",
+      "file_read",
+      "file_open",
+      "artifact_list",
+      "artifact_open",
+    ]);
+  });
+
   it("strictly scopes thread overview reads to the runtime profile and thread", async () => {
     const reader = vi.fn(async (profileId: "profile-a" | "profile-b", threadId: string) => ({
       title: "Runtime test",

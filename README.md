@@ -4,7 +4,7 @@ Iris is a conversation-first personal agent with isolated profiles, chats, histo
 
 ## Current progress
 
-**Stage:** Milestones 1–4 (UI + Base, Agent Runtime, Memory, and Accountability) are complete, plus live web search from milestone 5. The current release supports persistent chats, streamed agent responses, cross-chat recall, governed memory, historical search, exact-source retrieval, source deep links, live web search with cited sources, open loops with scheduled follow-ups, merged check-ins with one-tap responses, soft-close reconciliation, conversational suppressions, tier-aware escalation tone, and a daily morning briefing. Remaining in milestone 5: calendar, location/context, Composio/Classroom, files, and artifact generation.
+**Stage:** Milestones 1–4 (UI + Base, Agent Runtime, Memory, and Accountability) are complete, plus live web search and profile-scoped files from milestone 5. The current release supports persistent chats, streamed agent responses, cross-chat recall, governed memory, historical search, exact-source retrieval, source deep links, live web search with cited sources, private file upload/list/search/read/open, open loops with scheduled follow-ups, merged check-ins with one-tap responses, soft-close reconciliation, conversational suppressions, tier-aware escalation tone, and a daily morning briefing. Remaining in milestone 5: calendar, location/context, Composio/Classroom, and artifact generation.
 
 The public build is a mobile-first, conversation-first base with isolated profiles, persistent raw chat history, local Supabase development, and the visual language documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
 
@@ -36,10 +36,12 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - Accountability: person-scoped open loops (commitments, routines, ideas) with clarify-before-commit, scheduled follow-up checks, merged conversational check-ins, one-tap Done / Not today / Drop it responses, cross-chat completion soft-close, topic suppressions, tier-aware escalation tone, and a daily morning briefing
 - Cross-chat semantic and lexical retrieval with exact-message reads and source preview/deep-link actions
 - Live web search through the agent (Tavily, env-gated) with inline source citations
+- Profile-scoped private file upload, filename search, bounded plain-text reads, and short-lived signed opening links; generated-artifact listing/opening shares the same storage boundary
 - Simple responsive Home, Chat, History, and Files surfaces
 - Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur
 - Local Supabase CLI workflow with a safe public seed (`Profile A` / `Profile B`)
-- Reserved module boundaries for skills, artifacts, and telemetry; live boundaries for memory, tools, and accountability
+- Guarded live acceptance harnesses for memory, accountability, and file upload + real LLM tool use
+- Reserved module boundaries for skills, artifacts, and telemetry; live boundaries for memory, tools, accountability, and files
 
 ## Quick start
 
@@ -101,6 +103,8 @@ npm run typecheck # TypeScript
 npm run build     # production build
 npm run start     # run the production build
 npm run check:secrets # scan tracked files for credential-like content
+npm run check:privacy # scan tracked files for private paths/content
+IRIS_RUN_LIVE_FILES_ACCEPTANCE=1 npm run live:files # opt-in: real upload + real LLM file task
 ```
 
 Hosted GitHub Actions CI is temporarily paused. Run the checks above locally before every commit and pull request; the workflow can be restored when hosted runner access is available again.
@@ -124,6 +128,7 @@ src/server/agent/             LangChain + OpenRouter runtime, context, tools, pr
 src/server/memory/            Governed memory, retrieval, consolidation, reference history
 src/server/accountability/    Open loops, sweep pipeline, check-in delivery
 src/server/tools/             External tool integrations (Tavily web search)
+src/server/files/             Profile-scoped Storage metadata, file tools, and artifact boundary
 src/server/db/                Server-only Supabase client and queries
 supabase/migrations/          Database schema (RLS, composite ownership FKs)
 ```
@@ -132,4 +137,4 @@ Private product context and visual references are intentionally local-only and e
 
 ## Next stage
 
-Milestone 5 — Tools continues: calendar, location/context, Composio/Classroom, files, and artifact generation (web search is already live). Personalized skills, voice, and telemetry remain later milestones.
+Milestone 5 — Tools continues: calendar, location/context, Composio/Classroom, document parsing, and artifact generation (web search, private file storage, and file-grounded agent work are live). Personalized skills, voice, and telemetry remain later milestones.
