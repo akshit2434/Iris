@@ -174,6 +174,13 @@ button:disabled { cursor: default; }
 .message-arrive { animation: message-arrive .42s cubic-bezier(.2,.8,.2,1) both; }
 .message-source-highlight { animation: message-source-highlight 1.35s cubic-bezier(.2,.8,.2,1) both; }
 .source-card { animation: source-card-enter .26s cubic-bezier(.2,.8,.2,1) both; }
+.voice-mic-recording { animation: voice-mic-glow 1.8s ease-in-out infinite; }
+.voice-status-breathe { animation: voice-status-breathe 1.8s ease-in-out infinite; }
+.voice-pulse-dot { animation: voice-pulse-dot 1.1s ease-in-out infinite; }
+.voice-waveform-shell { box-shadow: inset 0 0 0 1px rgba(73,120,237,.08); }
+.voice-waveform-bar { width: 3px; min-height: 6px; border-radius: 999px; background: linear-gradient(180deg, #86a6ff, #4978ed); opacity: .86; transition: height .12s ease-out, opacity .2s ease; }
+.voice-waveform-bar-transcribing { animation: voice-waveform-drift 1.4s ease-in-out infinite alternate; }
+.voice-listening-caret::placeholder { color: #4978ed; }
 .source-preview-dialog[open] { animation: source-preview-enter .22s cubic-bezier(.2,.8,.2,1) both; }
 .source-preview-dialog[open]::backdrop { background: rgba(35, 47, 75, .2); backdrop-filter: blur(8px); animation: source-preview-backdrop-enter .2s ease-out both; }
 .source-preview-dialog--closing[open] { animation: source-preview-exit .16s ease-in both; }
@@ -188,9 +195,18 @@ button:disabled { cursor: default; }
 @keyframes page-loader-glow { 0%,100% { transform: scale(.94); opacity: .72; } 50% { transform: scale(1); opacity: 1; } }
 @keyframes message-arrive { from { opacity:0; transform:translateY(8px) scale(.99); } to { opacity:1; transform:none; } }
 @keyframes message-source-highlight { from { background: rgba(231, 237, 255, .82); box-shadow: 0 0 0 5px rgba(73, 120, 237, .12); } to { background: transparent; box-shadow: 0 0 0 0 transparent; } }
+@keyframes voice-mic-glow { 0%,100% { box-shadow: 0 10px 22px rgba(73,120,237,.16), 0 0 0 0 rgba(73,120,237,.2); } 50% { box-shadow: 0 13px 30px rgba(73,120,237,.24), 0 0 0 8px rgba(73,120,237,0); } }
+@keyframes voice-status-breathe { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-1px); } }
+@keyframes voice-pulse-dot { 0%,100% { transform: scale(.72); opacity: .55; } 50% { transform: scale(1); opacity: 1; } }
+@keyframes voice-waveform-drift { from { opacity: .58; transform: scaleY(.82); } to { opacity: .9; transform: scaleY(1.08); } }
 @keyframes source-card-enter { from { opacity: 0; filter: blur(4px); transform: translateY(4px); } to { opacity: 1; filter: blur(0); transform: none; } }
 @keyframes source-preview-enter { from { opacity: 0; filter: blur(7px); transform: translateY(8px) scale(.985); } to { opacity: 1; filter: blur(0); transform: none; } }
 @keyframes source-preview-exit { from { opacity: 1; filter: blur(0); transform: none; } to { opacity: 0; filter: blur(5px); transform: translateY(4px) scale(.99); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-mic-recording, .voice-status-breathe, .voice-pulse-dot, .voice-waveform-bar-transcribing { animation: none; }
+  .voice-waveform-bar { transition: none; }
+}
 @keyframes source-preview-backdrop-enter { from { opacity: 0; } to { opacity: 1; } }
 @keyframes source-preview-backdrop-exit { from { opacity: 1; } to { opacity: 0; } }
 @keyframes chat-route-exit { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: .04; transform: translate3d(-6px, 0, 0) scale(.996); } }

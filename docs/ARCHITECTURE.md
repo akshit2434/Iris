@@ -32,6 +32,7 @@ The system prompt is assembled per turn (`buildDynamicSystemPrompt`): temporal c
 | `src/server/accountability/` | Open loops (commitment/routine/idea), scheduled checks, merged check-in deliveries, suppressions, soft-close reconciliation, escalation tone, briefing | Person-scoped, not thread-scoped; thread IDs are provenance only. Atomic claim RPC makes sweeps concurrency-safe. See module README + `docs/MILESTONE_4_ACCOUNTABILITY.md`. |
 | `src/server/tools/` | External tool integrations (`tavily.ts` web search) | Env-gated registration; REST, no SDK dependency. |
 | `src/server/files/` | Profile-scoped file metadata, private Storage access, upload/read/open tools | Server-only Supabase Storage access; reads are capability-gated and signed URLs are short-lived. |
+| `src/server/transcription/` | AssemblyAI upload/job polling, profile vocabulary context, correction learning | Audio is provider-bound and never stored in Iris; local job rows remain profile-scoped so polling cannot cross profiles. |
 | `src/server/db/` | Server-only Supabase client, queries, generated-style `Database` types | Every query carries `profile_id`. |
 | `src/server/auth/` | PIN gate + profile cookie resolution | |
 | `src/components/`, `src/lib/` | Mobile-first UI; client stream reducer (`agent-stream.ts`) mirrors the server protocol | |
@@ -42,6 +43,7 @@ The system prompt is assembled per turn (`buildDynamicSystemPrompt`): temporal c
 - **Memory:** `memory_items` + `_revisions` + `_sources`, `memory_suppressions`, `message_semantic_index`, consolidation/continuity/reference-history job tables, `profile_memory_settings`.
 - **Accountability:** `open_loops`, `loop_events` (append-only), `scheduled_checks`, `checkin_deliveries` + `_items`, `loop_suppressions`.
 - **Files/artifacts:** `files` metadata plus private `iris-files` Storage bucket; uploaded files and generated artifacts share the row shape and are distinguished by `record_kind`.
+- **Voice:** `voice_transcriptions` tracks short-lived AssemblyAI jobs and returned text; `voice_vocabulary` stores only explicit correction terms separately from governed personal memory.
 
 All tables: RLS enabled, revoked from `public/anon/authenticated`, composite `(id, profile_id)` foreign keys, append-only ledgers protected by immutability triggers. Migrations are contract-tested against SQL shape without a live database.
 

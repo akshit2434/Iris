@@ -14,6 +14,8 @@ Runtime configuration, background workers, scheduling, and live verification for
 
 The files migration creates the private `iris-files` Supabase Storage bucket. No additional application secret is required; the server-only Supabase service-role client performs storage operations and issues short-lived signed URLs.
 
+`ASSEMBLYAI_API_KEY` is optional and server-only. When configured, the chat composer enables ten-minute push-to-talk dictation through AssemblyAI's pre-recorded API. Iris sends bounded normal-sensitivity memory terms and context as transcription hints, stores the returned text and job metadata, and requests provider-side transcript deletion after completion. Raw audio is not stored by Iris.
+
 ### Model selection
 
 | Variable | Default | Purpose |
@@ -46,6 +48,20 @@ The files migration creates the private `iris-files` Supabase Storage bucket. No
 | --- | --- | --- |
 | `ACCOUNTABILITY_SWEEP_DISABLED` | `false` | Disables the lazy post-turn sweep trigger (the endpoint still works). |
 | `ACCOUNTABILITY_SCANNER_DISABLED` | `false` | Disables the missed-commitment background scan. |
+
+### Voice dictation
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ASSEMBLYAI_API_KEY` | unset | Enables protected AssemblyAI transcription routes and the chat composer mic. |
+
+Voice recordings are capped in the browser at ten minutes and stop automatically at that boundary. Iris does not impose an additional arbitrary byte-size rejection; the app submits a pre-recorded AssemblyAI job, returns immediately, and polls from the browser, so no Vercel function remains open while a long recording is processed. The provider request uses Universal 3.5 Pro with Universal 2 fallback, Hindi/English code-switching, normal-sensitivity memory context, keyterm prompting, and a deletion request after the result is saved. Active jobs can be cancelled from the composer, which aborts client polling and requests provider-side deletion.
+
+### Future latency plan
+
+The current pre-recorded flow is intentionally the first implementation: it is cheaper and keeps the AssemblyAI key server-side. The next latency phase is AssemblyAI Universal-3 Pro Streaming over a browser WebSocket with a short-lived server-minted token. An `AudioWorklet` would send 16 kHz mono PCM16 frames while the user speaks; partial turns would replace the current mutable draft, and only final turns would be committed to the composer. The existing async route should remain as the fallback for unsupported browsers and failed streaming sessions.
+
+Streaming is billed for WebSocket session duration, so Iris must open the session only while the mic is active and always terminate it on stop or cancel. At the current published rates, Universal-3 Pro Streaming is about $0.45/hour versus about $0.21/hour for pre-recorded Universal-3.5 Pro, before any optional prompting add-on. A short Hinglish evaluation set must confirm Hindi-English accuracy on the streaming model before it becomes the default; the current public model table lists its native language coverage differently from Universal-2. See the [AssemblyAI pricing](https://www.assemblyai.com/pricing), [streaming billing](https://www.assemblyai.com/docs/faq/how-does-universal-streaming-session-based-pricing-work), and [model comparison](https://www.assemblyai.com/docs/getting-started/models) pages when this phase is scheduled.
 
 ### Script-only (not used by the app server)
 

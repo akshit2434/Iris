@@ -1149,6 +1149,79 @@ export type Database = {
         }>;
         Relationships: [];
       };
+      voice_transcriptions: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          provider: "assemblyai";
+          provider_transcript_id: string;
+          status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+          transcript: string | null;
+          error_message: string | null;
+          vocabulary_term_count: number;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          provider?: "assemblyai";
+          provider_transcript_id: string;
+          status?: "queued" | "processing" | "completed" | "failed" | "cancelled";
+          transcript?: string | null;
+          error_message?: string | null;
+          vocabulary_term_count?: number;
+          created_at?: string;
+          updated_at?: string;
+          completed_at?: string | null;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          provider: "assemblyai";
+          provider_transcript_id: string;
+          status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+          transcript: string | null;
+          error_message: string | null;
+          vocabulary_term_count: number;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        }>;
+        Relationships: [];
+      };
+      voice_vocabulary: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          term: string;
+          normalized_term: string;
+          source: "correction" | "manual";
+          occurrence_count: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          term: string;
+          source?: "correction" | "manual";
+          occurrence_count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          term: string;
+          source: "correction" | "manual";
+          occurrence_count: number;
+          created_at: string;
+          updated_at: string;
+        }>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {

@@ -23,6 +23,7 @@ import {
 } from "@/lib/checkin-actions";
 import { resolveMessageHashTarget } from "@/lib/chat-source-navigation";
 import { canSubmitMessage } from "@/lib/chat-composer";
+import { appendVoiceTranscript, createVoiceWaveform, formatVoiceDuration, MAX_VOICE_RECORDING_SECONDS, preferredVoiceMimeType, voiceWaveformFromTimeDomain, VOICE_TRANSCRIPTION_POLL_INTERVAL_MS } from "@/lib/voice-input";
 import { isConfirmedNewChatPromotion, isPersistedThreadId, messageEndpointForThread, UNSAVED_CHAT_ID } from "@/lib/chat-route";
 import { createBottomScrollScheduler, INITIAL_SCROLL_FOLLOW_STATE, measureScrollFollowState, returnToBottomState, type ScrollFollowState } from "@/lib/chat-scroll";
 import {
@@ -50,6 +51,28 @@ type CheckinQuickActions = {
   busyKey: string | null;
   error: string | null;
   onAnswer: (question: PendingQuestion, outcome: CheckinOutcome) => Promise<void>;
+};
+
+type VoiceStopReason = "manual" | "limit";
+
+type VoiceSession = {
+  recorder: MediaRecorder;
+  stream: MediaStream;
+  chunks: BlobPart[];
+  startedAt: number;
+  timer: number | null;
+  audioContext: AudioContext | null;
+  analyser: AnalyserNode | null;
+  waveformFrame: number | null;
+  waveformUpdatedAt: number;
+  stopReason: VoiceStopReason;
+  discarded: boolean;
+};
+
+type VoiceRun = {
+  controller: AbortController;
+  transcriptionId: string | null;
+  cancelled: boolean;
 };
 
 function formatMessageTime(value: string) {
@@ -104,6 +127,14 @@ export function ChatScreen() {
   const [checkinQuestionsByMessage, setCheckinQuestionsByMessage] = useState<Map<string, PendingQuestion[]>>(() => new Map());
   const [answeringCheckinKey, setAnsweringCheckinKey] = useState<string | null>(null);
   const [checkinError, setCheckinError] = useState<string | null>(null);
+  const [voiceState, setVoiceState] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [voiceSeconds, setVoiceSeconds] = useState(0);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceStopReason, setVoiceStopReason] = useState<VoiceStopReason | null>(null);
+  const [voiceWaveform, setVoiceWaveform] = useState<number[]>(() => createVoiceWaveform());
+  const voiceSessionRef = useRef<VoiceSession | null>(null);
+  const voiceRunRef = useRef<VoiceRun | null>(null);
+  const voiceSourceRef = useRef<string | null>(null);
 
   function updateStreamState(next: StreamState | ((current: StreamState) => StreamState)) {
     setStreamState((current) => {
@@ -116,10 +147,26 @@ export function ChatScreen() {
   const toolActivities = streamState.toolActivities;
   const hasMessages = messages.length > 0;
   const hasMessagesRef = useRef(hasMessages);
+  const voiceBusy = voiceState !== "idle";
 
   useEffect(() => {
     hasMessagesRef.current = hasMessages;
   }, [hasMessages]);
+
+  useEffect(() => () => {
+    const session = voiceSessionRef.current;
+    if (session) {
+      session.discarded = true;
+      disposeVoiceSession(session);
+      if (session.recorder.state !== "inactive") session.recorder.stop();
+    }
+    const run = voiceRunRef.current;
+    if (run) {
+      run.cancelled = true;
+      run.controller.abort();
+      if (run.transcriptionId) void cancelRemoteTranscription(run.transcriptionId);
+    }
+  }, []);
 
   const loadCheckinQuestions = useCallback(async () => {
     try {
@@ -353,7 +400,12 @@ export function ChatScreen() {
     if (!profileId) return;
     const content = composer.trim();
     const hasChatTarget = Boolean(thread) || isNewChat;
-    if (!canSubmitMessage(content, sending, presentationActive, hasChatTarget)) return;
+    if (voiceBusy || !canSubmitMessage(content, sending, presentationActive, hasChatTarget)) return;
+    const voiceSource = voiceSourceRef.current;
+    voiceSourceRef.current = null;
+    if (voiceSource && voiceSource !== content) {
+      void fetch("/api/transcribe/learn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ original: voiceSource, corrected: content }) }).catch(() => undefined);
+    }
     setComposer("");
     setError(null);
     setSending(true);
@@ -474,6 +526,198 @@ export function ChatScreen() {
     }
   }
 
+  async function cancelRemoteTranscription(transcriptionId: string) {
+    await fetch(`/api/transcribe/${transcriptionId}`, { method: "DELETE", cache: "no-store" }).catch(() => undefined);
+  }
+
+  async function waitForVoicePoll(signal: AbortSignal) {
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException("Voice transcription was cancelled.", "AbortError"));
+        return;
+      }
+      let timer = 0;
+      const onAbort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Voice transcription was cancelled.", "AbortError"));
+      };
+      timer = window.setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, VOICE_TRANSCRIPTION_POLL_INTERVAL_MS);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  async function transcribeVoice(blob: Blob, context: string, stopReason: VoiceStopReason) {
+    const run: VoiceRun = { controller: new AbortController(), transcriptionId: null, cancelled: false };
+    voiceRunRef.current = run;
+    setVoiceState("transcribing");
+    setVoiceStopReason(stopReason);
+    setVoiceError(null);
+    try {
+      const form = new FormData();
+      form.append("audio", blob, `iris-voice.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
+      if (context.trim()) form.append("context", context.trim());
+      const response = await fetch("/api/transcribe", { method: "POST", body: form, signal: run.controller.signal });
+      const body = (await response.json().catch(() => null)) as { transcriptionId?: string; error?: string } | null;
+      if (!response.ok || !body?.transcriptionId) throw new Error(body?.error ?? "Could not start voice transcription.");
+      run.transcriptionId = body.transcriptionId;
+      if (run.cancelled) {
+        await cancelRemoteTranscription(run.transcriptionId);
+        return;
+      }
+      const startedAt = Date.now();
+      let firstPoll = true;
+      while (Date.now() - startedAt < 4 * 60 * 1000) {
+        if (!firstPoll) await waitForVoicePoll(run.controller.signal);
+        firstPoll = false;
+        const statusResponse = await fetch(`/api/transcribe/${body.transcriptionId}`, { cache: "no-store", signal: run.controller.signal });
+        const statusBody = (await statusResponse.json().catch(() => null)) as { status?: string; text?: string | null; error?: string } | null;
+        if (!statusResponse.ok) throw new Error(statusBody?.error ?? "Could not read the voice transcription.");
+        if (statusBody?.status === "completed") {
+          const transcript = statusBody.text?.trim();
+          if (!transcript) throw new Error("The recording did not contain recognizable speech.");
+          setComposer((current) => appendVoiceTranscript(current, transcript));
+          voiceSourceRef.current = transcript;
+          return;
+        }
+        if (statusBody?.status === "failed" || statusBody?.status === "cancelled") throw new Error(statusBody.error ?? "AssemblyAI could not transcribe that recording.");
+      }
+      throw new Error("Voice transcription took too long. Try a shorter recording.");
+    } catch (transcriptionError) {
+      if (!run.cancelled && !(transcriptionError instanceof DOMException && transcriptionError.name === "AbortError")) {
+        setVoiceError(transcriptionError instanceof Error ? transcriptionError.message : "Could not transcribe that recording.");
+      }
+    } finally {
+      if (voiceRunRef.current === run) {
+        voiceRunRef.current = null;
+        setVoiceState("idle");
+        setVoiceStopReason(null);
+        setVoiceWaveform(createVoiceWaveform());
+      }
+    }
+  }
+
+  function disposeVoiceSession(session: VoiceSession) {
+    if (session.timer !== null) window.clearInterval(session.timer);
+    session.timer = null;
+    if (session.waveformFrame !== null) window.cancelAnimationFrame(session.waveformFrame);
+    session.waveformFrame = null;
+    session.audioContext?.close().catch(() => undefined);
+    session.audioContext = null;
+    session.stream.getTracks().forEach((track) => track.stop());
+  }
+
+  function stopVoiceRecording(reason: VoiceStopReason = "manual") {
+    const session = voiceSessionRef.current;
+    if (!session || session.recorder.state === "inactive") return;
+    session.stopReason = reason;
+    if (session.timer !== null) window.clearInterval(session.timer);
+    session.timer = null;
+    session.recorder.stop();
+  }
+
+  function cancelVoiceRecording() {
+    const session = voiceSessionRef.current;
+    if (!session) return;
+    session.discarded = true;
+    stopVoiceRecording();
+    setVoiceState("idle");
+    setVoiceSeconds(0);
+    setVoiceStopReason(null);
+    setVoiceWaveform(createVoiceWaveform());
+    setVoiceError(null);
+  }
+
+  function cancelVoiceTranscription() {
+    const run = voiceRunRef.current;
+    if (!run) return;
+    run.cancelled = true;
+    run.controller.abort();
+    if (run.transcriptionId) void cancelRemoteTranscription(run.transcriptionId);
+    setVoiceState("idle");
+    setVoiceStopReason(null);
+    setVoiceWaveform(createVoiceWaveform());
+    setVoiceError(null);
+  }
+
+  async function startVoiceRecording() {
+    if (voiceBusy || sending || presentationActive) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setVoiceError("Voice input is not supported in this browser.");
+      return;
+    }
+    setVoiceError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const mimeType = preferredVoiceMimeType((value) => MediaRecorder.isTypeSupported(value));
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 24_000 }) : new MediaRecorder(stream);
+      const AudioContextConstructor = window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      let audioContext: AudioContext | null = null;
+      let analyser: AnalyserNode | null = null;
+      try {
+        audioContext = AudioContextConstructor ? new AudioContextConstructor() : null;
+        analyser = audioContext?.createAnalyser() ?? null;
+        if (analyser && audioContext) {
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.78;
+          audioContext.createMediaStreamSource(stream).connect(analyser);
+          void audioContext.resume().catch(() => undefined);
+        }
+      } catch {
+        analyser = null;
+        audioContext?.close().catch(() => undefined);
+        audioContext = null;
+      }
+      const session: VoiceSession = { recorder, stream, chunks: [], startedAt: Date.now(), timer: null, audioContext, analyser, waveformFrame: null, waveformUpdatedAt: 0, stopReason: "manual", discarded: false };
+      voiceSessionRef.current = session;
+      recorder.ondataavailable = (event) => { if (event.data.size > 0) session.chunks.push(event.data); };
+      recorder.onerror = () => setVoiceError("The browser could not record audio.");
+      recorder.onstop = () => {
+        const recorded = new Blob(session.chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
+        const stopReason = session.stopReason;
+        disposeVoiceSession(session);
+        voiceSessionRef.current = null;
+        if (session.discarded) return;
+        if (recorded.size === 0) {
+          setVoiceState("idle");
+          setVoiceError("The recording was empty.");
+          return;
+        }
+        void transcribeVoice(recorded, composer, stopReason);
+      };
+      const renderWaveform = (timestamp: number) => {
+        if (voiceSessionRef.current !== session || session.recorder.state !== "recording" || !session.analyser) return;
+        if (timestamp - session.waveformUpdatedAt >= 50) {
+          const samples = new Uint8Array(session.analyser.fftSize);
+          session.analyser.getByteTimeDomainData(samples);
+          setVoiceWaveform(voiceWaveformFromTimeDomain(samples));
+          session.waveformUpdatedAt = timestamp;
+        }
+        session.waveformFrame = window.requestAnimationFrame(renderWaveform);
+      };
+      recorder.start(250);
+      setVoiceState("recording");
+      setVoiceStopReason(null);
+      setVoiceSeconds(0);
+      session.waveformFrame = window.requestAnimationFrame(renderWaveform);
+      session.timer = window.setInterval(() => {
+        const elapsed = Math.min(MAX_VOICE_RECORDING_SECONDS, Math.floor((Date.now() - session.startedAt) / 1000));
+        setVoiceSeconds(elapsed);
+        if (elapsed >= MAX_VOICE_RECORDING_SECONDS) stopVoiceRecording("limit");
+      }, 250);
+    } catch (recordingError) {
+      setVoiceState("idle");
+      setVoiceError(recordingError instanceof DOMException && recordingError.name === "NotAllowedError" ? "Microphone permission was denied." : "Could not start the microphone.");
+    }
+  }
+
+  function toggleVoiceRecording() {
+    if (voiceState === "recording") stopVoiceRecording();
+    else void startVoiceRecording();
+  }
+
   useEffect(() => {
     if (!presentationActive || (streamState.status !== "completed" && streamState.status !== "failed")) return;
     const assistant = streamState.assistantMessageId
@@ -533,7 +777,10 @@ export function ChatScreen() {
   if (!isReady) return null;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center px-5 py-12 sm:px-8"><ProfilePicker /></div>;
   if (loading) return <DelayedPagePresence active className="min-h-dvh" />;
-  if (!thread && !isNewChat) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
+  // A first-message promotion updates the URL before the persisted thread
+  // metadata finishes loading. The optimistic messages are already the live
+  // chat in that window, so do not replace it with a false not-found state.
+  if (!thread && !isNewChat && !hasMessages) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
     <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""}`}>
@@ -570,12 +817,23 @@ export function ChatScreen() {
           {hasMessages && !scrollFollow.nearBottom ? <button type="button" onClick={returnToBottom} className="soft-press absolute left-1/2 top-1 z-10 flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-white/80 bg-white/72 text-lg text-slate-600 shadow-[0_12px_28px_rgba(81,104,151,.16)] backdrop-blur-xl" aria-label="Jump to latest message">↓</button> : null}
           {error ? <p className="mb-2 rounded-xl bg-red-50/90 px-3 py-2 text-xs font-medium text-red-600 backdrop-blur-xl">{error}</p> : null}
           <form onSubmit={sendMessage} className="chat-composer-focus-cue glass-surface rounded-[28px] p-2 transition focus-within:bg-white/78 focus-within:shadow-[0_26px_70px_rgba(73,98,145,.18)]">
-            <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!sending && !presentationActive) event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder="Message Iris" className="max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 placeholder:text-slate-400" />
+            <textarea value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!sending && !presentationActive && !voiceBusy) event.currentTarget.form?.requestSubmit(); } }} rows={1} placeholder={voiceState === "recording" ? "Listening… release the mic when you’re done" : voiceState === "transcribing" ? "Transcribing your voice note…" : "Message Iris"} className={`max-h-32 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-6 text-slate-900 placeholder:text-slate-400 ${voiceState === "recording" ? "voice-listening-caret" : ""}`} />
+            {voiceState !== "idle" ? <div className="voice-waveform-shell mx-2 mb-1 flex h-9 items-center gap-[3px] rounded-[14px] bg-[#f7f9ff]/75 px-3" aria-hidden="true">{voiceWaveform.map((height, index) => <span key={index} className={`voice-waveform-bar ${voiceState === "transcribing" ? "voice-waveform-bar-transcribing" : ""}`} style={{ height: `${height}%` }} />)}</div> : null}
             <div className="flex items-center justify-between gap-2 px-1 pb-1">
-              {isNewChat && !hasMessages ? <button type="button" aria-pressed={isTemporary} onClick={() => setIsTemporary((current) => !current)} className={`rounded-xl px-2.5 py-2 text-[11px] font-semibold transition-colors ${isTemporary ? "bg-[#e7edff] text-[#416fd8]" : "text-slate-400 hover:bg-white/55 hover:text-slate-600"}`}>{isTemporary ? "Temporary · not saved" : "Temporary chat"}</button> : <span />}
-              <button type="submit" disabled={!canSubmitMessage(composer, sending, presentationActive, Boolean(thread) || isNewChat)} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button>
+              <div className="flex min-w-0 items-center gap-1.5">
+                {isNewChat && !hasMessages ? <button type="button" aria-pressed={isTemporary} onClick={() => setIsTemporary((current) => !current)} className={`rounded-xl px-2.5 py-2 text-[11px] font-semibold transition-colors ${isTemporary ? "bg-[#e7edff] text-[#416fd8]" : "text-slate-400 hover:bg-white/55 hover:text-slate-600"}`}>{isTemporary ? "Temporary · not saved" : "Temporary chat"}</button> : null}
+                {voiceState === "recording" ? <span className="voice-status-breathe flex items-center gap-1.5 rounded-xl bg-[#e7edff]/80 px-2.5 py-2 text-[11px] font-semibold text-[#416fd8]" role="status"><span className="voice-pulse-dot h-1.5 w-1.5 rounded-full bg-[#4978ed]" />{formatVoiceDuration(voiceSeconds)} / {formatVoiceDuration(MAX_VOICE_RECORDING_SECONDS)}</span> : voiceState === "transcribing" ? <span className="flex items-center gap-1.5 rounded-xl bg-white/55 px-2.5 py-2 text-[11px] font-medium text-slate-500" role="status"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#4978ed]" />{voiceStopReason === "limit" ? "10:00 reached · transcribing" : "Transcribing"}</span> : null}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {voiceBusy ? <button type="button" onClick={voiceState === "recording" ? cancelVoiceRecording : cancelVoiceTranscription} className="soft-press rounded-xl px-2.5 py-2 text-[11px] font-semibold text-slate-500 transition hover:bg-white/70 hover:text-slate-800" aria-label={voiceState === "recording" ? "Cancel voice recording" : "Cancel voice transcription"}>Cancel</button> : null}
+                <button type="button" onClick={toggleVoiceRecording} disabled={sending || presentationActive || voiceState === "transcribing"} className={`soft-press flex h-11 w-11 items-center justify-center rounded-[17px] shadow-[0_10px_22px_rgba(73,120,237,.12)] transition ${voiceState === "recording" ? "voice-mic-recording bg-[#4978ed] text-white" : "bg-white/65 text-slate-600 hover:bg-white/90"} disabled:opacity-30`} aria-label={voiceState === "recording" ? "Stop voice recording" : "Start voice recording"} aria-pressed={voiceState === "recording"}>
+                  {voiceState === "recording" ? <span className="h-3.5 w-3.5 rounded-[4px] bg-white" /> : <svg viewBox="0 0 24 24" className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>}
+                </button>
+                <button type="submit" disabled={voiceBusy || !canSubmitMessage(composer, sending, presentationActive, Boolean(thread) || isNewChat)} className="soft-press flex h-11 w-11 items-center justify-center rounded-[17px] bg-[#111827] text-lg font-light text-white shadow-[0_10px_22px_rgba(17,24,39,.18)] disabled:opacity-30" aria-label="Send message">{sending ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : "↑"}</button>
+              </div>
             </div>
           </form>
+          {voiceError ? <p className="mt-2 px-3 text-[11px] font-medium text-red-500" role="alert">{voiceError}</p> : <p className="mt-2 px-3 text-[10px] font-medium text-slate-400">Voice notes use English, Hindi, and your memory-aware vocabulary. Audio is not stored by Iris.</p>}
         </div>
       </div>
     </div>

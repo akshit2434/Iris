@@ -37,6 +37,7 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - Cross-chat semantic and lexical retrieval with exact-message reads and source preview/deep-link actions
 - Live web search through the agent (Tavily, env-gated) with inline source citations
 - Profile-scoped private file upload, filename search, bounded plain-text reads, and short-lived signed opening links; generated-artifact listing/opening shares the same storage boundary
+- Push-to-talk voice dictation for up to ten-minute Hindi, English, and Hinglish recordings through AssemblyAI; memory-derived terms and explicitly learned corrections improve names and technical vocabulary without storing audio in Iris
 - Simple responsive Home, Chat, History, and Files surfaces
 - Mobile-first visual system with generated Iris artwork, restrained copy, and procedural edge blur
 - Local Supabase CLI workflow with a safe public seed (`Profile A` / `Profile B`)
@@ -69,6 +70,8 @@ IRIS_APP_PIN=replace-with-a-private-pin
 SUPABASE_URL=http://127.0.0.1:56321
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
 OPENROUTER_API_KEY=your-server-only-openrouter-key
+# Optional voice dictation. Keep this server-only; the browser never sees it.
+# ASSEMBLYAI_API_KEY=your-server-only-assemblyai-key
 # Optional live web search via Tavily (server-only). Get a key at tavily.com.
 # TAVILY_API_KEY=
 # Server-only secret guarding the internal worker endpoints (memory workers +
@@ -88,6 +91,8 @@ LANGCHAIN_TRACING_V2=false
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` and `OPENROUTER_API_KEY` are server-only. Do not rename them with `NEXT_PUBLIC_` or expose them to browser code.
+
+`ASSEMBLYAI_API_KEY` is also server-only. It enables the voice dictation control; without it, the rest of Iris remains usable and the control reports that voice transcription is not configured.
 
 The model defaults to `openai/gpt-5.6-luna` when `OPENROUTER_MODEL` is omitted.
 
@@ -129,6 +134,7 @@ src/server/memory/            Governed memory, retrieval, consolidation, referen
 src/server/accountability/    Open loops, sweep pipeline, check-in delivery
 src/server/tools/             External tool integrations (Tavily web search)
 src/server/files/             Profile-scoped Storage metadata, file tools, and artifact boundary
+src/server/transcription/     AssemblyAI voice jobs, memory vocabulary biasing, and correction learning
 src/server/db/                Server-only Supabase client and queries
 supabase/migrations/          Database schema (RLS, composite ownership FKs)
 ```
@@ -137,4 +143,4 @@ Private product context and visual references are intentionally local-only and e
 
 ## Next stage
 
-Milestone 5 — Tools continues: calendar, location/context, Composio/Classroom, document parsing, and artifact generation (web search, private file storage, and file-grounded agent work are live). Personalized skills, voice, and telemetry remain later milestones.
+Milestone 5 — Tools continues: calendar, location/context, Composio/Classroom, document parsing, and artifact generation. Web search, private file storage, file-grounded agent work, and async voice dictation are live. Realtime streaming dictation remains a future latency phase; personalized skills and telemetry remain later milestones.

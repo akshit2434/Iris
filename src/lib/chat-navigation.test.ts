@@ -23,6 +23,11 @@ describe("chat back navigation affordance", () => {
     expect(source).toContain("isConfirmedNewChatPromotion");
   });
 
+  it("keeps optimistic messages visible while promoted thread metadata loads", () => {
+    const source = readFileSync(new URL("../components/chat-screen.tsx", import.meta.url), "utf8");
+    expect(source).toContain("if (!thread && !isNewChat && !hasMessages)");
+  });
+
   it("keeps the chat scroll surface shrinkable and full-width inside its flex parent", () => {
     const source = readFileSync(new URL("../components/chat-screen.tsx", import.meta.url), "utf8");
     expect(source).toContain('className="iris-scrollbar min-w-0 w-full flex-1 overflow-y-auto');
