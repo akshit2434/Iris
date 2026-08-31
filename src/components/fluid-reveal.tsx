@@ -13,8 +13,8 @@ export function FluidReveal({ children, className = "" }: Readonly<{ children: R
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     gsap.fromTo(
       "[data-reveal]",
-      { autoAlpha: 0, y: 18, scale: 0.985 },
-      { autoAlpha: 1, y: 0, scale: 1, duration: 0.72, stagger: 0.07, ease: "power3.out", clearProps: "transform,opacity,visibility" },
+      { autoAlpha: 0, y: 14, scale: 0.99, filter: "blur(4px)" },
+      { autoAlpha: 1, y: 0, scale: 1, filter: "blur(0px)", duration: 0.64, stagger: 0.065, ease: "power3.out", clearProps: "transform,opacity,visibility,filter" },
     );
   }, { scope });
 

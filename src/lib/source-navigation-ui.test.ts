@@ -10,7 +10,7 @@ describe("exact historical source UX contract", () => {
     expect(chat).toContain("function SourceCard");
     expect(chat).toContain("SourcePreviewDialog");
     expect(chat).toContain("Preview");
-    expect(chat).toContain("Open message");
+    expect(chat).toContain('aria-label="Open source message"');
     expect(chat).toContain("formatSourceDate");
     expect(chat).toContain("exact source");
     expect(chat).toContain("scroll={false}");

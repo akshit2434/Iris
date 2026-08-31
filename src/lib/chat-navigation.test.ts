@@ -23,9 +23,10 @@ describe("chat back navigation affordance", () => {
     expect(source).toContain("isConfirmedNewChatPromotion");
   });
 
-  it("keeps optimistic messages visible while promoted thread metadata loads", () => {
+  it("keeps the chat surface mounted behind its loading transition", () => {
     const source = readFileSync(new URL("../components/chat-screen.tsx", import.meta.url), "utf8");
-    expect(source).toContain("if (!thread && !isNewChat && !hasMessages)");
+    expect(source).toContain("if (!loading && !thread && !isNewChat && !hasMessages)");
+    expect(source).toContain("ChatLoadingOverlay");
   });
 
   it("keeps the chat scroll surface shrinkable and full-width inside its flex parent", () => {

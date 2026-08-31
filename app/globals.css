@@ -54,20 +54,6 @@ body::before {
   outline: none;
 }
 
-:where(button, a, input, textarea, select, summary, [role="button"], [tabindex]):focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, .94), 0 0 0 5px rgba(73, 120, 237, .34);
-}
-
-html[data-input-modality="pointer"] :where(button, a, input, textarea, select, summary, [role="button"], [tabindex]):focus-visible {
-  box-shadow: none;
-}
-
-/* The composer already lifts its glass surface on focus-within. */
-.chat-composer-focus-cue :where(textarea):focus-visible {
-  box-shadow: none;
-}
-
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
@@ -187,6 +173,10 @@ button:disabled { cursor: default; }
 .source-preview-dialog--closing[open]::backdrop { animation: source-preview-backdrop-exit .16s ease-in both; }
 .chat-route-exit { animation: chat-route-exit .15s cubic-bezier(.22,.8,.24,1) both; pointer-events: none; transform-origin: 50% 42%; }
 .chat-empty-entry { animation: chat-empty-entry .28s cubic-bezier(.2,.8,.2,1) both; transform-origin: 50% 44%; }
+.chat-load-overlay { position: absolute; inset: 0; z-index: 60; overflow: hidden; background: linear-gradient(145deg, rgba(245,247,251,.94), rgba(239,244,255,.88)); backdrop-filter: blur(18px) saturate(126%); pointer-events: none; transition: opacity .36s ease, transform .46s cubic-bezier(.2,.8,.2,1); }
+.chat-load-overlay span { animation: skeleton-breathe 1.8s ease-in-out infinite; }
+.chat-load-overlay--exiting { opacity: 0; transform: scale(1.008); }
+.chat-load-content-enter { animation: chat-load-content-enter .46s cubic-bezier(.2,.8,.2,1) both; }
 
 @keyframes assistant-thinking-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @keyframes tool-activity-enter { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
@@ -211,6 +201,8 @@ button:disabled { cursor: default; }
 @keyframes source-preview-backdrop-exit { from { opacity: 1; } to { opacity: 0; } }
 @keyframes chat-route-exit { from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); } to { opacity: .04; transform: translate3d(-6px, 0, 0) scale(.996); } }
 @keyframes chat-empty-entry { from { opacity: 0; transform: translate3d(0, 7px, 0) scale(.997); } to { opacity: 1; transform: none; } }
+@keyframes skeleton-breathe { 0%,100% { opacity: .54; } 50% { opacity: .9; } }
+@keyframes chat-load-content-enter { from { opacity: .72; filter: blur(3px); transform: scale(.996); } to { opacity: 1; filter: blur(0); transform: none; } }
 
 @supports not (backdrop-filter: blur(1px)) {
   .glass-surface { background: rgba(255,255,255,.94); }

@@ -22,7 +22,7 @@ export function GateScreen() {
     finally { setLoading(false); }
   }
 
-  return <main className="relative flex min-h-dvh items-end overflow-hidden px-5 pb-[max(30px,env(safe-area-inset-bottom))] pt-20 sm:items-center sm:justify-center">
+  return <main className="relative flex min-h-dvh items-center overflow-hidden px-5 pb-[max(30px,env(safe-area-inset-bottom))] pt-[max(30px,env(safe-area-inset-top))] sm:items-center sm:justify-center">
     <div className="ambient-orb -right-40 top-[-8%]" />
     <FluidReveal className="relative w-full max-w-md">
       <div data-reveal className="mb-12 px-2"><IrisMark size={70} priority /><h1 className="mt-6 text-[clamp(3.6rem,16vw,5.8rem)] font-medium leading-none tracking-[-.065em]">Iris</h1></div>

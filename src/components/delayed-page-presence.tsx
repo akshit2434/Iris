@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   createDelayedPresenceController,
   type DelayedPresenceController,
@@ -21,7 +21,7 @@ function usePrefersReducedMotion() {
   return reducedMotion;
 }
 
-function useDelayedPresence(active: boolean): DelayedPresencePhase {
+function useDelayedPresence(active: boolean): { phase: DelayedPresencePhase; reducedMotion: boolean } {
   const reducedMotion = usePrefersReducedMotion();
   const [phase, setPhase] = useState<DelayedPresencePhase>("hidden");
   const [controller] = useState<DelayedPresenceController>(() => createDelayedPresenceController({ onPhaseChange: setPhase }));
@@ -38,15 +38,24 @@ function useDelayedPresence(active: boolean): DelayedPresencePhase {
     return () => controller.dispose();
   }, [controller]);
 
-  return phase;
+  return { phase, reducedMotion };
 }
 
 export function DelayedPagePresence({ active, children, className = "" }: Readonly<{ active: boolean; children?: ReactNode; className?: string }>) {
-  const phase = useDelayedPresence(active);
+  const { phase, reducedMotion } = useDelayedPresence(active);
   const loading = active || phase !== "hidden";
+  const contentStyle: CSSProperties = {
+    opacity: active ? 0 : 1,
+    transform: active ? "translate3d(0, 4px, 0)" : "translate3d(0, 0, 0)",
+    transition: reducedMotion ? "none" : "opacity 360ms ease, transform 520ms cubic-bezier(.2,.8,.2,1)",
+    willChange: active || phase === "exiting" ? "opacity, transform" : undefined,
+  };
+
   return (
     <div className={`relative ${className}`} aria-busy={loading}>
-      {children}
+      <div className="page-presence-content" style={contentStyle} aria-hidden={active || undefined}>
+        {children}
+      </div>
       <DelayedPageLoader phase={phase} />
     </div>
   );

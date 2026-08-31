@@ -72,8 +72,8 @@ function ShellContents({ children }: Readonly<{ children: ReactNode }>) {
         <div className="pointer-events-none absolute inset-y-0 left-0 right-[-72px] bg-gradient-to-r from-white/72 via-white/42 to-transparent backdrop-blur-2xl" aria-hidden="true" />
         <Link href="/" className="relative flex items-center gap-2.5 px-2" aria-label="Iris home"><IrisMark size={38} priority /><span className="text-[15px] font-semibold tracking-[-0.02em]">Iris</span></Link>
 
-        <button type="button" onClick={() => void createNewChat()} disabled={isCreating} className="soft-press relative mt-9 flex h-12 items-center justify-between rounded-2xl bg-[#111827] px-4 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(17,24,39,.16)] disabled:opacity-50">
-          <span>{isCreating ? "Starting…" : "New chat"}</span><PlusSymbol loading={isCreating} />
+        <button type="button" onClick={() => void createNewChat()} disabled={isCreating} className="soft-press relative mt-9 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#111827] text-white shadow-[0_14px_30px_rgba(17,24,39,.16)] disabled:opacity-50" aria-label={isCreating ? "Creating new chat" : "New chat"} title="New chat">
+          <PlusSymbol loading={isCreating} />
         </button>
 
         <nav className="relative mt-8 space-y-1" aria-label="Primary navigation">

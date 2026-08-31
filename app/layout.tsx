@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { Geist } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegister } from "@/components/service-worker-register";
-import { FocusModality } from "@/components/focus-modality";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 
@@ -12,6 +11,18 @@ export const metadata: Metadata = {
   description: "A private personal agent for the things that matter now.",
   applicationName: "Iris",
   manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/icons/iris-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/iris-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/icons/iris-192.png", sizes: "192x192", type: "image/png" }],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Iris",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
@@ -26,7 +37,6 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
     <html lang="en">
       <body className={geist.variable}>
         <ServiceWorkerRegister />
-        <FocusModality />
         {children}
       </body>
     </html>

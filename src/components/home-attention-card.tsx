@@ -17,6 +17,12 @@ function actionButtonClass(outcome: CheckinOutcome): string {
     : "bg-white/65 text-slate-600 shadow-[inset_0_0_0_1px_rgba(255,255,255,.78)]";
 }
 
+function CheckinActionIcon({ outcome }: Readonly<{ outcome: CheckinOutcome }>) {
+  if (outcome === "done") return <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" aria-hidden="true"><path d="m3.3 8.2 2.9 2.9 6.5-6.5" /></svg>;
+  if (outcome === "later") return <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><circle cx="8" cy="8" r="5.3" /><path d="M8 4.8v3.5l2.3 1.4" /></svg>;
+  return <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M3.5 5h9M6.3 5V3.5h3.4V5m-5 0 .6 7.5h5.4l.6-7.5M6.8 7.2v3.2m2.4-3.2v3.2" /></svg>;
+}
+
 export function HomeAttentionCard() {
   const [snapshot, setSnapshot] = useState<AttentionSnapshotPayload | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -95,9 +101,11 @@ export function HomeAttentionCard() {
                     type="button"
                     disabled={respondingKey !== null}
                     onClick={() => void respond(question, outcome)}
-                    className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${actionButtonClass(outcome)}`}
+                    className={`soft-press flex h-10 w-10 items-center justify-center rounded-[14px] transition disabled:opacity-40 ${actionButtonClass(outcome)}`}
+                    aria-label={label}
+                    title={label}
                   >
-                    {label}
+                    <CheckinActionIcon outcome={outcome} />
                   </button>
                 ))}
               </div>

@@ -12,7 +12,6 @@ import { ProceduralBlur } from "@/components/procedural-blur";
 import { useProfile } from "@/components/profile-provider";
 import { ProfilePicker } from "@/components/profile-picker";
 import { useChatSurface } from "@/components/chat-surface-context";
-import { DelayedPagePresence } from "@/components/delayed-page-presence";
 import { buildOpenMessageHref, memoryItemRows, memorySourceRows } from "@/lib/memory-source";
 import {
   CHECKIN_QUICK_ACTIONS,
@@ -100,6 +99,7 @@ export function ChatScreen() {
   const [streamState, setStreamState] = useState<StreamState>(() => createStreamState());
   const [composer, setComposer] = useState("");
   const [loading, setLoading] = useState(!isNewChat);
+  const [showLoadingOverlay, setShowLoadingOverlay] = useState(!isNewChat);
   const [sending, setSending] = useState(false);
   const [presentationActive, setPresentationActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +148,15 @@ export function ChatScreen() {
   const hasMessages = messages.length > 0;
   const hasMessagesRef = useRef(hasMessages);
   const voiceBusy = voiceState !== "idle";
+
+  useEffect(() => {
+    if (loading) {
+      setShowLoadingOverlay(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowLoadingOverlay(false), 360);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   useEffect(() => {
     hasMessagesRef.current = hasMessages;
@@ -776,14 +785,13 @@ export function ChatScreen() {
 
   if (!isReady) return null;
   if (!profileId) return <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-5xl items-center px-5 py-12 sm:px-8"><ProfilePicker /></div>;
-  if (loading) return <DelayedPagePresence active className="min-h-dvh" />;
   // A first-message promotion updates the URL before the persisted thread
   // metadata finishes loading. The optimistic messages are already the live
   // chat in that window, so do not replace it with a false not-found state.
-  if (!thread && !isNewChat && !hasMessages) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
+  if (!loading && !thread && !isNewChat && !hasMessages) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
-    <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""}`}>
+    <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""} ${!loading && showLoadingOverlay ? "chat-load-content-enter" : ""}`}>
       <header className="absolute inset-x-0 top-0 z-40 h-28">
         <ProceduralBlur edge="top" />
         <div className="relative flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
@@ -794,7 +802,7 @@ export function ChatScreen() {
             </svg>
           </Link>
           <div className="min-w-0 flex-1">
-            {editingTitle && thread ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-xl bg-white/65 px-3 py-2 text-sm font-semibold backdrop-blur-xl" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="rounded-xl bg-[#111827] px-3 py-2 text-xs font-semibold text-white">{savingTitle ? "…" : "Save"}</button><button type="button" onClick={() => setEditingTitle(false)} className="px-2 py-2 text-xs font-semibold text-slate-500">Cancel</button></div> : thread ? <button type="button" onClick={() => setEditingTitle(true)} className="max-w-full truncate text-left text-sm font-semibold tracking-tight text-slate-800">{thread.title}</button> : <span className="flex max-w-full items-center gap-2 truncate text-sm font-semibold tracking-tight text-slate-800">New chat{isTemporary ? <span className="rounded-full bg-white/68 px-2 py-0.5 text-[10px] font-semibold tracking-normal text-slate-500">Temporary</span> : null}</span>}
+            {editingTitle && thread ? <div className="flex items-center gap-2"><input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveTitle(); if (event.key === "Escape") setEditingTitle(false); }} className="min-w-0 flex-1 rounded-xl bg-white/65 px-3 py-2 text-sm font-semibold backdrop-blur-xl" /><button type="button" onClick={() => void saveTitle()} disabled={savingTitle} className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#111827] text-white" aria-label="Save chat title" title="Save chat title">{savingTitle ? <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/35 border-t-white" /> : <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" aria-hidden="true"><path d="m3.5 8.2 2.8 2.8 6.2-6.2" /></svg>}</button><button type="button" onClick={() => setEditingTitle(false)} className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500" aria-label="Cancel title edit" title="Cancel title edit"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg></button></div> : thread ? <button type="button" onClick={() => setEditingTitle(true)} className="max-w-full truncate text-left text-sm font-semibold tracking-tight text-slate-800">{thread.title}</button> : <span className="flex max-w-full items-center gap-2 truncate text-sm font-semibold tracking-tight text-slate-800">New chat{isTemporary ? <span className="rounded-full bg-white/68 px-2 py-0.5 text-[10px] font-semibold tracking-normal text-slate-500">Temporary</span> : null}</span>}
           </div>
           <IrisMark size={34} />
         </div>
@@ -825,7 +833,7 @@ export function ChatScreen() {
                 {voiceState === "recording" ? <span className="voice-status-breathe flex items-center gap-1.5 rounded-xl bg-[#e7edff]/80 px-2.5 py-2 text-[11px] font-semibold text-[#416fd8]" role="status"><span className="voice-pulse-dot h-1.5 w-1.5 rounded-full bg-[#4978ed]" />{formatVoiceDuration(voiceSeconds)} / {formatVoiceDuration(MAX_VOICE_RECORDING_SECONDS)}</span> : voiceState === "transcribing" ? <span className="flex items-center gap-1.5 rounded-xl bg-white/55 px-2.5 py-2 text-[11px] font-medium text-slate-500" role="status"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#4978ed]" />{voiceStopReason === "limit" ? "10:00 reached · transcribing" : "Transcribing"}</span> : null}
               </div>
               <div className="flex items-center gap-1.5">
-                {voiceBusy ? <button type="button" onClick={voiceState === "recording" ? cancelVoiceRecording : cancelVoiceTranscription} className="soft-press rounded-xl px-2.5 py-2 text-[11px] font-semibold text-slate-500 transition hover:bg-white/70 hover:text-slate-800" aria-label={voiceState === "recording" ? "Cancel voice recording" : "Cancel voice transcription"}>Cancel</button> : null}
+                {voiceBusy ? <button type="button" onClick={voiceState === "recording" ? cancelVoiceRecording : cancelVoiceTranscription} className="soft-press flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition hover:bg-white/70 hover:text-slate-800" aria-label={voiceState === "recording" ? "Cancel voice recording" : "Cancel voice transcription"} title="Cancel"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg></button> : null}
                 <button type="button" onClick={toggleVoiceRecording} disabled={sending || presentationActive || voiceState === "transcribing"} className={`soft-press flex h-11 w-11 items-center justify-center rounded-[17px] shadow-[0_10px_22px_rgba(73,120,237,.12)] transition ${voiceState === "recording" ? "voice-mic-recording bg-[#4978ed] text-white" : "bg-white/65 text-slate-600 hover:bg-white/90"} disabled:opacity-30`} aria-label={voiceState === "recording" ? "Stop voice recording" : "Start voice recording"} aria-pressed={voiceState === "recording"}>
                   {voiceState === "recording" ? <span className="h-3.5 w-3.5 rounded-[4px] bg-white" /> : <svg viewBox="0 0 24 24" className="h-[19px] w-[19px]" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" /></svg>}
                 </button>
@@ -836,8 +844,19 @@ export function ChatScreen() {
           {voiceError ? <p className="mt-2 px-3 text-[11px] font-medium text-red-500" role="alert">{voiceError}</p> : <p className="mt-2 px-3 text-[10px] font-medium text-slate-400">Voice notes use English, Hindi, and your memory-aware vocabulary. Audio is not stored by Iris.</p>}
         </div>
       </div>
+      {showLoadingOverlay ? <ChatLoadingOverlay phase={loading ? "visible" : "exiting"} /> : null}
     </div>
   );
+}
+
+function ChatLoadingOverlay({ phase }: Readonly<{ phase: "visible" | "exiting" }>) {
+  return <div className={`chat-load-overlay chat-load-overlay--${phase}`} role="status" aria-live="polite" aria-label="Loading chat">
+    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-4 sm:px-8">
+      <div className="flex h-28 items-center gap-3"><span className="h-10 w-10 rounded-[16px] bg-white/62" /><span className="h-4 w-32 rounded-full bg-white/62" /><span className="ml-auto h-9 w-9 rounded-full bg-white/50" /></div>
+      <div className="flex-1 pt-32"><div className="mx-auto max-w-3xl space-y-4"><span className="block h-4 w-28 rounded-full bg-white/54" /><span className="block h-4 w-4/5 max-w-md rounded-full bg-white/42" /><span className="block h-4 w-3/5 max-w-sm rounded-full bg-white/42" /></div></div>
+      <div className="mb-[max(14px,env(safe-area-inset-bottom))] h-28 rounded-[28px] border border-white/70 bg-white/38 p-3 sm:h-32"><span className="block h-12 rounded-[18px] bg-white/54" /></div>
+    </div>
+  </div>;
 }
 
 function MessageBubble({ message, active, live, terminal, toolActivities, onRevealComplete, checkinActions, loopLedger }: Readonly<{ message: Message; active: boolean; live: boolean; terminal: boolean; toolActivities: ToolActivity[]; onRevealComplete?: () => void; checkinActions?: CheckinQuickActions; loopLedger?: { created: string[]; closed: string[] } | null }>) {
@@ -870,9 +889,11 @@ function MessageBubble({ message, active, live, terminal, toolActivities, onReve
                         type="button"
                         disabled={checkinActions.busyKey !== null}
                         onClick={() => void checkinActions.onAnswer(question, outcome)}
-                        className={`soft-press min-h-11 flex-1 rounded-[14px] px-2 text-xs font-semibold transition disabled:opacity-40 ${outcome === "done" ? "bg-[#111827] text-white shadow-[0_8px_18px_rgba(17,24,39,.16)]" : "bg-white/65 text-slate-600 shadow-[inset_0_0_0_1px_rgba(255,255,255,.78)]"}`}
+                        className={`soft-press flex h-10 w-10 items-center justify-center rounded-[14px] transition disabled:opacity-40 ${outcome === "done" ? "bg-[#111827] text-white shadow-[0_8px_18px_rgba(17,24,39,.16)]" : "bg-white/65 text-slate-600 shadow-[inset_0_0_0_1px_rgba(255,255,255,.78)]"}`}
+                        aria-label={label}
+                        title={label}
                       >
-                        {label}
+                        <CheckinActionIcon outcome={outcome} />
                       </button>
                     ))}
                   </div>
@@ -906,6 +927,12 @@ function ThinkingIndicator() {
   );
 }
 
+function CheckinActionIcon({ outcome }: Readonly<{ outcome: CheckinOutcome }>) {
+  if (outcome === "done") return <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" aria-hidden="true"><path d="m3.3 8.2 2.9 2.9 6.5-6.5" /></svg>;
+  if (outcome === "later") return <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><circle cx="8" cy="8" r="5.3" /><path d="M8 4.8v3.5l2.3 1.4" /></svg>;
+  return <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M3.5 5h9M6.3 5V3.5h3.4V5m-5 0 .6 7.5h5.4l.6-7.5M6.8 7.2v3.2m2.4-3.2v3.2" /></svg>;
+}
+
 function UnattachedToolActivities({ messages, toolActivities, profileId }: Readonly<{ messages: Message[]; toolActivities: ToolActivity[]; profileId: ProfileId }>) {
   const attachedRuns = new Set(messages.filter((message) => message.role === "assistant" && message.agentRunId).map((message) => message.agentRunId));
   const unattached = toolActivities.filter((activity) => !attachedRuns.has(activity.runId));
@@ -934,7 +961,7 @@ function MemoryUsageDisclosure({ activities, profileId }: Readonly<{ activities:
     </button>
     <div id={detailsId} className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none ${expanded ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`} aria-hidden={!expanded}>
       <div className="min-h-0 overflow-hidden"><div className="space-y-1 pb-1 pl-6 pt-1 text-[11px] text-slate-500">
-        {items.map((item) => <Link key={`${item.canonicalKey}:${item.itemRevision}`} href={`/memory?item=${encodeURIComponent(item.canonicalKey)}`} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-white/60 hover:text-slate-800"><span className="min-w-0 flex-1 truncate">{item.excerpt}</span><span className="shrink-0 font-semibold text-[#4978ed] opacity-80 group-hover:opacity-100">Open memory</span></Link>)}
+        {items.map((item) => <Link key={`${item.canonicalKey}:${item.itemRevision}`} href={`/memory?item=${encodeURIComponent(item.canonicalKey)}`} className="group flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-white/60 hover:text-slate-800" aria-label={`Open memory: ${item.excerpt}`} title="Open memory"><span className="min-w-0 flex-1 truncate">{item.excerpt}</span><svg viewBox="0 0 16 16" className="h-3 w-3 shrink-0 text-[#4978ed] opacity-80 group-hover:opacity-100" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" /></svg></Link>)}
         {sources.map((row) => <SourceCard key={`${row.action.threadId}:${row.action.messageId}`} row={row} compact />)}
         {items.length === 0 && sources.length === 0 && referenceRevision !== null ? <p className="px-2 py-1.5">Reference history revision {referenceRevision}</p> : null}
       </div></div>
@@ -1027,12 +1054,9 @@ function SourceCard({ row, compact = false }: Readonly<{ row: ReturnType<typeof 
         </div>
       </div>
       <p className={`mt-2 text-slate-600 ${compact ? "line-clamp-2 text-[10px] leading-4" : "line-clamp-3 text-[11px] leading-[1.55]"}`}>{row.excerpt}</p>
-      <div className="mt-2.5 flex items-center gap-3">
-        <button type="button" onClick={() => setPreviewOpen(true)} className="soft-press rounded-lg bg-white/65 px-2.5 py-1.5 text-[10px] font-semibold text-slate-600 transition hover:bg-white/90 hover:text-slate-800">Preview</button>
-        <Link href={href} scroll={false} className="soft-press inline-flex items-center gap-1.5 rounded-lg px-1 py-1.5 text-[10px] font-semibold text-[#4978ed] transition hover:text-[#315fcf]">
-          Open message
-          <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.3" /></svg>
-        </Link>
+      <div className="mt-2.5 flex items-center gap-2">
+        <button type="button" onClick={() => setPreviewOpen(true)} className="soft-press flex h-8 w-8 items-center justify-center rounded-lg bg-white/65 text-slate-600 transition hover:bg-white/90 hover:text-slate-800" aria-label="Preview source" title="Preview source"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M1.8 8s2.1-3.7 6.2-3.7S14.2 8 14.2 8 12.1 11.7 8 11.7 1.8 8 1.8 8Z" /><circle cx="8" cy="8" r="1.6" /></svg></button>
+        <Link href={href} scroll={false} className="soft-press flex h-8 w-8 items-center justify-center rounded-lg text-[#4978ed] transition hover:bg-white/60 hover:text-[#315fcf]" aria-label="Open source message" title="Open source message"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" /></svg></Link>
       </div>
       {previewOpen ? <SourcePreviewDialog row={row} href={href} onDismiss={() => setPreviewOpen(false)} /> : null}
     </article>
@@ -1099,8 +1123,8 @@ function SourcePreviewDialog({ row, href, onDismiss }: Readonly<{ row: ReturnTyp
           })}</div> : null}
         </div>
         <footer className="flex items-center justify-end gap-2 border-t border-white/75 px-5 py-3.5 sm:px-6">
-          <button type="button" onClick={requestClose} className="rounded-xl px-3 py-2 text-[11px] font-semibold text-slate-500">Close</button>
-          {state.status === "ready" ? <Link href={href} scroll={false} className="soft-press rounded-xl bg-[#111827] px-3.5 py-2 text-[11px] font-semibold text-white shadow-[0_8px_18px_rgba(17,24,39,.14)]">Open message</Link> : null}
+          <button type="button" onClick={requestClose} className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500" aria-label="Close source preview" title="Close source preview"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg></button>
+          {state.status === "ready" ? <Link href={href} scroll={false} className="soft-press flex h-9 w-9 items-center justify-center rounded-xl bg-[#111827] text-white shadow-[0_8px_18px_rgba(17,24,39,.14)]" aria-label="Open source message" title="Open source message"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" /></svg></Link> : null}
         </footer>
       </div>
     </dialog>

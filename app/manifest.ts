@@ -4,9 +4,15 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Iris",
     short_name: "Iris",
-    description: "A private personal agent.",
+    description: "A private personal agent for the things that matter now.",
+    id: "/",
     start_url: "/",
+    scope: "/",
     display: "standalone",
+    display_override: ["window-controls-overlay", "standalone"],
+    orientation: "portrait",
+    lang: "en",
+    dir: "ltr",
     background_color: "#f5f7fb",
     theme_color: "#f5f7fb",
     icons: [
