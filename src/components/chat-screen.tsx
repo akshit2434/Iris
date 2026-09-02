@@ -791,7 +791,7 @@ export function ChatScreen() {
   if (!loading && !thread && !isNewChat && !hasMessages) return <div className="mx-auto flex min-h-dvh max-w-xl items-center px-5"><div className="glass-surface w-full rounded-[28px] p-7 text-center"><p className="text-sm font-semibold text-red-500">Chat unavailable</p><p className="mt-2 text-sm text-slate-500">{error ?? "This chat could not be found in the selected profile."}</p><Link href="/history" className="mt-5 inline-flex text-sm font-semibold text-[#4978ed]">Back</Link></div></div>;
 
   return (
-    <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""} ${!loading && showLoadingOverlay ? "chat-load-content-enter" : ""}`}>
+    <div className={`relative mx-auto flex h-dvh w-full max-w-5xl flex-col overflow-hidden ${animateEmptyEntry ? "chat-empty-entry" : ""}`}>
       <header className="absolute inset-x-0 top-0 z-40 h-28">
         <ProceduralBlur edge="top" />
         <div className="relative flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
@@ -851,10 +851,10 @@ export function ChatScreen() {
 
 function ChatLoadingOverlay({ phase }: Readonly<{ phase: "visible" | "exiting" }>) {
   return <div className={`chat-load-overlay chat-load-overlay--${phase}`} role="status" aria-live="polite" aria-label="Loading chat">
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-4 sm:px-8">
-      <div className="flex h-28 items-center gap-3"><span className="h-10 w-10 rounded-[16px] bg-white/62" /><span className="h-4 w-32 rounded-full bg-white/62" /><span className="ml-auto h-9 w-9 rounded-full bg-white/50" /></div>
-      <div className="flex-1 pt-32"><div className="mx-auto max-w-3xl space-y-4"><span className="block h-4 w-28 rounded-full bg-white/54" /><span className="block h-4 w-4/5 max-w-md rounded-full bg-white/42" /><span className="block h-4 w-3/5 max-w-sm rounded-full bg-white/42" /></div></div>
-      <div className="mb-[max(14px,env(safe-area-inset-bottom))] h-28 rounded-[28px] border border-white/70 bg-white/38 p-3 sm:h-32"><span className="block h-12 rounded-[18px] bg-white/54" /></div>
+    <div aria-hidden="true">
+      <header className="absolute inset-x-0 top-0 h-28"><div className="flex h-[72px] items-center gap-3 px-4 pt-[env(safe-area-inset-top)] sm:px-7"><span className="h-10 w-10 rounded-[16px] bg-white/62" /><span className="h-4 w-32 rounded-full bg-white/62" /><span className="ml-auto h-[34px] w-[34px] rounded-full bg-white/50" /></div></header>
+      <div className="min-w-0 w-full px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32"><div className="flex min-h-[52vh] flex-col items-center justify-center px-6"><span className="h-[68px] w-[68px] rounded-[24px] bg-white/48" /><span className="mt-7 h-8 w-full max-w-md rounded-full bg-white/54" /><span className="mt-3 h-8 w-4/5 max-w-sm rounded-full bg-white/42" /></div></div>
+      <div className="absolute inset-x-0 bottom-0 h-40 px-4 pb-[max(14px,env(safe-area-inset-bottom))] sm:h-44 sm:px-8"><div className="mx-auto flex h-full max-w-3xl flex-col justify-end"><div className="glass-surface rounded-[28px] p-2"><span className="block min-h-12 rounded-[18px] bg-white/54" /><div className="mt-1 flex h-11 items-center justify-end px-1"><span className="h-11 w-11 rounded-[17px] bg-white/54" /><span className="ml-1.5 h-11 w-11 rounded-[17px] bg-[#111827]/72" /></div></div><span className="mt-2 ml-3 h-2.5 w-52 rounded-full bg-white/42" /></div></div>
     </div>
   </div>;
 }

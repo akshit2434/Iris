@@ -24,7 +24,8 @@ export function FilesScreen() {
   const { profileId, isReady } = useProfile();
   const inputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<FileSummary[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [skeletonRows, setSkeletonRows] = useState(3);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,7 +38,11 @@ export function FilesScreen() {
       .then(async (response) => {
         const body = await response.json() as { files?: FileSummary[]; error?: string };
         if (!response.ok) throw new Error(body.error ?? "Could not load files.");
-        if (!cancelled) setFiles(body.files ?? []);
+        if (!cancelled) {
+          const nextFiles = body.files ?? [];
+          setSkeletonRows(nextFiles.length);
+          setFiles(nextFiles);
+        }
       })
       .catch((reason: unknown) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load files.");
@@ -57,6 +62,7 @@ export function FilesScreen() {
       const response = await fetch("/api/files", { method: "POST", body: form });
       const body = await response.json() as { file?: FileSummary; error?: string };
       if (!response.ok || !body.file) throw new Error(body.error ?? "Could not upload that file.");
+      setSkeletonRows((current) => Math.max(1, current + 1));
       setFiles((current) => [body.file!, ...current]);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not upload that file.");
@@ -92,9 +98,30 @@ export function FilesScreen() {
         </div>
       </div>
       {error ? <p data-reveal className="mt-6 rounded-2xl border border-red-200/80 bg-red-50/70 px-4 py-3 text-sm font-medium text-red-700">{error}</p> : null}
-      <div data-reveal className="mt-10 rounded-[34px] border border-white/64 bg-white/30 p-3 backdrop-blur-xl sm:p-5">
-        {loading ? <p className="px-3 py-12 text-center text-sm text-slate-500">Loading files…</p> : files.length === 0 ? <div className="px-6 py-14 text-center"><div className="mx-auto h-16 w-14 rounded-[18px] border border-white/90 bg-gradient-to-br from-white/90 to-[#e5edff]/70 shadow-[0_16px_30px_rgba(85,108,150,.12)]"><span className="mx-auto mt-4 block h-1 w-6 rounded-full bg-[#90a8e8]/45" /><span className="mx-auto mt-2 block h-1 w-8 rounded-full bg-[#90a8e8]/25" /></div><h2 className="mt-6 text-lg font-semibold tracking-tight">Nothing here yet.</h2><p className="mt-2 text-sm text-slate-500">Upload a source file to give Iris something concrete to work with.</p></div> : <div className="space-y-2">{files.map((file) => <div key={file.fileId} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white/45 px-4 py-4"><div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">{file.name}</p><p className="mt-1 text-xs text-slate-500">{formatSize(file.sizeBytes)} · {file.mimeType} · {new Date(file.createdAt).toLocaleDateString()}</p></div><button type="button" onClick={() => void openFile(file.fileId)} className="soft-press flex h-9 w-9 items-center justify-center rounded-xl border border-[#bfcdf1] bg-white/70 text-[#416fd8]" aria-label={`Open ${file.name}`} title="Open file"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" /></svg></button></div>)}</div>}
+      <div data-reveal className="files-results-frame mt-10 rounded-[34px] border border-white/64 bg-white/30 p-3 backdrop-blur-xl sm:p-5">
+        <div className="files-results-transition" data-state={loading ? "loading" : "ready"} aria-busy={loading}>
+          <div className={`files-results-layer files-results-layer--skeleton ${loading ? "files-results-layer--visible" : "files-results-layer--hidden"}`} aria-hidden={!loading} role={loading ? "status" : undefined} aria-label={loading ? "Loading files" : undefined}>
+            <FilesListSkeleton rowCount={skeletonRows} />
+          </div>
+          <div className={`files-results-layer files-results-layer--content ${loading ? "files-results-layer--hidden" : "files-results-layer--visible"}`} aria-hidden={loading || undefined}>
+            {files.length === 0 ? <EmptyFilesState /> : <div className="space-y-2">{files.map((file, index) => <div key={file.fileId} className="files-result-row flex min-h-[72px] flex-nowrap items-center justify-between gap-3 rounded-2xl bg-white/45 px-4 py-4" style={{ animationDelay: `${Math.min(index, 8) * 48}ms` }}><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-800">{file.name}</p><p className="mt-1 truncate text-xs text-slate-500">{formatSize(file.sizeBytes)} · {file.mimeType} · {new Date(file.createdAt).toLocaleDateString()}</p></div><button type="button" onClick={() => void openFile(file.fileId)} className="soft-press flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#bfcdf1] bg-white/70 text-[#416fd8]" aria-label={`Open ${file.name}`} title="Open file"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" /></svg></button></div>)}</div>}
+          </div>
+        </div>
       </div>
     </div>
   </FluidReveal>;
+}
+
+function EmptyFilesState() {
+  return <div className="files-empty-state min-h-[218px] px-6 py-14 text-center"><div className="mx-auto h-16 w-14 rounded-[18px] border border-white/90 bg-gradient-to-br from-white/90 to-[#e5edff]/70 shadow-[0_16px_30px_rgba(85,108,150,.12)]"><span className="mx-auto mt-4 block h-1 w-6 rounded-full bg-[#90a8e8]/45" /><span className="mx-auto mt-2 block h-1 w-8 rounded-full bg-[#90a8e8]/25" /></div><h2 className="mt-6 text-lg font-semibold tracking-tight">Nothing here yet.</h2><p className="mt-2 text-sm text-slate-500">Upload a source file to give Iris something concrete to work with.</p></div>;
+}
+
+function FilesListSkeleton({ rowCount }: Readonly<{ rowCount: number }>) {
+  if (rowCount === 0) {
+    return <div className="files-empty-skeleton min-h-[218px] px-6 py-14 text-center"><div className="mx-auto h-16 w-14 rounded-[18px] border border-white/90 bg-gradient-to-br from-white/90 to-[#e5edff]/70 shadow-[0_16px_30px_rgba(85,108,150,.12)]"><span data-files-skeleton-bar className="mx-auto mt-4 block h-1 w-6 rounded-full bg-[#90a8e8]/35" /><span data-files-skeleton-bar className="mx-auto mt-2 block h-1 w-8 rounded-full bg-[#90a8e8]/20" /></div><span data-files-skeleton-bar className="mx-auto mt-6 block h-4 w-32 rounded-full bg-white/65" /><span data-files-skeleton-bar className="mx-auto mt-2 block h-3 w-52 max-w-full rounded-full bg-white/45" /></div>;
+  }
+
+  return <div className="files-list-skeleton space-y-2">
+    {Array.from({ length: rowCount }, (_, index) => <div key={index} className="flex min-h-[72px] flex-nowrap items-center justify-between gap-3 rounded-2xl bg-white/45 px-4 py-4"><div className="min-w-0 flex-1"><span data-files-skeleton-bar className="block h-3.5 w-[min(66%,15rem)] rounded-full bg-white/72" /><span data-files-skeleton-bar className="mt-2 block h-2.5 w-[min(84%,19rem)] rounded-full bg-white/48" /></div><span data-files-skeleton-bar className="h-9 w-9 shrink-0 rounded-xl bg-white/55" /></div>)}
+  </div>;
 }

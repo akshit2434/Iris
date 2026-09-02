@@ -14,7 +14,7 @@ export function HomeScreen() {
   const router = useRouter();
   const { profileId, profileLabels, isReady } = useProfile();
   const [threads, setThreads] = useState<Thread[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadThreads = useCallback(async () => {
@@ -61,12 +61,7 @@ export function HomeScreen() {
 
       <HomeAttentionCard />
 
-      <button data-reveal type="button" onClick={createChat} className="soft-press glass-surface group mt-10 flex min-h-20 w-full items-center gap-4 rounded-[28px] px-5 text-left sm:mt-14 sm:min-h-24 sm:px-7">
-        <span className="flex-1 text-base font-medium text-slate-500 sm:text-lg">Start a conversation</span>
-        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#111827] text-white shadow-[0_10px_24px_rgba(17,24,39,.18)] transition group-hover:translate-x-0.5" aria-hidden="true">
-          <span className="text-xl font-light">↗</span>
-        </span>
-      </button>
+      <StartConversationCard pending={isLoading && threads.length === 0} onClick={createChat} />
 
       <section data-reveal className="mt-14 sm:mt-20">
         <div className="mb-4 flex items-center justify-between px-1"><h2 className="text-[15px] font-semibold tracking-tight text-slate-900">Recent</h2>{isLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#4978ed]" aria-label="Loading chats" /> : null}</div>
@@ -76,4 +71,25 @@ export function HomeScreen() {
       </section>
     </section>
   </FluidReveal>;
+}
+
+const START_CARD_FRAME = "relative mt-10 h-20 w-full sm:mt-14 sm:h-24";
+const START_CARD_SURFACE = "glass-surface group flex h-full w-full items-center gap-4 rounded-[28px] px-5 text-left sm:px-7";
+const START_CARD_TRANSITION = "transition-[opacity,filter,transform] duration-500 ease-[cubic-bezier(.2,.8,.2,1)] motion-reduce:transition-none";
+
+function StartConversationCard({ pending, onClick }: Readonly<{ pending: boolean; onClick: () => void }>) {
+  return (
+    <div data-reveal className={START_CARD_FRAME} aria-busy={pending || undefined}>
+      <div aria-hidden="true" className={`pointer-events-none absolute inset-0 ${START_CARD_SURFACE} ${START_CARD_TRANSITION} ${pending ? "opacity-100 blur-0 scale-100" : "pointer-events-none scale-[1.01] opacity-0 blur-[2px]"}`}>
+        <span className="h-5 w-2/5 rounded-full bg-slate-200/70" />
+        <span className="ml-auto h-12 w-12 shrink-0 rounded-[18px] bg-slate-200/65" />
+      </div>
+      <button type="button" onClick={onClick} className={`${START_CARD_SURFACE} soft-press relative z-10 ${START_CARD_TRANSITION} ${pending ? "scale-[.99] opacity-0 blur-[4px]" : "scale-100 opacity-100 blur-0"}`}>
+        <span className="flex-1 text-base font-medium text-slate-500 sm:text-lg">Start a conversation</span>
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[18px] bg-[#111827] text-white shadow-[0_10px_24px_rgba(17,24,39,.18)] transition group-hover:translate-x-0.5" aria-hidden="true">
+          <span className="text-xl font-light">↗</span>
+        </span>
+      </button>
+    </div>
+  );
 }
