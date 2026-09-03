@@ -2,6 +2,7 @@
 
 import { FluidReveal } from "@/components/fluid-reveal";
 import { ProfilePicker } from "@/components/profile-picker";
+import { NotificationSettings } from "@/components/notification-settings";
 import { useProfile } from "@/components/profile-provider";
 import Link from "next/link";
 
@@ -25,6 +26,7 @@ export function ProfileScreen() {
       <section data-reveal className="mt-5 rounded-[26px] border border-white/70 bg-white/38 p-5 sm:p-6" aria-labelledby="memory-heading">
         <div className="flex items-center justify-between gap-4"><div><h2 id="memory-heading" className="font-semibold tracking-tight text-slate-900">Memory</h2><p className="mt-1 text-sm text-slate-500">Inspect the durable notes kept for this space.</p></div><Link href="/memory" className="soft-press flex h-9 w-9 items-center justify-center rounded-xl bg-[#111827] text-white" aria-label="Open memory" title="Open memory"><svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.35" aria-hidden="true"><path d="M5 3.5h7.5V11M12.2 3.8 4 12" /></svg></Link></div>
       </section>
+      <NotificationSettings />
       <section data-reveal className="mt-12" aria-labelledby="switch-profile-heading">
         <h2 id="switch-profile-heading" className="text-lg font-semibold tracking-tight text-slate-900">Switch space</h2>
         <p className="mt-1 text-sm text-slate-500">Choose another private space for the next chat.</p>

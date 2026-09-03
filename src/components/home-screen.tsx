@@ -34,6 +34,20 @@ export function HomeScreen() {
 
   useEffect(() => { if (profileId) void loadThreads(); }, [loadThreads, profileId]);
 
+  useEffect(() => {
+    if (!profileId) return;
+    let lastWake = 0;
+    const wake = () => {
+      if (Date.now() - lastWake < 120_000) return;
+      lastWake = Date.now();
+      void fetch("/api/accountability/wake", { method: "POST" });
+    };
+    wake();
+    const onVisibility = () => { if (document.visibilityState === "visible") wake(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [profileId]);
+
   function createChat() {
     setError(null);
     router.push("/chat/new");

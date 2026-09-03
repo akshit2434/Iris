@@ -15,6 +15,7 @@ import {
   type LoopEventActor,
   type OpenLoopRow,
 } from "./repository";
+import { nextCheckDecision } from "./scheduling-policy";
 
 const NEEDS_CONFIRMATION_MESSAGE =
   "Nothing was saved. Before creating this loop, clarify with the user why it matters, their capacity for it, realistic timing, and conflicts with existing commitments; only call again with confirm=true once those are settled.";
@@ -186,7 +187,12 @@ export async function createLoop(
       ...(payload.cadence === undefined ? {} : { cadence: payload.cadence }),
     });
     await repo.insertLoopEvent(context.profileId, { loopId: loop.id, kind: "created", ...provenance(context) });
-    if (loop.dueAt) await repo.insertScheduledCheck(context.profileId, { loopId: loop.id, dueAt: loop.dueAt });
+    const firstCheck = loop.dueAt
+      ? { dueAt: loop.dueAt }
+      : nextCheckDecision({ kind: loop.kind, cadence: loop.cadence, priorAttempts: 0, nowIso: context.serverNow });
+    if (firstCheck.dueAt) await repo.insertScheduledCheck(context.profileId, loop.kind === "routine"
+      ? { loopId: loop.id, dueAt: firstCheck.dueAt, purpose: "routine" }
+      : { loopId: loop.id, dueAt: firstCheck.dueAt });
     return { kind: "loop_create", status: "created", loopId: loop.id, title: loop.title, dueAt: loop.dueAt };
   } catch (error) {
     return errorOutput("loop_create", error);

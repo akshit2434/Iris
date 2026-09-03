@@ -44,6 +44,7 @@ import {
 } from "@/lib/agent-stream";
 
 type ThreadResponse = { thread: Thread; messages: Message[]; toolActivities?: PersistedToolEvent[] };
+type OnboardingCue = { questionPending: boolean; state: "not_started" | "in_progress" | "complete" | "deferred" };
 
 type CheckinQuickActions = {
   questions: PendingQuestion[];
@@ -132,6 +133,8 @@ export function ChatScreen() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceStopReason, setVoiceStopReason] = useState<VoiceStopReason | null>(null);
   const [voiceWaveform, setVoiceWaveform] = useState<number[]>(() => createVoiceWaveform());
+  const [onboardingCue, setOnboardingCue] = useState<OnboardingCue | null>(null);
+  const [onboardingCueDismissed, setOnboardingCueDismissed] = useState(false);
   const voiceSessionRef = useRef<VoiceSession | null>(null);
   const voiceRunRef = useRef<VoiceRun | null>(null);
   const voiceSourceRef = useRef<string | null>(null);
@@ -193,6 +196,19 @@ export function ChatScreen() {
     if (!profileId || loading || isNewChat) return;
     void loadCheckinQuestions();
   }, [isNewChat, loadCheckinQuestions, loading, profileId]);
+
+  useEffect(() => {
+    setOnboardingCueDismissed(false);
+    if (!profileId || isTemporary) { setOnboardingCue(null); return; }
+    let cancelled = false;
+    void fetch("/api/onboarding", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as { onboarding?: OnboardingCue };
+        if (response.ok && body.onboarding && !cancelled) setOnboardingCue(body.onboarding);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [isTemporary, profileId]);
 
   useEffect(() => {
     entryAnimationRef.current = false;
@@ -758,7 +774,7 @@ export function ChatScreen() {
     }
   }
 
-  async function reloadThreadState() {
+  const reloadThreadState = useCallback(async () => {
     if (!threadId) return;
     const response = await fetch(`/api/threads/${threadId}`, { cache: "no-store" });
     const body = (await response.json()) as Partial<ThreadResponse> & { error?: string };
@@ -769,7 +785,21 @@ export function ChatScreen() {
       messages: body.messages,
       toolActivities: groupToolEvents(body.toolActivities ?? []),
     }));
-  }
+  }, [threadId]);
+
+  useEffect(() => {
+    if (isNewChat || !profileId || !threadId) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "visible" || sending) return;
+      void reloadThreadState().then(() => loadCheckinQuestions()).catch(() => undefined);
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [isNewChat, loadCheckinQuestions, profileId, reloadThreadState, sending, threadId]);
 
   function returnToBottom() {
     const container = scrollContainerRef.current;
@@ -809,7 +839,7 @@ export function ChatScreen() {
       </header>
 
       <div ref={scrollContainerRef} className="iris-scrollbar min-w-0 w-full flex-1 overflow-y-auto px-4 pb-40 pt-28 sm:px-8 sm:pb-44 sm:pt-32">
-        {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1></div> : null}
+        {!hasMessages ? <div className="flex min-h-[52vh] flex-col items-center justify-center px-6 text-center"><IrisMark size={68} priority /><h1 className="mt-7 max-w-md text-[clamp(2rem,8vw,3.8rem)] font-medium leading-[1.02] tracking-[-.055em] text-slate-950">What would you like to think through?</h1>{onboardingCue?.questionPending && !onboardingCueDismissed ? <div className="mt-5 flex items-center rounded-full bg-white/65 pr-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,.8)] backdrop-blur-xl"><button type="button" onClick={() => document.querySelector<HTMLTextAreaElement>("textarea[placeholder='Message Iris']")?.focus()} className="rounded-full px-3.5 py-2 text-xs font-medium text-slate-500 transition hover:bg-white/90 hover:text-slate-700">Start wherever you are — I’ll get to know what matters as we talk.</button><button type="button" onClick={() => setOnboardingCueDismissed(true)} className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition hover:bg-white/80 hover:text-slate-600" aria-label="Dismiss getting-to-know-you cue">×</button></div> : null}</div> : null}
         <div className="mx-auto max-w-3xl space-y-7">
           {messages.map((message) => {
             const checkinQuestions = message.role === "assistant" ? checkinQuestionsByMessage.get(message.id) : undefined;

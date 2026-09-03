@@ -499,6 +499,28 @@ export type Database = {
         Update: Partial<Database["public"]["Tables"]["profile_memory_settings"]["Insert"]>;
         Relationships: [];
       };
+      onboarding_profiles: {
+        Row: {
+          profile_id: "profile-a" | "profile-b";
+          state: "not_started" | "in_progress" | "complete" | "deferred";
+          deferred_at: string | null;
+          confirmed_timezone: string | null;
+          accountability_tone: "gentle" | "balanced" | "direct" | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          profile_id: "profile-a" | "profile-b";
+          state?: "not_started" | "in_progress" | "complete" | "deferred";
+          deferred_at?: string | null;
+          confirmed_timezone?: string | null;
+          accountability_tone?: "gentle" | "balanced" | "direct" | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["onboarding_profiles"]["Insert"]>;
+        Relationships: [];
+      };
       profile_reference_history_state: {
         Row: {
           profile_id: "profile-a" | "profile-b";
@@ -1044,6 +1066,7 @@ export type Database = {
           cancel_reason: string | null;
           claimed_at: string | null;
           created_at: string;
+          purpose: "initial" | "routine" | "follow_up" | "recovery";
         };
         Insert: {
           id?: string;
@@ -1059,6 +1082,7 @@ export type Database = {
           cancel_reason?: string | null;
           claimed_at?: string | null;
           created_at?: string;
+          purpose?: "initial" | "routine" | "follow_up" | "recovery";
         };
         Update: Partial<{
           id: string;
@@ -1074,6 +1098,7 @@ export type Database = {
           cancel_reason: string | null;
           claimed_at: string | null;
           created_at: string;
+          purpose: "initial" | "routine" | "follow_up" | "recovery";
         }>;
         Relationships: [];
       };
@@ -1217,6 +1242,90 @@ export type Database = {
           term: string;
           source: "correction" | "manual";
           occurrence_count: number;
+          created_at: string;
+          updated_at: string;
+        }>;
+        Relationships: [];
+      };
+      profile_notification_preferences: {
+        Row: {
+          profile_id: "profile-a" | "profile-b";
+          enabled: boolean;
+          preview_level: "none" | "summary";
+          quiet_hours_start: string | null;
+          quiet_hours_end: string | null;
+          time_zone: string;
+          salience: "silent" | "normal" | "important";
+          updated_at: string;
+        };
+        Insert: {
+          profile_id: "profile-a" | "profile-b";
+          enabled?: boolean;
+          preview_level?: "none" | "summary";
+          quiet_hours_start?: string | null;
+          quiet_hours_end?: string | null;
+          time_zone?: string;
+          salience?: "silent" | "normal" | "important";
+          updated_at?: string;
+        };
+        Update: Partial<{
+          profile_id: "profile-a" | "profile-b";
+          enabled: boolean;
+          preview_level: "none" | "summary";
+          quiet_hours_start: string | null;
+          quiet_hours_end: string | null;
+          time_zone: string;
+          salience: "silent" | "normal" | "important";
+          updated_at: string;
+        }>;
+        Relationships: [];
+      };
+      push_subscriptions: {
+        Row: {
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          endpoint: string;
+          p256dh: string;
+          auth: string;
+          device_id: string;
+          user_agent: string | null;
+          permission: "granted" | "denied" | "default";
+          last_success_at: string | null;
+          last_failure_at: string | null;
+          last_failure_code: string | null;
+          revoked_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: "profile-a" | "profile-b";
+          endpoint: string;
+          p256dh: string;
+          auth: string;
+          device_id: string;
+          user_agent?: string | null;
+          permission?: "granted" | "denied" | "default";
+          last_success_at?: string | null;
+          last_failure_at?: string | null;
+          last_failure_code?: string | null;
+          revoked_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<{
+          id: string;
+          profile_id: "profile-a" | "profile-b";
+          endpoint: string;
+          p256dh: string;
+          auth: string;
+          device_id: string;
+          user_agent: string | null;
+          permission: "granted" | "denied" | "default";
+          last_success_at: string | null;
+          last_failure_at: string | null;
+          last_failure_code: string | null;
+          revoked_at: string | null;
           created_at: string;
           updated_at: string;
         }>;

@@ -49,6 +49,7 @@ import { formatMemoryChangeHint, readMemoryChangeHint } from "@/server/memory/re
 import { formatAmbiguousHistoryChoice, isSafeAmbiguousHistoryResponse, runHistoryPreflight } from "@/server/memory/history-preflight";
 import { planAssistantPersistence } from "@/server/agent/persistence";
 import { createTemporaryAgentResponse, sanitizeTemporaryHistory, validateTemporaryId } from "@/server/agent/temporary";
+import { createOnboardingRepository } from "@/server/onboarding/repository";
 import {
   AGENT_STREAM_PROTOCOL,
   safeFailure,
@@ -204,6 +205,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
     const memoryStore = createSupabaseMemoryStore();
     const referenceHistoryStore = createSupabaseReferenceHistoryStore();
     const productionMemoryRetrieval = createProductionMemoryRetrievalService();
+    const onboardingRepository = createOnboardingRepository();
     const memoryRevisionSnapshotPromise = memoryStore.getCurrentRevision(profileId).catch(() => 0);
     const memoryControlsPromise = referenceHistoryStore.getControls(profileId).catch(() => ({
       profileId,
@@ -214,11 +216,12 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       updatedAt: new Date(0).toISOString(),
     }));
   const webSearchEnabled = Boolean(process.env.TAVILY_API_KEY);
-    const [history, threadContextRow, memoryRevisionSnapshot, memoryControls] = await Promise.all([
+    const [history, threadContextRow, memoryRevisionSnapshot, memoryControls, onboarding] = await Promise.all([
       getThreadMessages(profileId, threadId),
       getThreadContext(profileId, threadId),
       memoryRevisionSnapshotPromise,
       memoryControlsPromise,
+      onboardingRepository.loadSnapshot(profileId),
     ]);
     const referenceHistorySnapshot = memoryControls.referenceHistoryEnabled
       ? await referenceHistoryStore.getLatestSnapshot(profileId).catch(() => null)
@@ -270,7 +273,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       profileLabel: profile.displayName,
       threadId,
       threadTitle: thread.thread.title,
-      browserTimezone: resolveBrowserTimezone(body.timezone),
+      browserTimezone: onboarding.confirmedTimezone ?? resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
       continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
@@ -282,6 +285,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       memoryChangeHint,
       memoryControls: { ...memoryControls, webSearchEnabled: webSearchEnabled },
       accountability,
+      onboarding,
       memoryContextSufficient: false,
       historicalPreflightSources: historicalPreflight.sources.map((source) => ({
         messageId: source.messageId,
@@ -326,6 +330,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
           accountabilityEnabled: true,
           webSearchEnabled,
           filesEnabled: true,
+          onboardingEnabled: true,
         }),
         currentUser: currentUserMessage,
         messages: history,
@@ -355,7 +360,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       profileLabel: profile.displayName,
       threadId,
       threadTitle: thread.thread.title,
-      browserTimezone: resolveBrowserTimezone(body.timezone),
+      browserTimezone: onboarding.confirmedTimezone ?? resolveBrowserTimezone(body.timezone),
       continuitySummary: threadContextRow.continuitySummary,
       pinnedNotes: threadContextRow.pinnedNotes,
       continuityThroughMessageId: threadContextRow.continuityThroughMessageId,
@@ -367,6 +372,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
       memoryChangeHint,
       memoryControls: { ...memoryControls, webSearchEnabled: webSearchEnabled },
       accountability,
+      onboarding,
       memoryContextSufficient: false,
       historicalPreflightSources: historicalPreflight.sources.map((source) => ({
         messageId: source.messageId,
@@ -508,6 +514,7 @@ export async function POST(request: Request, { params }: MessagesRouteContext) {
             savedMemoryEnabled: memoryControls.savedMemoryEnabled,
             referenceHistoryEnabled: memoryControls.referenceHistoryEnabled,
             filesEnabled: true,
+            onboardingEnabled: true,
             forceToolName: historicalPreflight.status === "ambiguous" ? "search_messages" : undefined,
             observability: trace,
             executionKind: "interactive_agent",

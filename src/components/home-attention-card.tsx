@@ -43,6 +43,7 @@ export function HomeAttentionCard() {
       if (!response.ok || !body.pendingDeliveries || !body.counts) throw new Error(body.error ?? "Could not load follow-ups.");
       setActionError(null);
       setSnapshot(body as AttentionSnapshotPayload);
+      if (body.pendingDeliveries.length > 0) window.localStorage.setItem("iris-followups-experienced", "true");
     } catch {
       setSnapshot(null);
     } finally {
@@ -51,6 +52,18 @@ export function HomeAttentionCard() {
   }, []);
 
   useEffect(() => { void loadSnapshot(); }, [loadSnapshot]);
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void loadSnapshot();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [loadSnapshot]);
 
   async function respond(question: PendingQuestion, outcome: CheckinOutcome) {
     if (respondingKey) return;

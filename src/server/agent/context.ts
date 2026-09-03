@@ -5,6 +5,7 @@ import type { BudgetedPromptContext } from "@/server/agent/context-assembler";
 import { formatMemoryChangeHint, type MemoryChangeHint } from "@/server/memory/reconciliation";
 import { ACTIVE_LOOP_STATUSES, OPEN_LOOP_CONTEXT_MAX_ITEMS, OPEN_LOOP_TITLE_MAX_LENGTH, formatOpenLoopsPrompt, type OpenLoopContextEntry } from "@/server/accountability/context-loader";
 import { CADENCE_KINDS, OPEN_LOOP_KINDS } from "@/server/accountability/types";
+import { ACCOUNTABILITY_TONES, ONBOARDING_STATES } from "@/server/onboarding/domain";
 
 const FALLBACK_TIMEZONE = "UTC";
 
@@ -71,6 +72,13 @@ export const agentContextSchema = z.object({
       createdAt: z.string().datetime({ offset: true }),
     })).max(OPEN_LOOP_CONTEXT_MAX_ITEMS),
   }).default({ enabled: false, loops: [], recentlyClosed: [] }),
+  onboarding: z.object({
+    eligible: z.boolean(),
+    questionPending: z.boolean(),
+    state: z.enum(ONBOARDING_STATES),
+    confirmedTimezone: z.string().nullable(),
+    accountabilityTone: z.enum(ACCOUNTABILITY_TONES).nullable(),
+  }).default({ eligible: false, questionPending: false, state: "not_started", confirmedTimezone: null, accountabilityTone: null }),
   memoryContextSufficient: z.boolean(),
   historicalPreflightSources: z.array(z.object({
     messageId: z.string().uuid(),
@@ -164,6 +172,7 @@ export function createAgentContext(input: {
   memoryChangeHint?: MemoryChangeHint;
   memoryControls?: { savedMemoryEnabled?: boolean; referenceHistoryEnabled?: boolean; webSearchEnabled?: boolean };
   accountability?: { enabled: boolean; loops: OpenLoopContextEntry[]; recentlyClosed?: Array<{ title: string; closedAt: string }> };
+  onboarding?: { eligible: boolean; questionPending: boolean; state: (typeof ONBOARDING_STATES)[number]; confirmedTimezone: string | null; accountabilityTone: (typeof ACCOUNTABILITY_TONES)[number] | null };
   memoryContextSufficient?: boolean;
   historicalPreflightSources?: Array<{
     messageId: string;
@@ -204,6 +213,7 @@ export function createAgentContext(input: {
       webSearchEnabled: input.memoryControls?.webSearchEnabled ?? true,
     },
     accountability: input.accountability,
+    onboarding: input.onboarding,
     memoryContextSufficient: input.memoryContextSufficient ?? false,
     historicalPreflightSources: input.historicalPreflightSources ?? [],
     budgetedContext: input.budgetedContext ?? null,
@@ -237,6 +247,11 @@ export function buildDynamicSystemPrompt(context: AgentContext): string {
   const accountabilityGuidance = context.accountability.enabled
     ? "When accountability tracking is active: before treating a mention as a new commitment, clarify what is actually being promised, why it matters, whether capacity and timing are realistic, and how it fits alongside existing open loops; park musings as ideas instead. When the user mentions completing something, even casually mid-conversation, notice it and close the matching loop with loop_close this turn rather than silently dropping it. For routines, reflect on recent patterns instead of streaks or guilt. Respect pause and suppression requests immediately. Leisure is legitimate; never nag repetitively. When summarizing current obligations, treat the open-loops block below (or a fresh loop_list result) as the only source of truth: items under Recently closed are finished and must never be listed as pending, and never invent pending work from chat history."
     : "";
+  const onboardingGuidance = context.onboarding.questionPending
+    ? `This profile is in lightweight relationship onboarding (state: ${context.onboarding.state}). Do not turn this into setup: ask at most one warm, relevant getting-to-know-you question in this turn. For a greeting or open-ended message, ask what is taking up their life or headspace now. For a concrete request, answer it first and only then ask one relevant follow-up if it fits. Never block the request, ask a survey, imply a romantic role, or pressure the user. If they say “not now” or equivalent, call onboarding_update with state="deferred" and stop proactive onboarding questions. When you ask an onboarding question, call onboarding_update with state="in_progress". Save durable facts with memory_patch, not onboarding_update. Confirm a timezone only when the user clearly provides or confirms it.`
+    : context.onboarding.state === "deferred"
+      ? "Relationship onboarding is deferred. Do not proactively restart it. Only call onboarding_update with state=\"in_progress\" when the user explicitly asks to resume or invites this conversation."
+      : "";
   const openLoopsPrompt = context.accountability.enabled ? formatOpenLoopsPrompt(context.accountability.loops, context.serverNow, context.accountability.recentlyClosed) : "";
 
   return `You are Iris, a private personal conversation layer.
@@ -252,6 +267,7 @@ The current moment is:
 Answer date/time questions directly from this context. User-local time is context, not a tool; do not call a tool for it.
 Only claim to have used a tool when a tool result is present in this run. Do not invent memory or external context.
 Saved-memory reference is ${context.memoryControls.savedMemoryEnabled ? "enabled" : "disabled"}; cross-chat reference history is ${context.memoryControls.referenceHistoryEnabled ? "enabled" : "disabled"}. Respect these controls.${context.memoryControls.webSearchEnabled ? " Live web search is available through web_search for current events and external evidence; cite result URLs inline and never claim to have opened a page." : ""}${accountabilityGuidance ? `\n${accountabilityGuidance}` : ""}
+${onboardingGuidance ? `\n${onboardingGuidance}` : ""}
 ${context.temporaryChat ? "This is a temporary chat. Do not claim that messages, tool events, memory, reference history, summaries, or indexes were saved. Saved memory and cross-chat history are unavailable in this chat." : ""}
 Memory lookup order:
 1. The prefilled canonical memory is curated, profile-scoped, and trustworthy as current state, but it is deliberately small and may be incomplete. If it directly answers the user, use it without a lookup.

@@ -24,14 +24,9 @@ import {
   type CommitmentSearchClient,
   type SoftClosePlan,
 } from "./reconciler";
-import {
-  BRIEFING_LOOP_TITLE,
-  briefingDayWindow,
-  hasBlockingBriefingCheck,
-  isBriefingLoopTitle,
-  isStaleBriefingCheck,
-  nextBriefingDueAt,
-} from "./briefing";
+import { sendDeliveryPush } from "@/server/notifications/service";
+import { nextCheckDecision } from "./scheduling-policy";
+import { briefingDayWindow, composeBriefingText, isBriefingLoopTitle, nextBriefingDueAt } from "./briefing";
 
 export const SWEEP_MAX_BATCH = 4;
 export const DEFAULT_LIMIT_PER_PROFILE = 8;
@@ -58,6 +53,7 @@ export type SweepReport = { profiles: SweepProfileReport[]; at: string };
 export type SweepMessageWriter = (input: { profileId: ProfileId; threadId: string; content: string }) => Promise<{ id: string }>;
 
 export type SweepThreadLister = (profileId: ProfileId) => Promise<Array<{ id: string }>>;
+export type DeliveryPushSender = (input: { profileId: ProfileId; threadId: string; messageId: string; summary: string | null }) => Promise<unknown>;
 
 export function selectCheckinKind(loops: Array<Pick<OpenLoopRow, "kind" | "dueAt">>, nowIso: string): CheckinKind {
   const nowMs = Date.parse(nowIso);
@@ -104,42 +100,47 @@ function warnSweepFailure(profileId: ProfileId, stage: string, error: unknown): 
   console.warn(JSON.stringify({ scope: "accountability-sweep", stage, profileId, error: message }));
 }
 
-const STALE_BRIEFING_CANCEL_REASON = "Superseded by the next scheduled morning briefing";
-const NO_BRIEFABLE_LOOPS_CANCEL_REASON = "No open loops remain to summarize";
-
+/**
+ * Briefings now have their own delivery table (migration 20260905000001), rather
+ * than an artificial open loop. Delivery rendering is intentionally handled by
+ * the live-surface phase; this sweep must never create a responseable loop.
+ */
 export async function ensureDailyBriefingCheck(input: {
   profileId: ProfileId;
   nowIso: string;
   repository: AccountabilityRepository;
 }): Promise<void> {
-  const loops = await input.repository.listOpenLoops(input.profileId);
-  const briefingLoop = loops.find((loop) => isBriefingLoopTitle(loop.title));
-  if (!loops.some((loop) => loop.status === "open" && !isBriefingLoopTitle(loop.title))) {
-    if (briefingLoop && briefingLoop.status === "open") {
-      await input.repository.cancelPendingChecksForLoop(input.profileId, briefingLoop.id, NO_BRIEFABLE_LOOPS_CANCEL_REASON);
-    }
-    return;
+  if (!input.repository.listBriefingDeliveries || !input.repository.insertBriefingDelivery) return;
+  const [loops, history, timezone] = await Promise.all([
+    input.repository.listOpenLoops(input.profileId),
+    input.repository.listBriefingDeliveries(input.profileId),
+    input.repository.getProfileTimezone?.(input.profileId) ?? Promise.resolve("UTC"),
+  ]);
+  const open = loops.filter((loop) => loop.status === "open" && !isBriefingLoopTitle(loop.title));
+  if (!open.length) return;
+  const window = briefingDayWindow(input.nowIso, timezone);
+  if (Date.parse(input.nowIso) < Date.parse(nextBriefingDueAt(new Date(window.startMs - 1).toISOString(), timezone))) return;
+  if (history.some((briefing) => Date.parse(briefing.dueAt) >= window.startMs && Date.parse(briefing.dueAt) < window.endMs)) return;
+  await input.repository.insertBriefingDelivery(input.profileId, { dueAt: new Date(window.startMs + 8 * 3_600_000).toISOString(), content: composeBriefingText(open, input.nowIso) });
+}
+
+async function deliverDueBriefings(input: {
+  profileId: ProfileId;
+  now: string;
+  repository: AccountabilityRepository;
+  writeMessage: SweepMessageWriter;
+  listThreads: SweepThreadLister;
+}): Promise<void> {
+  if (!input.repository.listBriefingDeliveries || !input.repository.markBriefingRendered) return;
+  const due = (await input.repository.listBriefingDeliveries(input.profileId))
+    .filter((briefing) => briefing.renderedAt === null && briefing.dueAt <= input.now);
+  if (!due.length) return;
+  const threadId = (await input.listThreads(input.profileId))[0]?.id;
+  if (!threadId) return;
+  for (const briefing of due) {
+    await input.writeMessage({ profileId: input.profileId, threadId, content: briefing.content });
+    await input.repository.markBriefingRendered(input.profileId, briefing.id, input.now);
   }
-  let active = briefingLoop;
-  if (active && active.status !== "open") return;
-  if (!active) {
-    active = await input.repository.insertOpenLoop({
-      profileId: input.profileId,
-      title: BRIEFING_LOOP_TITLE,
-      kind: "routine",
-      cadence: { kind: "daily" },
-    });
-  }
-  const checks = await input.repository.listChecksForLoop(input.profileId, active.id);
-  const window = briefingDayWindow(input.nowIso);
-  if (checks.some((check) => isStaleBriefingCheck(check, window))) {
-    await input.repository.cancelPendingChecksForLoop(input.profileId, active.id, STALE_BRIEFING_CANCEL_REASON);
-  }
-  if (hasBlockingBriefingCheck(checks, window)) return;
-  await input.repository.insertScheduledCheck(input.profileId, {
-    loopId: active.id,
-    dueAt: nextBriefingDueAt(input.nowIso),
-  });
 }
 
 export async function runAccountabilitySweep(input: {
@@ -152,6 +153,7 @@ export async function runAccountabilitySweep(input: {
   threadLister?: SweepThreadLister;
   retrieval?: CommitmentSearchClient;
   classifier?: CompletionClassifier;
+  deliveryPushSender?: DeliveryPushSender;
 } = {}): Promise<SweepReport> {
   const now = input.now ?? new Date().toISOString();
   const profiles = input.profiles ?? [...PROFILE_IDS];
@@ -160,6 +162,7 @@ export async function runAccountabilitySweep(input: {
   const composer = input.composer;
   const writeMessage = input.messageWriter ?? createDefaultMessageWriter();
   const listThreadsFor = input.threadLister ?? createDefaultThreadLister();
+  const sendPush = input.deliveryPushSender ?? sendDeliveryPush;
 
   let reconciliationSeams: { retrieval: CommitmentSearchClient; classifier: CompletionClassifier } | null | undefined;
   function resolveReconciliationSeams(profileId: ProfileId) {
@@ -182,6 +185,7 @@ export async function runAccountabilitySweep(input: {
     try {
       try {
         await ensureDailyBriefingCheck({ profileId, nowIso: now, repository });
+        await deliverDueBriefings({ profileId, now, repository, writeMessage, listThreads: listThreadsFor });
       } catch (error) {
         warnSweepFailure(profileId, "briefing_seed", error);
       }
@@ -247,6 +251,13 @@ export async function runAccountabilitySweep(input: {
               await repository.insertDeliveryItems(profileId, delivery.id, [...new Set(batch.map((pair) => pair.loop.id))]);
               const message = await writeMessage({ profileId, threadId, content: composed.text });
               await repository.markDeliveryDelivered(profileId, delivery.id, { messageId: message.id });
+              // The database delivery is authoritative. Push is a best-effort
+              // enhancement and must never roll back or duplicate it.
+              try {
+                await sendPush({ profileId, threadId, messageId: message.id, summary: composed.text });
+              } catch (error) {
+                warnSweepFailure(profileId, "push", error);
+              }
               for (const pair of batch) {
                 const attemptCount = pair.check.attemptCount + 1;
                 await repository.markCheckDelivered(profileId, pair.check.id, {
@@ -263,6 +274,22 @@ export async function runAccountabilitySweep(input: {
                   sourceMessageId: null,
                   agentRunId: null,
                 });
+                const next = nextCheckDecision({
+                  kind: pair.loop.kind,
+                  cadence: pair.loop.cadence,
+                  priorAttempts: attemptCount,
+                  nowIso: now,
+                  referenceIso: pair.check.dueAt,
+                });
+                if (next.dueAt) {
+                  const checks = await repository.listChecksForLoop(profileId, pair.loop.id);
+                  const hasFuturePending = checks.some((check) => check.status === "pending" && check.id !== pair.check.id && check.dueAt >= now);
+                  if (!hasFuturePending) await repository.insertScheduledCheck(profileId, {
+                    loopId: pair.loop.id,
+                    dueAt: next.dueAt,
+                    purpose: pair.loop.kind === "routine" ? "routine" : "follow_up",
+                  });
+                }
               }
               mergedBatches += 1;
               delivered += batch.length;

@@ -518,12 +518,16 @@ export function summarizeToolResult(activity: ToolActivity) {
     if (status === "stale") return "Memory changed before this request";
     if (status === "not_found") return "Memory document not found";
   }
+  if (activity.toolName === "onboarding_update" && structuredOutput) {
+    if (structuredOutput.status === "invalid_timezone") return "Timezone needs confirmation";
+    if (structuredOutput.status === "updated") return "Updated conversation preferences";
+  }
   if (typeof output === "string") return shortText(output) || "Done";
   return "Result ready";
 }
 
 export function toolDetail(activity: ToolActivity) {
-  if (["current_time", "thread_overview", "history_preflight", "search_messages", "read_messages", "memory_context", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive", "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress", "web_search"].includes(activity.toolName)) return null;
+  if (["current_time", "thread_overview", "history_preflight", "search_messages", "read_messages", "memory_context", "memory_list", "memory_read", "memory_search", "memory_patch", "memory_archive", "onboarding_update", "loop_list", "loop_create", "loop_update", "loop_close", "schedule_check", "loop_suppress", "web_search"].includes(activity.toolName)) return null;
   const value: SafeJson | undefined = activity.output ?? activity.input;
   if (!value || typeof value !== "object") return null;
   return JSON.stringify(value, null, 2).slice(0, 1600);

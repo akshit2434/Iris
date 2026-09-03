@@ -14,6 +14,8 @@ import { createWebSearchTool } from "@/server/tools/tavily";
 import { buildOpenMessageAction } from "@/lib/memory-source";
 import { createFileTools } from "@/server/files/tools";
 import type { FileRepository } from "@/server/files/repository";
+import { createOnboardingRepository, type OnboardingRepository } from "@/server/onboarding/repository";
+import { ACCOUNTABILITY_TONES, ONBOARDING_STATES } from "@/server/onboarding/domain";
 
 export type ThreadOverview = {
   title: string;
@@ -44,6 +46,8 @@ export type InternalToolOptions = {
   webSearchEnabled?: boolean;
   /** Profile-scoped file and artifact tools. Disabled unless explicitly granted. */
   filesEnabled?: boolean;
+  /** Lightweight relationship onboarding for persisted profiles. */
+  onboardingEnabled?: boolean;
 };
 
 export type InternalToolSchemaDescriptor = {
@@ -83,6 +87,28 @@ const memoryArchiveInput = z.object({
   expectedItemRevision: z.number().int().min(1),
   reason: z.string().trim().max(240).optional(),
 }).extend(optionalToolProgressSchema.shape);
+const onboardingUpdateInput = z.object({
+  state: z.enum(ONBOARDING_STATES).optional(),
+  confirmedTimezone: z.string().trim().min(1).max(120).optional(),
+  accountabilityTone: z.enum(ACCOUNTABILITY_TONES).optional(),
+}).refine((input) => input.state !== undefined || input.confirmedTimezone !== undefined || input.accountabilityTone !== undefined, "Provide at least one onboarding update.").extend(optionalToolProgressSchema.shape);
+
+function isValidIanaTimezone(value: string): boolean {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value }).format(); return true; } catch { return false; }
+}
+
+export async function updateOnboarding(context: AgentContext, input: z.infer<typeof onboardingUpdateInput>, repository: OnboardingRepository) {
+  const timezone = input.confirmedTimezone === undefined ? undefined : isValidIanaTimezone(input.confirmedTimezone) ? input.confirmedTimezone : null;
+  if (input.confirmedTimezone !== undefined && timezone === null) {
+    return { kind: "onboarding_update" as const, status: "invalid_timezone" as const, reason: "Use a confirmed IANA timezone such as Asia/Kolkata." };
+  }
+  const profile = await repository.update(context.profileId, {
+    ...(input.state ? { state: input.state } : {}),
+    ...(timezone !== undefined ? { confirmedTimezone: timezone } : {}),
+    ...(input.accountabilityTone ? { accountabilityTone: input.accountabilityTone } : {}),
+  });
+  return { kind: "onboarding_update" as const, status: "updated" as const, state: profile.state, confirmedTimezone: profile.confirmedTimezone, accountabilityTone: profile.accountabilityTone };
+}
 
 export async function readCurrentTime(context: AgentContext) {
   return {
@@ -422,6 +448,7 @@ export function createInternalTools(
   options: InternalToolOptions = {},
   accountabilityRepository?: AccountabilityRepository,
   fileRepository?: FileRepository,
+  onboardingRepository?: OnboardingRepository,
 ) {
   const isReturnDirect = (toolName: string) => options.returnDirectTools?.includes(toolName) ?? false;
   let resolvedMemoryRetrieval = memoryRetrieval;
@@ -513,6 +540,15 @@ export function createInternalTools(
       returnDirect: isReturnDirect("memory_archive"),
     },
   );
+  const onboardingUpdateTool = tool(
+    async (input: z.infer<typeof onboardingUpdateInput>, runtime: ToolRuntime<unknown, AgentContext>) => updateOnboarding(runtime.context, input, onboardingRepository ?? createOnboardingRepository()),
+    {
+      name: "onboarding_update",
+      description: "Update lightweight relationship-onboarding progress only. Use state=in_progress when beginning a welcome question, state=deferred for a clear ‘not now’, and state=complete once enough basis exists to be useful. Confirm only a user-provided IANA timezone and a consented accountability tone. Never store biography, personal facts, or memories here; use memory_patch for durable facts.",
+      schema: onboardingUpdateInput,
+      returnDirect: isReturnDirect("onboarding_update"),
+    },
+  );
 
   const webSearchTools = options.webSearchEnabled === false || !process.env.TAVILY_API_KEY ? [] : [createWebSearchTool()];
   const historicalTools = options.referenceHistoryEnabled === false ? [] : [searchMessagesTool, readMessagesTool];
@@ -521,7 +557,8 @@ export function createInternalTools(
     : [memoryListTool, memoryReadTool, memorySearchTool, memoryPatchTool, memoryArchiveTool];
   const accountabilityTools = options.accountabilityEnabled === false ? [] : createAccountabilityTools(accountabilityRepository);
   const fileTools = options.filesEnabled === true ? createFileTools(fileRepository) : [];
-  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools, ...fileTools, ...webSearchTools] as const;
+  const onboardingTools = options.onboardingEnabled === true ? [onboardingUpdateTool] : [];
+  return [threadOverview, ...historicalTools, ...memoryTools, ...accountabilityTools, ...onboardingTools, ...fileTools, ...webSearchTools] as const;
 }
 
 /**

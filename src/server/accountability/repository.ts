@@ -6,6 +6,7 @@ import { isProfileId, type ProfileId } from "@/lib/profiles";
 import { getDatabase } from "@/server/db/client";
 import type { Database, Json } from "@/server/db/types";
 import { isBriefingLoopTitle } from "./briefing";
+import { nextLocalDaylightCheck } from "./scheduling-policy";
 import { isTerminal, nextStatusOnEvent } from "./state-machine";
 import {
   createLoopInputSchema,
@@ -74,6 +75,7 @@ export type ScheduledCheckRow = {
   cancelReason: string | null;
   claimedAt: string | null;
   createdAt: string;
+  purpose?: "initial" | "routine" | "follow_up" | "recovery";
 };
 
 export type DeliverableDueCheck = { check: ScheduledCheckRow; loop: OpenLoopRow };
@@ -171,7 +173,7 @@ export type InsertLoopEventInput = {
   agentRunId?: string | null;
   metadata?: Json;
 };
-export type InsertScheduledCheckInput = { loopId: string; dueAt: string; deliveryId?: string | null };
+export type InsertScheduledCheckInput = { loopId: string; dueAt: string; deliveryId?: string | null; purpose?: ScheduledCheckRow["purpose"] };
 export type InsertLoopSuppressionInput = { subject: string; reason?: string };
 
 export const DEFAULT_SUPPRESSION_REASON = "User asked Iris to stop following up";
@@ -181,6 +183,7 @@ export function normalizeSuppressionSubject(subject: string): string {
 }
 
 export type RecentlyClosedLoopRow = { loopId: string; title: string; closedAt: string };
+export type BriefingDeliveryRow = { id: string; profileId: ProfileId; dueAt: string; renderedAt: string | null; content: string; createdAt: string };
 
 export type AccountabilityRepository = {
   listOpenLoops(profileId: ProfileId, filter?: ListOpenLoopsFilter): Promise<OpenLoopRow[]>;
@@ -207,11 +210,15 @@ export type AccountabilityRepository = {
   listActiveSuppressions(profileId: ProfileId): Promise<LoopSuppressionRow[]>;
   getAttentionSnapshot(profileId: ProfileId, nowIso?: string): Promise<AttentionSnapshot>;
   respondToDeliveryItem(profileId: ProfileId, input: RespondToDeliveryItemInput, nowIso?: string): Promise<RespondToDeliveryItemResult>;
+  listBriefingDeliveries?(profileId: ProfileId): Promise<BriefingDeliveryRow[]>;
+  insertBriefingDelivery?(profileId: ProfileId, input: { dueAt: string; content: string }): Promise<BriefingDeliveryRow>;
+  markBriefingRendered?(profileId: ProfileId, briefingId: string, renderedAt: string): Promise<void>;
+  getProfileTimezone?(profileId: ProfileId): Promise<string>;
 };
 
 const OPEN_LOOP_COLUMNS = "id, profile_id, title, details, kind, status, due_at, cadence, origin_thread_id, origin_message_id, created_at, updated_at, closed_at";
 const LOOP_EVENT_COLUMNS = "id, profile_id, loop_id, kind, detail, actor, source_thread_id, source_message_id, agent_run_id, metadata, created_at";
-const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, claimed_at, created_at";
+const SCHEDULED_CHECK_COLUMNS = "id, profile_id, loop_id, due_at, status, attempt_count, escalation_tier, delivery_id, delivered_at, cancelled_at, cancel_reason, claimed_at, created_at, purpose";
 const CHECKIN_DELIVERY_COLUMNS = "id, profile_id, thread_id, message_id, summary, status, created_at, delivered_at, answered_at";
 const CHECKIN_DELIVERY_ITEM_COLUMNS = "delivery_id, loop_id, profile_id, response, responded, created_at";
 const LOOP_SUPPRESSION_COLUMNS = "id, profile_id, subject, reason, created_at, lifted_at";
@@ -317,6 +324,7 @@ function toScheduledCheck(row: ScheduledCheckTableRow): ScheduledCheckRow {
     cancelReason: row.cancel_reason,
     claimedAt: row.claimed_at ?? null,
     createdAt: row.created_at,
+    purpose: (row.purpose ?? "initial") as NonNullable<ScheduledCheckRow["purpose"]>,
   };
 }
 
@@ -623,6 +631,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
           loop_id: input.loopId,
           due_at: input.dueAt,
           delivery_id: input.deliveryId ?? null,
+          purpose: input.purpose ?? "initial",
           attempt_count: carriedAttempts,
           escalation_tier: Math.min(carriedAttempts, 5),
         })
@@ -846,8 +855,7 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
         const outcomeEvent = OUTCOME_EVENTS[validated.outcome];
         let nextDueAt: string | undefined;
         if (validated.outcome === "later") {
-          const referenceMs = current.dueAt !== null && !Number.isNaN(Date.parse(current.dueAt)) ? Date.parse(current.dueAt) : Date.parse(nowIso);
-          nextDueAt = new Date(referenceMs + MS_PER_DAY).toISOString();
+          nextDueAt = nextLocalDaylightCheck(nowIso, current.dueAt);
         }
         await repository.updateOpenLoopStatus(profileId, validated.loopId, current.updatedAt, {
           event: outcomeEvent,
@@ -885,6 +893,29 @@ export function createAccountabilityRepository(client: AccountabilityDatabase = 
         if (answerError) throw answerError;
       }
       return warning === undefined ? { alreadyResponded: false } : { alreadyResponded: false, warning };
+    },
+    async listBriefingDeliveries(profileId) {
+      assertProfileId(profileId);
+      const { data, error } = await client.from("briefing_deliveries" as never).select("id, profile_id, due_at, rendered_at, content, created_at").eq("profile_id", profileId).order("due_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((row: any) => ({ id: row.id, profileId: row.profile_id, dueAt: row.due_at, renderedAt: row.rendered_at, content: row.content, createdAt: row.created_at }));
+    },
+    async insertBriefingDelivery(profileId, input) {
+      assertProfileId(profileId);
+      const { data, error } = await (client.from("briefing_deliveries" as never) as any).insert({ profile_id: profileId, due_at: input.dueAt, content: input.content, rendered_at: null }).select("id, profile_id, due_at, rendered_at, content, created_at").single();
+      if (error) throw error;
+      return { id: (data as any).id, profileId, dueAt: (data as any).due_at, renderedAt: (data as any).rendered_at, content: (data as any).content, createdAt: (data as any).created_at };
+    },
+    async markBriefingRendered(profileId, briefingId, renderedAt) {
+      assertProfileId(profileId);
+      const { error } = await (client.from("briefing_deliveries" as never) as any)
+        .update({ rendered_at: renderedAt }).eq("id", briefingId).eq("profile_id", profileId).is("rendered_at", null);
+      if (error) throw error;
+    },
+    async getProfileTimezone(profileId) {
+      assertProfileId(profileId);
+      const { data } = await client.from("profile_notification_preferences" as never).select("time_zone").eq("profile_id", profileId).maybeSingle();
+      return typeof (data as any)?.time_zone === "string" ? (data as any).time_zone : "UTC";
     },
   };
   return repository;
