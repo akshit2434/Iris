@@ -42,8 +42,9 @@ The files migration creates the private `iris-files` Supabase Storage bucket. No
 | `MEMORY_SEMANTIC_SEARCH_ENABLED` | `true` | Semantic recall at query time. |
 | `MEMORY_CONTINUITY_ENABLED` | `false` | Thread-continuity compaction worker. |
 
-`CRON_SECRET` is the separate server-only secret used by the Vercel scheduler
-for the worker adapter. It must not be reused as `MEMORY_WORKER_SECRET`.
+`SUPABASE_CRON_SECRET` is the separate server-only bearer secret used by the
+Supabase Cron worker adapter. It must not be reused as `MEMORY_WORKER_SECRET`.
+The legacy `CRON_SECRET` name remains a backwards-compatible fallback.
 
 ### Accountability
 
@@ -81,25 +82,35 @@ Both endpoints are POST-only, authenticated by the `x-iris-worker-secret` header
 
 ## Scheduling model
 
-The supported deployed scheduler is Vercel Cron, declared in the
-version-controlled [`vercel.json`](../vercel.json):
+The supported deployed scheduler is Supabase Cron, configured by the
+versioned migration [`20260906000000_supabase_cron_workers.sql`](../supabase/migrations/20260906000000_supabase_cron_workers.sql):
 
-| Cron path | Schedule | Work |
+| Cron job | Schedule | Work |
 | --- | --- | --- |
-| `/api/internal/cron/workers` | Every 5 minutes (UTC) | One bounded memory worker batch plus the accountability sweep. |
+| `iris-worker-heartbeat` | Every 5 minutes (UTC) | One bounded memory worker batch plus the accountability sweep. |
 
-Vercel sends `Authorization: Bearer ${CRON_SECRET}` to this narrow GET
-adapter. The adapter verifies that header with a timing-safe comparison, then
-invokes the existing POST-only memory worker with
+Supabase Cron uses `pg_cron` + `pg_net` to send
+`Authorization: Bearer ${SUPABASE_CRON_SECRET}` to this narrow GET adapter.
+The adapter verifies that header with a timing-safe comparison, then invokes the existing POST-only memory worker with
 `x-iris-worker-secret: ${MEMORY_WORKER_SECRET}` and calls the accountability
 sweep service. It returns only aggregate counts and a timestamp; provider
 responses and personal payloads never leave the worker services. The adapter
 uses the Node runtime with a 300-second function timeout, while memory work is
 bounded by `MEMORY_WORKER_MAX_DURATION_MS`.
 
+After applying the migration, configure the two Vault secrets through the
+service-role-only `configure_iris_cron` RPC (or the Supabase Vault UI):
+
+- `iris_cron_worker_url`: the stable production URL ending in no slash (for example `https://your-app.example.com`)
+- `iris_cron_worker_secret`: the same value as Vercel's `SUPABASE_CRON_SECRET`
+
+The migration is safe before configuration: the scheduled function logs a
+warning and no-ops until both Vault entries exist. Rotate the Vercel secret and
+call the RPC again to rotate the Vault copy.
+
 - **Primary trigger is lazy**: every persisted chat turn fires a sweep via `after()`, so a single user gets timely delivery with zero infrastructure.
 - **Heartbeat (optional, for push-grade reliability):** call the sweep endpoint from any scheduler at your preferred interval. Requirements to know:
-  - Daily morning briefings need at least one sweep between 00:00 and 08:00 UTC (briefing time is UTC in this version).
+  - Daily morning briefings need at least one sweep around each profile's local 08:00 (the worker computes the profile timezone).
   - Escalation counters advance per delivery, not per sweep; extra sweeps without due checks are one indexed query and cost nothing.
   - The claim RPC (`FOR UPDATE SKIP LOCKED`) makes concurrent triggers safe.
 - A one-line crontab is enough: `*/5 * * * * curl -fsS -X POST $URL/api/internal/accountability/sweep -H "x-iris-worker-secret: $SECRET" >/dev/null`

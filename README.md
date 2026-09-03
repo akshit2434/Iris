@@ -80,8 +80,9 @@ OPENROUTER_API_KEY=your-server-only-openrouter-key
 # Server-only secret guarding the internal worker endpoints (memory workers +
 # accountability sweep). Required for cron/heartbeat sweeps.
 # MEMORY_WORKER_SECRET=change-me
-# Required by the deployed cron adapter; distinct from MEMORY_WORKER_SECRET.
-# CRON_SECRET=change-me
+# Required by the deployed Supabase Cron adapter; distinct from
+# MEMORY_WORKER_SECRET. Store the matching copy in Supabase Vault.
+# SUPABASE_CRON_SECRET=change-me
 # Optional Web Push. Generate/configure VAPID keys before enabling Push in production.
 # NEXT_PUBLIC_VAPID_PUBLIC_KEY=
 # VAPID_PRIVATE_KEY=

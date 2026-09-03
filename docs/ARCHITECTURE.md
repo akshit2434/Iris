@@ -51,7 +51,7 @@ All tables: RLS enabled, revoked from `public/anon/authenticated`, composite `(i
 
 ## Delivery model (accountability)
 
-Reminders are database rows with `due_at`. A profile-scoped app-wake sweep makes due work visible when Iris opens; the version-controlled cron heartbeat bounds lateness while the app is closed. Check-in messages are composed at delivery time — deterministic templates for simple cases (zero tokens), a small model for merges/reflections/catch-ups, and full agent re-entry only when the user replies. Permissioned Web Push is sent only after a delivery commits and deep-links back to its conversation.
+Reminders are database rows with `due_at`. A profile-scoped app-wake sweep makes due work visible when Iris opens; the versioned Supabase Cron heartbeat bounds lateness while the app is closed. Check-in messages are composed at delivery time — deterministic templates for simple cases (zero tokens), a small model for merges/reflections/catch-ups, and full agent re-entry only when the user replies. Permissioned Web Push is sent only after a delivery commits and deep-links back to its conversation.
 
 ## Extension conventions
 

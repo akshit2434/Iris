@@ -16,10 +16,20 @@ const request = (authorization?: string) => new Request("https://example.test/ap
 
 describe("cron worker adapter", () => {
   beforeEach(() => {
-    process.env.CRON_SECRET = "cron-secret";
+    process.env.SUPABASE_CRON_SECRET = "cron-secret";
+    delete process.env.CRON_SECRET;
     process.env.MEMORY_WORKER_SECRET = "worker-secret";
     mocks.memoryWorker.mockReset();
     mocks.runAccountabilitySweep.mockReset();
+  });
+
+  it("keeps the legacy cron secret as a backwards-compatible fallback", async () => {
+    delete process.env.SUPABASE_CRON_SECRET;
+    process.env.CRON_SECRET = "legacy-cron-secret";
+    mocks.memoryWorker.mockResolvedValue(new Response(JSON.stringify({ claimed: 0, completed: 0, skipped: 0, failed: 0 }), { status: 200 }));
+    mocks.runAccountabilitySweep.mockResolvedValue({ profiles: [], at: "2026-09-03T12:00:00.000Z" });
+    const response = await GET(request("Bearer legacy-cron-secret"));
+    expect(response.status).toBe(200);
   });
 
   it("rejects requests without the bearer cron secret", async () => {

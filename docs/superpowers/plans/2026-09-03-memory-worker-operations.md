@@ -7,7 +7,7 @@
 ## Product decisions
 
 - Chat turns enqueue work; they do not depend on external workers to finish successfully.
-- A scheduler invokes internal worker endpoints with a secret. The scheduler is an operational dependency, declared in deployment configuration and verified before release.
+- Supabase Cron invokes the internal worker adapter with a secret stored in Supabase Vault. The scheduler is an operational dependency, declared in a migration and verified before release.
 - Each job remains idempotent, lease-based, profile-scoped, retry-bounded, and observable without storing raw personal prompts in logs.
 - Fast-lane durable facts may remain inline only within a strict time budget; slow synthesis must occur asynchronously.
 - Health reporting distinguishes a disabled optional feature from a failing configured worker.
@@ -34,4 +34,3 @@
 - Introducing a general-purpose queue platform before current database leases prove insufficient.
 - Continuous model polling.
 - Calendar/Classroom/location workers.
-

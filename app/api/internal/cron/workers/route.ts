@@ -18,7 +18,8 @@ function numberOrZero(value: unknown): number {
 function isCronAuthorized(request: Request): boolean {
   const authorization = request.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ")) return false;
-  return hasWorkerSecret(authorization.slice("Bearer ".length), process.env.CRON_SECRET);
+  const configuredSecret = process.env.SUPABASE_CRON_SECRET ?? process.env.CRON_SECRET;
+  return hasWorkerSecret(authorization.slice("Bearer ".length), configuredSecret);
 }
 
 async function invokeMemoryWorker(request: Request): Promise<{ status: number; body: unknown }> {
@@ -75,7 +76,7 @@ function failedAccountability(): SafeCounts {
 }
 
 /**
- * Vercel Cron's narrow GET adapter. The scheduler secret is separate from the
+ * Scheduler's narrow GET adapter. The scheduler secret is separate from the
  * existing POST worker secret; no worker endpoint is changed to GET.
  */
 export async function GET(request: Request) {

@@ -34,7 +34,7 @@ From the product vision and runtime guidance:
 ## Delivery model
 
 - **Primary: app-wake sweep.** The active profile runs a cheap indexed sweep when Home opens and when the app returns to foreground. It delivers exactly when a human can see it; idle system costs nothing.
-- **Secondary: deployment heartbeat.** A version-controlled Vercel cron invokes the protected worker adapter every five minutes. Lateness is bounded while the app is closed; empty runs are indexed work only.
+- **Secondary: deployment heartbeat.** A version-controlled Supabase Cron job invokes the protected worker adapter every five minutes. Lateness is bounded while the app is closed; empty runs are indexed work only.
 - **Precision escape hatch.** The sweep endpoint is idempotent ("process everything due"), so any trigger — including vendor one-shot schedulers — can be swapped in later without touching application logic.
 
 ## Data model (Phase A)
