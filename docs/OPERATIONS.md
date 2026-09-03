@@ -42,6 +42,9 @@ The files migration creates the private `iris-files` Supabase Storage bucket. No
 | `MEMORY_SEMANTIC_SEARCH_ENABLED` | `true` | Semantic recall at query time. |
 | `MEMORY_CONTINUITY_ENABLED` | `false` | Thread-continuity compaction worker. |
 
+`CRON_SECRET` is the separate server-only secret used by the Vercel scheduler
+for the worker adapter. It must not be reused as `MEMORY_WORKER_SECRET`.
+
 ### Accountability
 
 | Variable | Default | Purpose |
@@ -77,6 +80,22 @@ Both endpoints are POST-only, authenticated by the `x-iris-worker-secret` header
 | `/api/internal/accountability/sweep` | Claims due scheduled checks, composes and delivers merged check-ins, reconciles stated completions, seeds the daily briefing. Body `{ "limit": 1..8 }`. |
 
 ## Scheduling model
+
+The supported deployed scheduler is Vercel Cron, declared in the
+version-controlled [`vercel.json`](../vercel.json):
+
+| Cron path | Schedule | Work |
+| --- | --- | --- |
+| `/api/internal/cron/workers` | Every 5 minutes (UTC) | One bounded memory worker batch plus the accountability sweep. |
+
+Vercel sends `Authorization: Bearer ${CRON_SECRET}` to this narrow GET
+adapter. The adapter verifies that header with a timing-safe comparison, then
+invokes the existing POST-only memory worker with
+`x-iris-worker-secret: ${MEMORY_WORKER_SECRET}` and calls the accountability
+sweep service. It returns only aggregate counts and a timestamp; provider
+responses and personal payloads never leave the worker services. The adapter
+uses the Node runtime with a 300-second function timeout, while memory work is
+bounded by `MEMORY_WORKER_MAX_DURATION_MS`.
 
 - **Primary trigger is lazy**: every persisted chat turn fires a sweep via `after()`, so a single user gets timely delivery with zero infrastructure.
 - **Heartbeat (optional, for push-grade reliability):** call the sweep endpoint from any scheduler at your preferred interval. Requirements to know:
