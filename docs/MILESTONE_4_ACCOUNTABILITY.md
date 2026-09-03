@@ -33,8 +33,8 @@ From the product vision and runtime guidance:
 
 ## Delivery model
 
-- **Primary: opportunistic sweep.** The first request of any session runs a cheap indexed query for due checks and delivers exactly when a human can see them. Idle system costs nothing.
-- **Secondary: database heartbeat.** A periodic `pg_cron` heartbeat evaluates `due_at <= now()` as a safety net and becomes the future Web Push sender. Lateness is bounded by the interval; empty runs are one indexed query.
+- **Primary: app-wake sweep.** The active profile runs a cheap indexed sweep when Home opens and when the app returns to foreground. It delivers exactly when a human can see it; idle system costs nothing.
+- **Secondary: deployment heartbeat.** A version-controlled Vercel cron invokes the protected worker adapter every five minutes. Lateness is bounded while the app is closed; empty runs are indexed work only.
 - **Precision escape hatch.** The sweep endpoint is idempotent ("process everything due"), so any trigger — including vendor one-shot schedulers — can be swapped in later without touching application logic.
 
 ## Data model (Phase A)
@@ -62,10 +62,10 @@ Each phase leaves Iris usable and fully checked (`npm run check:secrets && npm r
 | D ✅ | Sweep endpoint (worker-auth guarded), post-turn lazy sweep, Tier 0/1 delivery, merge logic, 14-day simulation harness, live acceptance PASS (#7) | `feature/accountability-sweep` |
 | E ✅ | Atomic claim RPC, soft-close reconciliation, suppressions, tier-aware escalation, FK fix — live acceptance PASS (#8) | `feature/accountability-followup` |
 | F ✅ | Attention/respond APIs, delivery-items seeding, Home card + one-tap quick actions, chat inline actions, briefing v0 — browser-verified via Playwright (#9) | `feature/accountability-surfaces` |
+| R ✅ | App-wake delivery, deterministic recurrence/backoff, local first-class briefings, live delivery refresh, permissioned Web Push, and cron worker adapter | `feature/personal-agent-reliability` |
 
 ## Explicit non-goals for this milestone
 
-- Web Push delivery (deferred; Home attention card carries in-app visibility until then)
 - Habit-tracker features: streak walls, completion percentages, guilt mechanics
 - Location/time-aware nudges (requires telemetry milestones)
 - Cross-profile anything
@@ -79,7 +79,6 @@ A live script (`scripts/live-accountability-acceptance.mjs`) mirrors the memory 
 **Complete.** All six phases landed through #4–#9 with live acceptance passing against local Supabase and a Playwright-verified UI flow.
 
 Known deferred items (documented, non-blocking):
-- Web Push / out-of-app delivery (Home card carries visibility; heartbeat cron still unwired — wire only after enabling `pg_cron`, the claim RPC is concurrency-safe).
-- Briefing v0 is UTC-based ("08:00-local" pending stored profile timezones); daily cadence requires at least one sweep per day in the 00:00–08:00 window.
-- Reserved "Morning briefing" title is exact-match; a user loop with that name would be co-opted.
+- Briefing v1 is deterministic from open loops and overdue state; calendar, weather, capacity, and telemetry context remain later integrations.
+- Web Push is available only after the person grants browser permission and VAPID keys are configured; it is not a native alarm channel.
 - Backlog-on-lift burst after lifting a suppression delivers up to the batch cap at once.

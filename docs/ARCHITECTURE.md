@@ -30,6 +30,8 @@ The system prompt is assembled per turn (`buildDynamicSystemPrompt`): temporal c
 | `src/server/agent/` | Runtime, context building, internal tools, protocol, titles, token budget, observability | Tools registered behind capability flags; every tool returns structured outputs, never throws across the boundary. |
 | `src/server/memory/` | Governed memory (proposals -> revisions -> sources), retrieval (lexical + semantic), consolidation/"dreaming", compaction, reference history, reconciliation | Raw `messages` are immutable source history; everything derived is replaceable. Optimistic revisions + idempotency keys on every mutation. |
 | `src/server/accountability/` | Open loops (commitment/routine/idea), scheduled checks, merged check-in deliveries, suppressions, soft-close reconciliation, escalation tone, briefing | Person-scoped, not thread-scoped; thread IDs are provenance only. Atomic claim RPC makes sweeps concurrency-safe. See module README + `docs/MILESTONE_4_ACCOUNTABILITY.md`. |
+| `src/server/onboarding/` | New-profile readiness, progressive conversational onboarding, profile-scoped tone/timezone preferences | Holds workflow state only; durable personal facts still use governed memory. |
+| `src/server/notifications/` | Push subscriptions/preferences, quiet-hour policy, delivery Push sending | Push is permissioned and additive; a failed send never changes a committed in-app delivery. |
 | `src/server/tools/` | External tool integrations (`tavily.ts` web search) | Env-gated registration; REST, no SDK dependency. |
 | `src/server/files/` | Profile-scoped file metadata, private Storage access, upload/read/open tools | Server-only Supabase Storage access; reads are capability-gated and signed URLs are short-lived. |
 | `src/server/transcription/` | AssemblyAI upload/job polling, profile vocabulary context, correction learning | Audio is provider-bound and never stored in Iris; local job rows remain profile-scoped so polling cannot cross profiles. |
@@ -49,7 +51,7 @@ All tables: RLS enabled, revoked from `public/anon/authenticated`, composite `(i
 
 ## Delivery model (accountability)
 
-Reminders are database rows with `due_at`. The lazy post-turn sweep delivers when a human can see it; an optional cron heartbeat bounds lateness and powers future Web Push. Check-in messages are composed at delivery time — deterministic templates for simple cases (zero tokens), a small model for merges/reflections/catch-ups, and full agent re-entry only when the user replies.
+Reminders are database rows with `due_at`. A profile-scoped app-wake sweep makes due work visible when Iris opens; the version-controlled cron heartbeat bounds lateness while the app is closed. Check-in messages are composed at delivery time — deterministic templates for simple cases (zero tokens), a small model for merges/reflections/catch-ups, and full agent re-entry only when the user replies. Permissioned Web Push is sent only after a delivery commits and deep-links back to its conversation.
 
 ## Extension conventions
 

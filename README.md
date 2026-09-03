@@ -4,7 +4,7 @@ Iris is a conversation-first personal agent with isolated profiles, chats, histo
 
 ## Current progress
 
-**Stage:** Milestones 1–4 (UI + Base, Agent Runtime, Memory, and Accountability) are complete, plus live web search and profile-scoped files from milestone 5. The current release supports persistent chats, streamed agent responses, cross-chat recall, governed memory, historical search, exact-source retrieval, source deep links, live web search with cited sources, private file upload/list/search/read/open, open loops with scheduled follow-ups, merged check-ins with one-tap responses, soft-close reconciliation, conversational suppressions, tier-aware escalation tone, and a daily morning briefing. Remaining in milestone 5: calendar, location/context, Composio/Classroom, and artifact generation.
+**Stage:** Milestones 1–4 (UI + Base, Agent Runtime, Memory, and Accountability) are complete, plus live web search and profile-scoped files from milestone 5. The current release supports progressive cold-start onboarding, governed cross-chat memory, open loops with automatic recurring follow-ups, app-wake accountability, local-time briefings, live in-app check-ins, permissioned Web Push, and version-controlled background-worker scheduling. Remaining in milestone 5: calendar, location/context, Composio/Classroom, and artifact generation.
 
 The public build is a mobile-first, conversation-first base with isolated profiles, persistent raw chat history, local Supabase development, and the visual language documented in [docs/UI_STANDARDS.md](docs/UI_STANDARDS.md).
 
@@ -34,6 +34,9 @@ These previews use only generic seeded labels and temporary QA copy. No private 
 - Versioned NDJSON run events with persisted, profile/thread-scoped tool activity
 - Governed saved memory with profile isolation, revisions, stale-state reconciliation, and token-budgeted context
 - Accountability: person-scoped open loops (commitments, routines, ideas) with clarify-before-commit, scheduled follow-up checks, merged conversational check-ins, one-tap Done / Not today / Drop it responses, cross-chat completion soft-close, topic suppressions, tier-aware escalation tone, and a daily morning briefing
+- Progressive, opt-out cold-start onboarding that learns stable preferences through governed memory instead of a setup form
+- App-wake and five-minute cron accountability sweeps; routines and unresolved commitments receive bounded future checks without model polling
+- Local-time first-class briefings, live foreground refresh, and permissioned Web Push with quiet hours and private-preview controls
 - Cross-chat semantic and lexical retrieval with exact-message reads and source preview/deep-link actions
 - Live web search through the agent (Tavily, env-gated) with inline source citations
 - Profile-scoped private file upload, filename search, bounded plain-text reads, and short-lived signed opening links; generated-artifact listing/opening shares the same storage boundary
@@ -77,6 +80,12 @@ OPENROUTER_API_KEY=your-server-only-openrouter-key
 # Server-only secret guarding the internal worker endpoints (memory workers +
 # accountability sweep). Required for cron/heartbeat sweeps.
 # MEMORY_WORKER_SECRET=change-me
+# Required by the deployed cron adapter; distinct from MEMORY_WORKER_SECRET.
+# CRON_SECRET=change-me
+# Optional Web Push. Generate/configure VAPID keys before enabling Push in production.
+# NEXT_PUBLIC_VAPID_PUBLIC_KEY=
+# VAPID_PRIVATE_KEY=
+# VAPID_SUBJECT=mailto:you@example.com
 # Per-sweep time bound for background workers; raise for slow local/free models.
 # MEMORY_WORKER_MAX_DURATION_MS=25000
 OPENROUTER_MODEL=openai/gpt-5.6-luna
